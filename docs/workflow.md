@@ -62,9 +62,11 @@ changes a decision, edits the design or writes an ADR.
 Docs move with the code: the `docs-sync` rule maps every kind of change to the documents that
 must be updated in the same change, and `arch-guardian` reports misses as MAJOR findings.
 
-Work is tracked on GitHub (target; see section 8 for what exists today): one milestone per phase (`Phase 0 - Experiments` first), one issue per
-roadmap item, labels for type (`feature`, `spike`, `test`, `ci`, ...), area (`area:*`) and process
-(`needs-decision`, `blocked`). PRs close their issue with `Closes #N`.
+Work is tracked on GitHub: one milestone per phase (`Phase 0 - Experiments`, `Phase 1 - Core execution path`, `Phase 2 - Event pipeline`, `Later`; the Phase 1/2 split is
+the proposal of design section 9.6 until issue #6 decides it), one issue per roadmap item with its
+design sections, scope checklist and dependencies, labels for type (`feature`, `spike`, `test`,
+`ci`, `documentation`), area (`area:*`) and process (`needs-decision`, `blocked`). PRs close
+their issue with `Closes #N`.
 
 Humans decide: accepting ADRs, changing guards/rules, the phase scope (design section 9.6),
 releases.
@@ -76,10 +78,10 @@ amendment ceremony. Agents write `Proposed`; only the maintainer's word makes it
 Details: the `docs-and-adr` rule and the `write-adr` skill.
 
 Branches: work happens on `<prefix>/<kebab-summary>` branches cut from `develop` and is PR'd
-into `develop`; `main` only receives release merges. GitHub rulesets are meant to enforce it
-(not configured yet - section 8): merging into
-`develop` needs the code owner's (@devgyurak) approval, which the maintainer may bypass;
-nobody can push to `main`, which only accepts PRs from `develop` (`branch-policy.yml`). Releases
+into `develop`; `main` only receives release merges. GitHub rulesets enforce it: merging into
+`develop` needs the code owner's (@devgyurak) approval, which the maintainer may bypass from the
+PR; nobody can push to `main`, which only accepts PRs from `develop` (`branch-policy.yml`) with
+the CI `check` jobs green. Releases
 are `vX.Y.Z` tags on `main`. CI (`ci.yml`) runs on every pull request and on pushes to `develop`
 and `main`. Commit/PR titles use one prefix: `ADD:` `FIX:` `REF:` `DEL:` `DOCS:` `UPT:` (the
 `commit` skill).
@@ -114,7 +116,7 @@ repository files.
 | No push to `main` / `develop` | `tools/hooks/pre_push.py` (git pre-push, `make hooks-install`) | every push from a clone with the hooks installed |
 | Agent config drift | `tools/agentsync.py --check` | `make agents-check`, pre-commit, CI |
 | Database semantics | pytest on real PostgreSQL | `make test-int`, CI |
-| Branch flow | GitHub rulesets + `branch-policy.yml` + `CODEOWNERS` (rulesets not configured yet, section 8) | every push / PR to `develop` and `main` |
+| Branch flow | GitHub rulesets + `branch-policy.yml` + `CODEOWNERS` | every push / PR to `develop` and `main` |
 
 Guards have no inline suppressions. Fix code, not guards; changing a guard needs the maintainer.
 
@@ -148,22 +150,26 @@ uv run python -m tools.guards --changed
 
 ## 8. GitHub setup (maintainer, one-time)
 
-**Current state (2026-11-25):** `main` has the first commit and `develop` was created from it;
-`develop` is the default branch. There are no rulesets, milestones or issues yet, and the labels
-are GitHub's defaults. Everything above that says "enforced by rulesets" is the target. Until the checklist is done, the only mechanical protection against a
-push to `main` / `develop` is the local pre-push hook, and only in clones that ran
-`make hooks-install`. Agents do not perform these steps unless the maintainer asks.
+**Current state (2026-11-25):** done. `develop` is the default branch, both rulesets are active,
+and the milestones, labels and roadmap issues (#1-#46) exist. The local pre-push hook
+(`make hooks-install`) stays as a second line of defence. Agents change GitHub settings,
+milestones and labels only when the maintainer asks.
 
 - [x] First commit on `main`, then create `develop` from it; make `develop` the default branch.
-- [ ] Ruleset for `develop`: pull request required, code owner review (`.github/CODEOWNERS`),
-      maintainer in the bypass list, no force push, no deletion.
-- [ ] Ruleset for `main`: pull request required, no bypass, required status check
-      "main accepts PRs from develop only" (`.github/workflows/branch-policy.yml`) and the CI
-      `check` job, no force push, no deletion.
-- [ ] Milestone `Phase 0 - Experiments`; one issue per design section 9 item (9.1-9.5).
-- [ ] Labels: `feature`, `spike`, `test`, `ci`, `documentation`, `needs-decision`, `blocked`,
-      `area:core`, `area:sql`, `area:runners`, `area:drivers`, `area:outbox`, `area:migrate`,
-      `area:codegen`, `area:tooling`.
+- [x] Ruleset `develop`: pull request required, 1 approval from the code owner
+      (`.github/CODEOWNERS`), stale approvals dismissed, squash or merge commit, repository
+      admins may bypass through the PR, no force push, no deletion.
+- [x] Ruleset `main`: pull request required, merge commit only, no bypass, required status checks
+      "main accepts PRs from develop only" (`.github/workflows/branch-policy.yml`) and
+      "lint, types, guards, unit, type tests (py3.14)" / "(py3.15)" (`ci.yml`), no force push,
+      no deletion. A renamed CI job must be renamed in the ruleset too.
+- [x] Milestones: `Phase 0 - Experiments`, `Phase 1 - Core execution path`, `Phase 2 - Event pipeline`, `Later`.
+- [x] Labels: `feature`, `spike`, `test`, `ci`, `documentation`, `needs-decision`, `blocked`,
+      `area:core`, `area:sql`, `area:app`, `area:runners`, `area:drivers`, `area:outbox`,
+      `area:migrate`, `area:codegen`, `area:testing`, `area:integrations`, `area:cli`,
+      `area:tooling`.
+- [x] Roadmap issues #1-#46: the design section 9 experiments, then every package and feature of
+      design sections 3-11 with dependencies (#1 tracks this setup).
 - [x] Decide ADR-0001 (assembly package and seal) and ADR-0002 (new IDs from an injected
       source) before the first implementation - both accepted.
 
