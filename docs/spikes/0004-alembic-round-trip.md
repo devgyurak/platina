@@ -499,9 +499,9 @@ Read from its README, documentation, `pyproject.toml`, `src/alembic_utils/replac
 
 | Item | Verdict | Criteria passed (1 create / 2 catalog / 3 change / 4 downgrade) | One-line reason |
 |---|---|---|---|
-| ① `renamed_from` | **partly** | Columns (1a, 1c, 1d, 1e): 1, 3, 4 pass; 2 fails on names only - columns, types, rows, FK and index are right, but PostgreSQL 18 NOT NULL constraint names (and in 1d the CHECK name without the plugin) keep the old name. Table (1b): 1, 4 pass; 3 fails its second autogenerate (convention-named unique constraint), 2 fails on every table-derived name | The `process_revision_directives` plan works for columns but needs its own downgrade, renderer and ordering; a table rename leaves names behind |
+| ① `renamed_from` | **partly** | Columns (1a, 1c, 1d, 1e): 1 and 4 pass; 3 passes on detection, an empty second autogenerate and kept rows, but its catalog part fails on the same names as 2; 2 fails on names only - columns, types, rows, FK and index are right, but PostgreSQL 18 NOT NULL constraint names (and in 1d the CHECK name without the plugin) keep the old name. Table (1b): 1, 4 pass; 3 fails its second autogenerate (convention-named unique constraint), 2 fails on every table-derived name | The `process_revision_directives` plan works for columns but needs its own downgrade, renderer and ordering; a table rename leaves names behind |
 | ② lambda `Check` | **partly** | Defaults: 1, 2 on creation only, 3 fails (add, change, remove all invisible). With `checkconstraint_byname`: add/remove pass, change fails under a stable name; with expression-derived names all four pass | Holds only with an opt-in plugin **and** names that change with the expression |
-| ③ `version` trigger | **holds** (with the spike's extension; **does not hold** with Alembic alone) | All four, every sub-case, with custom operations + `Plugin` comparator; none of 2 and 3 with stock Alembic | Alembic's own extension points suffice; no third-party package needed for this object |
+| ③ `version` trigger | **holds** (with the spike's extension; **does not hold** with Alembic alone) | All four, every sub-case, with custom operations + `Plugin` comparator; none of 2 and 3 with stock Alembic | Alembic's own extension points suffice; no third-party package needed. Drift is detected by trigger name and function body only: a same-named trigger redefined by hand (`AFTER INSERT`) is not seen (Reproduction) - §6 calls this trigger the real safeguard for coexistence |
 | ④ expression / partial indexes | **partly** | 1, 2, 4 pass; 3 passes for expression and `desc()` changes, fails for a `WHERE`-only change under the same name; with expression-derived names all four pass | No false diffs; the partial-index predicate is not compared |
 | ⑤ internal tables (partitions) | **does not hold** | 1 passes only before partitions exist; 3 drags partition drops into the next revision; 4 fails (downgrade re-creates partitions as inheritance children with `sa.NullType`); partitioning itself is not compared; `xid8` is not reflected | Partitions created outside migrations are proposed for drop, and Alembic cannot express or restore them |
 | ⑥ X16 composite unique / column-to-column CHECK | **holds** / as ② | Unique: all four in every configuration. CHECK: as item 2 | - |
@@ -522,12 +522,25 @@ alternative is listed with its cost:
    - a. Names derived from the declared expression for CHECKs and indexes, plus
      `checkconstraint_byname`: everything is detected; cost: opaque names (`ck_orders_856905de`),
      every expression change is a drop and a create (a full validation scan for a CHECK, an index
-     build), and a dependency on a plugin that is opt-in and was renamed in 1.19.2.
+     build), a dependency on a plugin that is opt-in and was renamed in 1.19.2, and names that
+     change whenever the hashed text changes - a column rename (the hash covers the column name;
+     the Reproduction saw a stale hash-named CHECK in 1d) and, if the hash is taken over rendered
+     SQL, a Platina or SQLAlchemy upgrade that renders differently would rebuild every CHECK and
+     index.
    - b. Readable names, plus Platina's own comparators for CHECK bodies and index predicates;
      cost: comparing PostgreSQL's normalized text (`(0)::numeric`, `'pending'::text`) - either
      normalization rules of our own or a simulation in a savepoint as `alembic_utils` does.
    - c. Leave changes undetected and require hand-written migrations for them; cost: silent
      drift, the failure mode this spike exists to catch.
+   - d. Readable names, with the expression's hash stored in `COMMENT ON CONSTRAINT` / `COMMENT ON
+     INDEX` and checked by a small comparator; cost: a comparator and comment handling of our own,
+     comments that hand-written DDL can lose (not run).
+   - e. Across choices 1 and 3: a shadow-schema catalog diff as a completeness check - create the
+     declared state in a scratch schema and compare the `pg_get_*def` output with the database,
+     which is what this spike's reference comparison did and it caught everything Alembic missed.
+     Alembic still generates the operations; section 8.5 already needs a temporary PostgreSQL for
+     codegen. Cost: a check that reports drift but does not write the migration, and a scratch
+     schema per run.
    - For table renames in addition: the rewrite emits `ALTER ... RENAME` for every name derived
      from the table (primary key, unique, indexes, NOT NULL constraints); cost: more rewrite code
      that has to know PostgreSQL 18's NOT NULL naming. Or accept stale names and keep names out of
@@ -537,13 +550,15 @@ alternative is listed with its cost:
    in the rewrite avoids the rebuild; cost: more rewrite code. Or accept the rebuild; cost: lock
    and time on large tables.
 3. **Partitioned internal tables** (item 5).
-   - a. An `include_name` filter on `pg_class.relispartition` (probe P3: works for the cases run);
-     cost: a catalog query per autogenerate, partitions never compared, and the partition scheme
-     and `xid8` still invisible - each needs its own comparator or type registration.
+   - a. An `include_name` filter on `pg_class.relispartition` or on a partition name pattern
+     (probe P3: works for the cases run); cost: partitions are never compared, and the partition
+     scheme and `xid8` stay invisible - each needs its own comparator or type registration.
    - b. Internal tables outside Alembic: Platina creates and evolves them with its own DDL; cost: a
      second schema path to maintain and test.
    - c. Unpartitioned internal tables with deletion-based retention; cost: the bloat and vacuum load
-     that partition drops avoid (assumption A2 is the maintainer's experiment-only choice).
+     that partition drops avoid (assumption A2 is the maintainer's experiment-only choice). Which
+     of 3c and partitioning is cheaper is the section 9.5 measurement "Write amplification and
+     cleanup cost of the run ID and job tables".
    - d. Partitions declared in the registry with custom operations; cost: SQLAlchemy has no
      `PARTITION OF`, and time-based partitions are created by a job, not by a static declaration.
 4. **`version` triggers**: the spike's extension (about 190 lines, run) or `alembic_utils`
@@ -551,9 +566,11 @@ alternative is listed with its cost:
    two migrations, it proposes drops for objects it does not own unless filtered, it uses the
    older comparator registry and states no support for Alembic 1.18+ / SQLAlchemy 2.1).
 
-Section 8.5's risk paragraph should state these results; the design section 9.3 checkboxes can be
-ticked as "run" with this write-up linked. Whether any of choices 1-3 changes a section 8 decision
-is for the maintainer; this spike does not make it, so no ADR is proposed here.
+No ADR is proposed: the spike refutes no section 8 decision (partitioning of the internal tables
+was an experiment-only assumption, A2), and it chooses none of the alternatives. The architect
+review agreed and flagged that choosing 3b (internal tables outside Alembic, an exception to
+section 8.5), a naming rule (1a or 1b/1d) or `alembic_utils` (a dependency) will each need an ADR
+when #25 picks it.
 
 ### Input for #25 (migration implementation)
 Not posted; a comment draft is in the maintainer report. In short: the rename rewrite with its

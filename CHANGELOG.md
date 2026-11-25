@@ -36,6 +36,13 @@ All notable changes are documented here. Format: [Keep a Changelog](https://keep
   lock-wait timeout) and ADR-0005 (accepted: `lock="for_update"` is not an escape hatch from
   serialization failures; design 3.1, 4.3, 4.4, 4.6, 7.3 and 8.3 distinguish the same-row and the
   read/write-dependency `40001`).
+- Spike 0004 (design 9.3, entity registry -> `MetaData` -> Alembic round trip, Alembic 1.20.1,
+  SQLAlchemy 2.1.9, PostgreSQL 18): write-up `docs/spikes/0004-alembic-round-trip.md`,
+  independently reproduced by pg-researcher; design 9.3 ticked and the 8.5 risk paragraph states
+  the result. Partly holds: column renames need a rewrite that builds its own downgrade, CHECK and
+  partial-index changes are seen only with expression-derived names, the `version` trigger works
+  with Alembic's own extension points, and partitions created outside migrations do not round-trip.
+  No decision changed; the remaining choices are input for #25.
 - Core exception hierarchy (#8, ADR-0006): `platina.core.errors`, re-exported from `platina`,
   with `PlatinaError` and every class of design section 10.12 plus `ModuleBoundaryError` under
   `SealError`, and `SourceLocation`. Keyword-only read-only fields (`usecase`, `entity`, `field`,
