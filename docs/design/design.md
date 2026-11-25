@@ -1169,6 +1169,7 @@ Measure the rate of false conflicts (serialization failures) under concurrent ex
 - [ ] `run_claim` fencing with the job ID as the run ID (waiting and 23505 behavior on concurrent completion), retry rate of inline projections
 - [ ] Behavior in the early state when tables are small (table-level locks)
 - [ ] Throughput and retry rate of the SERIALIZABLE default on representative workloads (compared with REPEATABLE READ + version)
+- [ ] One hot row ([ADR-0005](../adr/0005-hot-rows-under-serializable.md)): retry rate, `RetryExhausted` rate and `57014` rate with and without `lock="for_update"`, on the durable profile. The comparison of ADR-0005's candidates for genuinely hot rows is a separate follow-up issue that uses this measurement as its baseline; it is not part of 9.2
 
 ### 9.3 MetaData → Alembic round trip
 Convert the entity registry to SQLAlchemy `MetaData` and see whether Alembic autogenerate round-trips the following without loss. Result: [spike 0004](../spikes/0004-alembic-round-trip.md) (independently reproduced by pg-researcher) - partly; no decision is changed by it, and the choices it leaves are open for #25 (§8.5).

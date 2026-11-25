@@ -1,0 +1,816 @@
+# Spike 0003: SSI false conflicts and the internal-table rule
+
+- Design section: 9.2 "SSI concurrency experiment" - "Measure the rate of false conflicts
+  (serialization failures) under concurrent execution on real PostgreSQL", all five items.
+- Issue: #3
+- Date: 2026-11-25
+- Code: `spikes/0003-ssi-internal-tables/` (throwaway; raw output in `results/`, git-ignored)
+- Renumbered from 0002 on 2026-11-25 (0002 became the use-case spike, PR #56); see the change
+  record under Method.
+
+## Question
+
+The design rests on two claims that have not been observed on a real server.
+
+**The internal append-only table rule** (design 4.6, 8.3): "`run_claim`, `run_result`, the
+outbox log and the job tables are not read inside SERIALIZABLE transactions. SERIALIZABLE takes
+read locks per B-tree leaf page, and with ever-increasing keys like uuid7 every INSERT lands on
+the rightmost page. Transactions that read that page form cycles [...]. Inside a SERIALIZABLE
+transaction the only operation on these tables is INSERT". Design 8.3 adds: "In the early stage
+when the table is small, a table-level lock is taken, which is even worse", and "Needs
+confirmation: the assumption that the unique check of an INSERT does not create such read locks
+is verified by concurrency tests (§9)".
+
+**The cost of the SERIALIZABLE default** (design 7.3): "On highly contended tables,
+serialization failures and retries increase. [...] How large this cost actually is must be
+confirmed by benchmarks (§9)."
+
+Every statement below about what PostgreSQL does is a hypothesis to be observed, not a fact. The
+dangerous error is a false "holds", so each verdict is decided only by the observations listed
+for it here, fixed before anything ran. A "false conflict" is a 40001 between transactions whose
+business effects do not overlap (no common row written, no row one writes that the other reads).
+
+**Item 1 - `run_claim` INSERT (uuid7) alone causes no false conflicts.** Holds only if all of:
+- (1a) In the fixed three-session interleavings (A1), while the transactions are open after their
+  INSERTs, `pg_locks` (`mode = 'SIReadLock'`) shows **no** row whose relation is `run_claim` or
+  `run_claim_pkey`; the same for the whole internal set (`run_claim`, `run_result`, `outbox_log`
+  and every index on them) in the combined variant. This must hold for a fresh uuid7 **and** for
+  a run ID that was inserted and rolled back before (`claim_retry`: the design's retry reuses the
+  run ID, which leaves a dead index entry with an equal key, so the unique check goes to the
+  heap), and after the fenced INSERT of A2 (a live or just-rolled-back equal key).
+- (1b) Every session of the A1 interleavings commits. (Weak on its own: an INSERT takes any lock
+  and writes in one statement, so a lock it took could only ever form a structure with three
+  sessions in a particular order; A1 runs that order, but 1a and 1c decide.)
+- (1c) In the load harness, the internal-only variants (`claim`, `claim_retry`, `full`, no
+  business statements at all) report **zero** 40001 across every run.
+- (1d) With business statements on disjoint rows, the variants with internal statements show no
+  more 40001 than the baseline padded to the same number of round trips (`pad1` for `claim`,
+  `pad4` for `full`): median over runs at most the padded baseline's maximum. If the padded
+  baseline is not zero, (1d) is **undecidable** (not passed) and the business-table conflicts are
+  reported as a finding of their own.
+Does not hold if any of (1a)-(1c) fails. (1d) failing alone, with (1a)-(1c) holding, is "partly"
+and investigated.
+
+**Item 2 - control: "read then INSERT" and "INSERT then UPDATE" conflict.** The rule's rationale
+holds if, for each control: `pg_locks` shows an SIReadLock on `run_claim_pkey` / `run_claim_u_pkey`
+(page or relation) after the read / the UPDATE; at least one A1 order (sequential or phased - for
+"INSERT then UPDATE" only the three-session sequential order can form a dangerous structure,
+because each session writes before it reads) ends with a session receiving 40001; and the load
+harness reports 40001 counts above the padded baseline's maximum (`pad2`) in every run. Partly if
+only one of the two controls conflicts; does not hold if neither does (then the rule is not
+needed for that reason, and the design rationale text is wrong).
+
+**Item 3 - job-ID-as-run-ID fencing and the inline projection retry rate.**
+- Fencing. The design's table in 4.6 and the dispatcher text in 4.10 say: a second INSERT of the
+  same ID while the first is in progress *waits on the unique key*; if the first commits, the
+  second gets **23505**; if the first rolls back, the second proceeds; a rerun after a commit
+  gets 23505. Holds if exactly those SQLSTATEs and the waiting are observed. Partly if the
+  outcome is still decided correctly but by a different SQLSTATE (for example 40001 where 23505
+  was expected): then the runner's classification in 4.6 (23505 -> idempotent path, 40001 ->
+  retry) must be checked against what a retry then sees, and the design text corrected. Does not
+  hold if a duplicate claim can commit, or a wait never resolves.
+- Snapshot aging (off-checklist). Observed with `pg_stat_activity.backend_xmin`: whether the
+  snapshot exists after `BEGIN`, after `SET LOCAL`, and while the claim waits; whether the
+  transaction that waited sees a row committed by a third session during the wait; whether a
+  later UPDATE of that row gets 40001; then, as a rate, whether a 50 ms wait raises the 40001
+  rate of the following business statements compared with no wait and with a 50 ms sleep on an
+  open snapshot. Reported, not judged.
+- Inline projection retry rate (design 4.10 key rule, 7.3). Reported per key distribution
+  (disjoint keys, Zipf-distributed `store_id`, one global key - the case the seal rule rejects,
+  as an upper bound) and per write form (UPDATE of an existing row; `INSERT ... ON CONFLICT DO
+  UPDATE` on a new uuid7 key; the same on an existing key), against a baseline with no
+  projection. The design's assumption holds if disjoint keys add no 40001 over the baseline
+  (median at most the baseline maximum) in each write form; as in (1d), a non-zero baseline makes
+  this undecidable rather than passed. The upsert question (off-checklist): whether the
+  arbiter-index check of `ON CONFLICT` takes an SIReadLock - decided by `pg_locks` in A4, for a
+  new key and for an existing key.
+
+**Item 4 - small tables.** Two separate questions.
+- Internal tables (4a): item 1's observations (1a, 1b) are repeated with the internal tables
+  **empty** and with **1,000,000** rows each. Holds if no SIReadLock appears on them in either
+  state.
+- The design's "table-level lock when small" (4b): for the read-based controls of item 2 on an
+  empty and a large `run_claim`, and for a business table of 30 rows versus 100,000 rows (never
+  analyzed and analyzed), record the plan actually executed by the read and the UPDATE (run as
+  `EXPLAIN ANALYZE` inside the observed transactions), the lock granularity in `pg_locks`
+  (`locktype` relation / page / tuple, and whether the relation is the heap or the index), and
+  whether transactions on different rows conflict. Holds if relation-level SIRead locks are
+  observed in the small state and cause a conflict between transactions on different rows;
+  partly if the granularity depends on something other than size (for example only on the plan,
+  or only on emptiness) - the design text is then corrected to name the actual cause.
+
+**Item 5 - SERIALIZABLE vs REPEATABLE READ + version** (durable profile only). A mixed workload
+(payment, order creation with a range read of the user's last orders, transfer, a two-pocket
+spend whose rule spans both rows but writes one, product repricing), uniform and Zipf row
+selection, 8 / 32 / 64 worker processes, 5 runs per configuration, two round trips per attempt as
+in design 4.6, retry as in design 8.3. Reported: TPS, attempts per commit, 40001 rate, 40P01
+count, retry exhaustion, p50/p99 latency per committed command - each as median and range over
+the 5 runs - plus the transfer total invariant and the pocket invariant (no user's pocket sum
+below 0). The design gives no threshold; this spike fixes one before running:
+- holds: under uniform selection at every worker count, SERIALIZABLE's median TPS is at least
+  90% of REPEATABLE READ's and its median attempts per commit at most 1.05, and both invariants
+  hold under SERIALIZABLE in every run;
+- partly: the uniform bound holds but Zipf shows retry exhaustion under SERIALIZABLE in more
+  than 1% of commands at some worker count where REPEATABLE READ does not (the 7.3 hot-row
+  caveat made concrete); other Zipf differences are reported, not judged;
+- does not hold: the uniform bound fails, or an invariant breaks under SERIALIZABLE.
+Invariant breaks under REPEATABLE READ are reported as the price of the escape hatch. Only ratios
+between the two levels and trends across worker counts are concluded; absolute numbers are not
+(client and server share one laptop).
+
+**uuid7 locality of user tables** (off-checklist, reported with item 5). Whether "read a recent
+row by primary key + INSERT a new row", run by unrelated commands, conflicts because uuid7 keys
+put both on the rightmost leaf page; compared with uuid4 keys and with reads of old rows.
+
+## Setup
+- Host: Apple M5 Pro (15 cores), 24 GiB; Docker 29.8.0 (VM with 15 CPUs, 15.6 GiB). Client
+  and server run on the same machine.
+- Python 3.14.7 (`uuid.uuid7()` from the standard library), psycopg 3.3.9 (binary, libpq 18.0.6).
+- PostgreSQL: `PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2) on aarch64-unknown-linux-gnu, compiled
+  by gcc (Debian 14.2.0-19) 14.2.0, 64-bit`, image `postgres:18`, both profiles of
+  `docker-compose.yml`.
+- Settings (both profiles, `SHOW`): `max_pred_locks_per_transaction = 64`,
+  `max_pred_locks_per_relation = -2`, `max_pred_locks_per_page = 2`, `synchronous_commit = on`,
+  `default_transaction_isolation = read committed`, `shared_buffers = 256MB`,
+  `max_connections = 300`, `wal_level = replica`. The predicate-lock table is sized by
+  `max_pred_locks_per_transaction x max_connections`; when it fills, PostgreSQL summarises
+  committed transactions' locks, which adds false positives, and there is no counter for it -
+  a condition of the 64-worker runs, not something this spike measures. Fast (26432): `fsync = off`,
+  `full_page_writes = off`, tmpfs. Durable (26433): `fsync = on`, `full_page_writes = on`, volume.
+- Docker could not create the compose project's network on this machine ("all predefined
+  address pools have been fully subnetted"; the pools are held by other projects' networks). The
+  two services were started unchanged except for `network_mode: bridge`, through an override
+  file outside the repository:
+  ```
+  # compose-bridge.yml
+  services:
+    postgres: {network_mode: bridge}
+    postgres-durable: {network_mode: bridge}
+  docker compose -f docker-compose.yml -f compose-bridge.yml --profile durable \
+      up -d --wait postgres postgres-durable
+  ```
+  Image, command line flags, ports and storage are those of `docker-compose.yml`; where `make
+  db-up` / `make db-up-durable` work, they are equivalent.
+
+## Method
+
+Everything runs from the repository root after `uv sync --group spike`. Connection strings:
+fast `host=localhost port=26432 user=platina password=platina dbname=platina`, durable the same
+with port 26433. Every connection is opened with `autocommit=True` (transactions are explicit
+`BEGIN ISOLATION LEVEL ...` statements) and `prepare_threshold=None` (no server-side prepared
+statements, so no switch to generic plans). Every script writes its raw output under
+`spikes/0003-ssi-internal-tables/results/` and prints a summary.
+
+The method was reviewed by pg-researcher before anything ran; its findings changed: the A1
+orders and the three-session structure, the `claim_retry` variant and lock observation after the
+fenced INSERT, the padded baselines, fill factor 70 and HOT statistics, per-error statement and
+message recording, `backend_xmin` observation of snapshot timing, `EXPLAIN ANALYZE` inside the
+A5 transactions, the D workload (reads not written, a range read, a write-skew invariant), a
+Zipf criterion, and exactly one Sync per round trip.
+
+### Schema (`schema.sql`, recreated before every scenario and every run)
+- Internal tables, as the design describes them:
+  `run_claim(id uuid primary key)`,
+  `run_result(run_id uuid primary key, result jsonb not null)`,
+  `outbox_log(id bigint generated always as identity primary key, xid xid8 not null
+  default pg_current_xact_id(), payload jsonb not null)` with an index on `xid` (the log reader
+  reads by xid watermark),
+  and for the control "INSERT then UPDATE" a variant `run_claim_u(id uuid primary key,
+  result jsonb)`. Preloaded keys are generated by the client's `uuid.uuid7()` (as the run IDs
+  are), so later run IDs sort after them whatever the clock difference to the Docker VM.
+- Business tables: `orders(id uuid pk, user_id bigint, store_id int, status text, total numeric,
+  version int)` with an index on `(user_id, id)`, `small_orders` (same shape), `wallets(id bigint
+  pk, balance, version)`, `accounts(id bigint pk, balance, version)`, `products(id int pk,
+  price)`, `order_items`, `payments`, `ledger` (uuid pk), `pockets(user_id, kind, balance, pk
+  (user_id, kind))`; projection targets `user_spending(user_id bigint pk, total)`,
+  `store_revenue(store_id int pk, total)`, `proj_new(id uuid pk, total)`. No foreign keys (an FK
+  check is a read and would confound attribution).
+- Fill factor of the business and projection tables: **70** in A, B and C, so that updates of
+  non-indexed columns can stay HOT (a non-HOT update inserts into the primary-key leaf page and
+  conflicts with readers of that page); **100** (the default) in D. B, C and D record
+  `n_tup_upd` / `n_tup_hot_upd` per run. B also runs its baseline once more at fill factor 100.
+- After loading: `VACUUM ANALYZE` unless an item says "never analyzed".
+
+### Recording errors
+Every error is recorded as `statement | SQLSTATE | message | detail` (digits replaced by `N`),
+where the statement is the one that raised it (in a pipeline: the first statement without a
+result; the server skips the rest of the batch). This separates 40001 at a statement from 40001
+at COMMIT, "read/write dependencies" from "concurrent update", and the SSI reason code
+("Canceled on identification as a pivot, during ...").
+
+### A. Fixed interleavings (`interleave.py`, fast profile)
+`uv run python spikes/0003-ssi-internal-tables/interleave.py --port 26432` (or name scenarios:
+`... A1 A3`). Sessions S1..S3 and an observer O each have a fresh connection per scenario.
+Statements run one at a time in the listed order; a statement that may block is sent from a
+thread, and O polls `pg_stat_activity.wait_event_type` (deadline 3 s, stopping early if the
+statement finished) and records the ungranted `pg_locks` row. At the observation point O runs
+```sql
+SELECT l.pid, l.locktype, c.relname, l.page, l.tuple
+FROM pg_locks l LEFT JOIN pg_class c ON c.oid = l.relation
+WHERE l.mode = 'SIReadLock' AND l.pid = ANY(<session pids>)
+ORDER BY l.pid, c.relname, l.locktype, l.page, l.tuple;
+```
+and every row is recorded verbatim; then each session runs `SELECT
+current_setting('transaction_isolation')`, and the sessions COMMIT in reverse order (S3, S2, S1),
+recording `ok` or the error.
+
+- **A1 (items 1, 2, 4a).** Internal-table state `empty`, then `1M` (1,000,000 rows in each of
+  `run_claim`, `run_claim_u`, `run_result`, `outbox_log`). Variants, each session with its own
+  new uuid7:
+  - `claim`: INSERT into `run_claim`;
+  - `claim_retry`: before the transaction, the session runs `BEGIN; INSERT X; ROLLBACK`, then the
+    observed transaction INSERTs the same X;
+  - `full`: claim; then INSERT outbox, INSERT `run_result`, `SELECT pg_current_xact_id()`;
+  - `read_insert`: `SELECT 1 FROM run_claim WHERE id = X`; then the INSERT;
+  - `insert_update`: INSERT into `run_claim_u`; then `UPDATE run_claim_u SET result = '{}'
+    WHERE id = X`.
+  Each variant runs in two orders, three sessions, all `BEGIN ISOLATION LEVEL SERIALIZABLE`
+  first: **sequential** (S1 runs all its statements, then S2, then S3) - if a statement takes an
+  SIRead lock on the page a later session inserts into, this gives S1 -rw-> S2 -rw-> S3, and S3
+  commits first: a dangerous structure; and **phased** (first statement group of S1, S2, S3,
+  then the second group of S1, S2, S3) - for `read_insert` all reads precede all inserts, a
+  direct cycle.
+- **A2 (item 3, fencing; 1a for an equal key).** Same ID X in both sessions, S2 SERIALIZABLE:
+  - F1: S1 INSERT X; S2 INSERT X (sent; waiting recorded); S1 COMMIT; S2's result; O observes
+    SIRead locks; S2 COMMIT (or the error it gets).
+  - F2: as F1 but S1 ROLLBACK; S2's INSERT result, SIRead locks, S2 COMMIT, `count(*)` of X.
+  - F3: S1 INSERT X, COMMIT; then S2 BEGIN, INSERT X (no wait possible).
+  - F4: S2 BEGIN, `SELECT 1` (its snapshot; `backend_xmin` recorded); S1 INSERT X, COMMIT; S2
+    INSERT X - the claim is not S2's first statement and X committed after S2's snapshot.
+  Each scenario with S1 SERIALIZABLE, then with S1 READ COMMITTED. The SQLSTATE and the message
+  text are recorded.
+- **A3 (snapshot aging).** Order O preloaded with `total = 0`.
+  - F5: S1 BEGIN SERIALIZABLE, INSERT X (holds). S2 BEGIN SERIALIZABLE [`backend_xmin`], `SET
+    LOCAL statement_timeout = '10s'` [`backend_xmin`], INSERT X (sent; waiting recorded)
+    [`backend_xmin`]; S3 (autocommit) `UPDATE orders SET total = 100 WHERE id = O`; S1 ROLLBACK;
+    S2's INSERT completes [`backend_xmin`]; S2 `SELECT total FROM orders WHERE id = O`
+    (recorded: 0 or 100); S2 `UPDATE orders SET total = total + 1 WHERE id = O` (result
+    recorded); S2 COMMIT; O reads `total`.
+  - F5-read: as F5 but S2 only reads O and commits.
+  - F5-control: as F5 without S3's update.
+- **A4 (upsert locks).** Three sessions, sequential order, each with its own key:
+  `UPDATE user_spending SET total = total + 1 WHERE user_id = k` and `INSERT INTO user_spending
+  ... ON CONFLICT (user_id) DO UPDATE SET total = user_spending.total + 1` on existing keys
+  50001, 50002, 50003 (100,000 preloaded keys; adjacent keys share a leaf page); `INSERT INTO
+  proj_new ... ON CONFLICT (id) DO UPDATE ...` on new uuid7 keys, with `proj_new` empty and with
+  100,000 rows.
+- **A5 (item 4b).** `small_orders` with 30 rows and `orders` with 100,000 rows, each "never
+  analyzed" (autovacuum disabled on the table, no ANALYZE; `pg_class.relpages/reltuples`
+  recorded) and "analyzed". Three sessions, phased order: each runs `EXPLAIN (ANALYZE, COSTS OFF,
+  TIMING OFF, SUMMARY OFF) SELECT * FROM <t> WHERE id = <its row>`, then each runs the same for
+  `UPDATE <t> SET total = total + 1 WHERE id = <its row>` (different rows: indexes 5, 15, 25 of
+  the load order); observe; commit S3, S2, S1.
+
+### B. Load harness, existence (`load.py exist`, fast profile; items 1, 2)
+`uv run python spikes/0003-ssi-internal-tables/load.py exist --port 26432`
+- 16 worker processes (multiprocessing `spawn`), each connects, checks its isolation level
+  (`current_setting('transaction_isolation')` inside a SERIALIZABLE transaction, recorded), and
+  waits on a shared barrier. Then each runs transactions back to back for 2 s of warm-up (not
+  counted) and 10 s measured. One round trip per statement (a long transaction is the harsher
+  case for an existence question). No retry: a 40001 / 40P01 is rolled back and counted, and the
+  worker moves on with fresh IDs.
+- Business statements: `none`, or `disjoint` - `SELECT * FROM orders WHERE id = $1` then
+  `UPDATE orders SET total = total + 1, version = version + 1 WHERE id = $1`, where worker `w` of
+  `N` only picks orders whose position in primary-key order is `w (mod N)` (rows of different
+  workers interleave on the same pages). 100,000 preloaded orders.
+- Internal statements (before / after the business statements): `none`; `pad1`, `pad2`, `pad4`
+  (that many `SELECT 1` - baselines with the same number of round trips as `claim`,
+  `read_insert`/`insert_update`, `full`); `claim`; `claim_retry` (each transaction is preceded by
+  `BEGIN; INSERT X; ROLLBACK` on the same connection, then claims the same X); `full`;
+  `read_insert`; `insert_update` (statements as in A1).
+- Variants: internal in {`claim`, `claim_retry`, `full`, `read_insert`, `insert_update`} with
+  business `none`; internal in {`none`, `pad1`, `pad2`, `pad4`, `claim`, `claim_retry`, `full`,
+  `read_insert`, `insert_update`} with business `disjoint`; and `pad1`, `claim` with `disjoint`
+  at fill factor 100. Internal tables start empty. 5 runs, every variant once per run.
+- Recorded per run: attempts, commits, errors by SQLSTATE and by statement/message/detail, HOT
+  statistics.
+
+### C. Projection, snapshot-aging and locality rates (`load.py rates`, durable profile)
+`uv run python spikes/0003-ssi-internal-tables/load.py rates --port 26433`
+- Same harness, but 32 workers, 2 s warm-up + 15 s measured, 5 runs (every variant once per run),
+  the retry policy of design 8.3 (at most 4 attempts, same run ID, full-jitter backoff
+  `uniform(0, min(200 ms, 10 ms * 2^(attempt-1)))`), and **two round trips per attempt** through
+  psycopg pipeline mode: round trip 1 = `BEGIN ISOLATION LEVEL SERIALIZABLE; SET LOCAL
+  statement_timeout = '2s'; claim; loads`, round trip 2 = `writes; outbox INSERT; SELECT
+  pg_current_xact_id(); COMMIT; SELECT pg_current_wal_insert_lsn()`. Each round trip ends with
+  exactly one Sync (checked by counting `_enqueue_sync` calls in a probe: one per round trip,
+  including when a statement fails). Reported: 40001 per attempt and attempts per commit, median
+  and range, plus errors by statement/message/detail.
+- **C1 projections (item 3).** Each attempt: claim; read and update a disjoint order (as in B);
+  one projection write; outbox INSERT. Projection: `none` (baseline); `update` with key
+  distribution `disjoint` (`user_spending`, 100,000 preloaded keys, worker `w` uses keys
+  `= w + 1 (mod N)`), `zipf` (`store_revenue`, 1,000 stores, Zipf exponent s = 1.1, rank 0 most
+  popular), `global` (one row); `upsert_existing` with the same three distributions;
+  `upsert_new` on a new uuid7 key into `proj_new`.
+- **C2 snapshot aging (item 3, rate).** Each attempt: claim; read and update an order chosen by
+  Zipf (s = 1.1) over the 1,000 oldest orders; outbox INSERT. Workers 0-15 are a constant
+  background load that always runs `nowait`; workers 16-31 (the probes) run the variant, and the
+  reported rates are the probes' (the background's are recorded separately). A smoke run showed
+  why: when every worker waits 50 ms, the write load itself drops and the variants are not
+  comparable. Variants: `nowait`; `wait` -
+  before the first attempt of a command, a helper connection of the same worker INSERTs the
+  command's run ID in an open transaction, the main connection's claim then blocks on it, and a
+  timer rolls the helper back after 50 ms; `sleep` - the first attempt runs `BEGIN; SET LOCAL;
+  SELECT 1` as an extra round trip, sleeps 50 ms, then claims and loads (an aged snapshot without
+  the claim wait - separates "the wait" from "the age").
+- **C3 uuid7 locality (off-checklist).** Each attempt: claim; read one order by primary key;
+  INSERT one new order; outbox. The order read is either `recent` (the order this worker inserted
+  in its previous committed command - no other worker touches it) or `old` (uniform over the
+  100,000 preloaded orders). Keys (preloaded and new) are uuid7 or uuid4. 4 variants.
+- **C4 one hot row (off-checklist, carried over from spike 0002 X8 / ADR-0005; durable
+  profile, port 26433, like the rest of C).** Table
+  `hot(id int pk, bal numeric)` with one row. Each attempt: round trip 1 = `BEGIN ISOLATION LEVEL
+  SERIALIZABLE; SET LOCAL statement_timeout = '2s'; claim` plus the load form - `blind` (no
+  load), `read` (`SELECT bal FROM hot WHERE id = 1`) or `for_update` (the same `FOR UPDATE`);
+  round trip 2 = `UPDATE hot SET bal = bal + 1 WHERE id = 1`, outbox, `SELECT
+  pg_current_xact_id()`, `COMMIT`, LSN. Workers 8 / 32 / 64 (the other C variants use 32).
+  Reported, not judged (ADR-0005 leaves the decision to the maintainer after 9.2): 40001 per
+  attempt (and at which statement), attempts per commit, `RetryExhausted` (commands that failed
+  their 4th attempt) as a share of commands, and `57014` (statement timeout) per attempt. Check:
+  the row's final value equals the number of committed commands, warm-up included
+  (`hot_total_ok`).
+
+### D. Isolation benchmark (`bench.py`, durable profile; item 5)
+`uv run python spikes/0003-ssi-internal-tables/bench.py --port 26433`
+- Data, reloaded before every run (fill factor 100): 100,000 orders (uuid7, 10,000 users,
+  `store_id` Zipf over 1,000), 10,000 wallets and 10,000 accounts (balance 1,000,000 each),
+  1,000 products, 10,000 users x 2 pockets (balance 100 each); then `VACUUM ANALYZE`,
+  `CHECKPOINT`.
+- Commands, chosen per command with weights 30 / 25 / 20 / 20 / 5, each attempt starting with
+  `BEGIN ISOLATION LEVEL <level>; SET LOCAL statement_timeout = '2s'; claim` and its loads
+  (round trip 1), and ending with its writes, an outbox INSERT, `SELECT pg_current_xact_id()`,
+  `COMMIT`, `SELECT pg_current_wal_insert_lsn()` (round trip 2):
+  - pay: load order and wallet; `UPDATE orders SET status = 'PAID', version = version + 1 WHERE
+    id = $o AND version = $v`; `UPDATE wallets SET balance = balance - $t, ... AND version =
+    $v`; INSERT payment;
+  - create: load 3 products and the user's last 5 orders (`WHERE user_id = $u ORDER BY id DESC
+    LIMIT 5`, a range read); INSERT one order (uuid7) and 3 order items;
+  - transfer: load accounts `a`, `b` (`a != b`, amount 1-100); UPDATE both in id order with the
+    version predicate; INSERT ledger;
+  - pocket: load both pockets of a user; withdraw (p = 0.6, amount 1-60, from one pocket chosen
+    at random, only if the **sum** covers it - otherwise the command ends as a domain refusal) or
+    deposit (amount 1-40) - a rule over two rows that writes one (write skew under REPEATABLE
+    READ);
+  - reprice: load a product; `UPDATE products SET price = price + 1` (makes the products that
+    `create` reads but does not write contended).
+  The version predicate sits in the same transaction as the read, so it protects nothing here
+  (a concurrent update raises 40001 first under both levels); a 0-row match would be counted as
+  `version_mismatch_committed`.
+- Row selection: `uniform`, or `zipf` (s = 1.1 over a fixed random permutation) for orders,
+  users/wallets/pockets, accounts and products.
+- On 40001 / 40P01: ROLLBACK, backoff as in C, retry with the same run ID, at most 4 attempts.
+- Isolation `SERIALIZABLE` or `REPEATABLE READ`; workers 8 / 32 / 64 processes; 3 s warm-up
+  (not counted) + 20 s measured; 5 runs; run r executes every configuration once before run
+  r + 1, so drift does not favour one level.
+- Latency: wall time from a command's first attempt to its successful COMMIT, including backoff;
+  p50 and p99 per run.
+- After each run: `sum(balance)` of accounts must equal 10,000 x 1,000,000; the number of users
+  whose pocket sum is below 0 and the minimum sum are recorded.
+
+### Changes to the method after the first runs (dated record)
+The criteria fixed in the Question are unchanged. These changes were made after some results
+were seen, and are recorded here instead of being folded silently into the sections above.
+- **2026-11-25, C2 background/probe split** - made after a smoke run (before the measured runs):
+  when every worker waits 50 ms, the write load itself drops and the variants are not
+  comparable. Described in C2 above.
+- **2026-11-25, A6 added (post hoc).** After the first C3 run showed 64.5 % 40001 per attempt for
+  uuid7 + recent reads, a load-independent check was added to A: two sessions, 100,000 orders
+  plus one order per session committed just before (its "recent" row); each session reads its
+  own target row by primary key, then INSERTs a new order; uuid7 vs uuid4 keys (preloaded and
+  new), recent vs old (two random preloaded rows) targets; phased (both reads, then both
+  inserts) and sequential orders; SIRead locks observed before the commits (S2, then S1).
+  `uv run python spikes/0003-ssi-internal-tables/interleave.py --port 26432 A6` (A6 is not in
+  the default scenario list).
+- **2026-11-25, host contamination: first C and D runs discarded.** During C and D other
+  workloads on the same machine (another session's deliberate CPU load - six `yes`
+  processes - mutation tests, other database containers) drove the load average to 52 on 15
+  cores; D's TPS for one configuration fell from 6,566 to 3,041 between runs, and the
+  paired SERIALIZABLE/REPEATABLE READ ratios spread from 0.48 to 3.14. Within each run D also
+  always ran SERIALIZABLE before REPEATABLE READ, so a load that grows during a run biases
+  against REPEATABLE READ. The raw files are kept as `results/*_run1_discarded.*` and
+  summarised under Observations as discarded. For the reruns:
+  - **Quiet-host gate, first version - superseded before any gated run completed** (see the
+    next-but-one entry) (`harness.QUIET_IDLE_PCT = 85`): CPU idle,
+    sampled with `/usr/sbin/iostat -c 2 -w 3` (the second, 3 s window), must be at least 85 %
+    right before a C run / D pair starts (`wait_quiet` polls every 30 s until it is) and in a
+    sample 1 s after it ends. A run / pair whose after-sample fails is written to
+    `results/*_discarded.jsonl` and rerun (at most 5 tries, then stop and report). Both samples
+    and the 1-minute load average are stored with every record. 85 % idle leaves at most ~2.3
+    of the 15 cores to everything else (the always-on endpoint agents and desktop apps).
+  - **D order:** consecutive blocks (rep, workers, distribution) alternate which level runs
+    first (AB, BA, AB, ...). Item 5 is reported from paired ratios within a block (median and
+    range) as well as from medians per level.
+  - C and D are rerun in full; the "TPS 90 %" criterion is unchanged.
+  - The reruns and any reproduction of rates are never run at the same time.
+
+- **2026-11-25, renumbered 0002 -> 0003 and moved onto develop `c974bc1`.** Spike number 0002
+  went to the use-case spike (#5, PR #56, ADR-0005). Write-up, code directory and branch were
+  renamed (`docs/spike-0003-ssi-internal-tables`); every path in this write-up, including the
+  output paths in Reproduction round 1, now names `0003` (the files moved with the directory). The
+  reproducer's recorded branch name (`docs/spike-0002-ssi-internal-tables` at `10a8517`) and its
+  schema names are kept as they were run. Nothing was rerun because of the move; the reruns of C
+  and D had not completed a run yet and were stopped and restarted from the new path.
+- **2026-11-25, C4 added** (one hot row; before any C4 data was seen, apart from a smoke run whose
+  output was discarded). Carried over from spike 0002 / ADR-0005 (Consequences: "the retry rate,
+  the `RetryExhausted` rate and the `57014` rate on one hot row with and without `for_update`").
+  ADR-0005 Decision 4's candidate comparison (append-only legs, async projection, a counter
+  outside the transaction, a session-level advisory lock before `BEGIN`) is **not** in this
+  spike: it needs a workload per candidate and, for the advisory lock, a protocol of its own.
+  The maintainer decided (2026-11-25) to keep it out of this spike and give it a follow-up issue
+  that uses C4 as its baseline; ADR-0005's Consequences and design 9.2 were adjusted to say so.
+- **2026-11-25, quiet-host gate, second version** (replaces the first before any gated run had
+  completed; no C or D record was kept under the first). Reasons: the first gate sampled only
+  before and after a run, and CPU idle cannot separate other workloads from the spike's own
+  load while it runs; and the always-on load of this machine, measured with no heavy job running,
+  was 2.5-3.9 cores, so 85 % idle (at most ~2.3 busy cores) was rarely reachable. The maintainer
+  asked for a numeric bound before **and during** each run. The gate is now:
+  - **External CPU** = `ps` %CPU of every host process outside the harness's own process tree
+    (the parent and its spawn workers), excluding the Docker VM and Docker backend processes
+    (they carry the spike's PostgreSQL), plus `docker stats --no-stream` CPU of every container
+    whose name does not start with `platina-` (100 % = one core).
+  - A C run / D pair counts only if external CPU is **at most 500 %** right before it starts
+    (`wait_quiet`, polling every 30 s) **and** the mean of the samples taken while it runs (one
+    at once, then every 5 s; `HostMonitor`) is at most 500 %; a run without samples does not
+    count. 500 % = 5 of the 15 cores: about one core above the always-on load measured above,
+    and well below the contamination seen in the first runs (about 8 cores). Failed runs / pairs
+    go to `results/*_discarded.jsonl` with their samples and are rerun, at most 5 tries.
+  - If the host is not quiet within 30 minutes, the run stops (`RuntimeError`) and the
+    maintainer is told, instead of waiting indefinitely.
+  - Every kept record stores `host.before` and `host.during` (mean, max, number of samples,
+    maximum 1-minute load average), so a stricter cut can be applied afterwards.
+  - `harness.QUIET_EXTERNAL_PCT` can be overridden by `SPIKE_QUIET_EXTERNAL_PCT` for smoke tests
+    only; measured runs use the default.
+
+## Observations
+
+Database profile: per section (A, B: fast; C, D: durable). Raw output:
+`results/interleave.txt`, `results/load_exist.{jsonl,txt}`, `results/load_rates.{jsonl,txt}`,
+`results/bench.{jsonl,txt}`. In every scripted transaction and every worker,
+`current_setting('transaction_isolation')` returned the level that was asked for
+(`serializable` / `repeatable read`); the only exceptions are the two A2 F1 sessions whose
+transaction was already aborted by the 23505 (`25P02`).
+
+### A. Fixed interleavings (fast)
+`uv run python spikes/0003-ssi-internal-tables/interleave.py --port 26432`, one run, 677 log
+lines.
+
+**A1 - SIRead locks and outcome, three sessions** (S1..S3 each with its own new uuid7; COMMIT in
+the order S3, S2, S1):
+
+| Internal state | Variant | Order | SIReadLock rows (all sessions) | S3 / S2 / S1 COMMIT |
+|---|---|---|---|---|
+| empty | `claim` | seq / phased | **0** / **0** | ok ok ok / ok ok ok |
+| empty | `claim_retry` | seq / phased | **0** / **0** | ok ok ok / ok ok ok |
+| empty | `full` | seq / phased | **0** / **0** | ok ok ok / ok ok ok |
+| empty | `read_insert` | seq / phased | 3: `relation run_claim` (the heap), one per session | ok 40001 40001 / ok 40001 40001 |
+| empty | `insert_update` | seq / phased | 3: `relation run_claim_u` (the heap) | ok 40001 40001 / ok 40001 40001 |
+| 1M | `claim` | seq / phased | **0** / **0** | ok ok ok / ok ok ok |
+| 1M | `claim_retry` | seq / phased | **0** / **0** | ok ok ok / ok ok ok |
+| 1M | `full` | seq / phased | **0** / **0** | ok ok ok / ok ok ok |
+| 1M | `read_insert` | seq / phased | 3: `page run_claim_pkey page=3852` (the same rightmost leaf for all three) | ok 40001 ok / ok 40001 40001 |
+| 1M | `insert_update` | seq / phased | 3: `page run_claim_u_pkey page=3852` | ok 40001 ok / ok ok ok |
+
+Every 40001 reads `could not serialize access due to read/write dependencies among
+transactions`, detail `Reason code: Canceled on identification as a pivot, during commit
+attempt.` The 1M `insert_update` phased order commits everywhere, as the review predicted (each
+session writes before it reads, so no structure can form). With the tables empty, the controls'
+lock is a relation lock on the **heap**, not on the index - the read was a sequential scan of the
+empty table (A5 shows the plan dependence).
+
+**A2 - fencing** (identical with S1 SERIALIZABLE and S1 READ COMMITTED):
+
+| Scenario | S2 waits? | S2's INSERT | Then |
+|---|---|---|---|
+| F1: S1 holds X, S1 COMMIT | yes: `wait_event=Lock/transactionid`, ungranted `('transactionid', 'ShareLock')` | `23505 duplicate key value violates unique constraint "run_claim_pkey"`, detail `Key (id)=(...) already exists.` | SIReadLock rows: 0; X exists once |
+| F2: S1 holds X, S1 ROLLBACK | yes (same lock) | ok, rowcount 1 | SIReadLock rows: 0; S2 COMMIT ok; X exists once |
+| F3: S1 committed X before S2 began | - | 23505 | |
+| F4: S2's snapshot (`SELECT 1`, `backend_xmin` set) before S1 inserted and committed X | - | 23505 (not 40001) | |
+
+After the 23505 in F1, S2's `COMMIT` returns without error (the server ends the aborted
+transaction with a rollback); nothing was committed.
+
+**A3 - snapshot aging** (`backend_xmin` / `backend_xid` of S2 from `pg_stat_activity`):
+- After `BEGIN ISOLATION LEVEL SERIALIZABLE`: `backend_xmin=None`; after `SET LOCAL
+  statement_timeout`: `backend_xmin=None`; **while its claim INSERT waits**: `backend_xid=1088
+  backend_xmin=1087` (the snapshot was taken by the claim, before the wait, and the transaction
+  already holds an xid while it waits); unchanged after the wait.
+- F5: S3 committed `total = 100` during the wait; after S1's ROLLBACK, S2 reads `total = 0`
+  (the pre-wait snapshot), and its `UPDATE ... total + 1` fails with `40001 could not serialize
+  access due to concurrent update`. Final value 100.
+- F5-read: S2 reads 0 and commits (a single rw-dependency, no failure).
+- F5-control (no S3): S2 reads 0, updates, commits; final value 1.
+
+**A4 - projection write forms** (three sessions, sequential, all commit in every case):
+
+| Form | SIReadLock rows |
+|---|---|
+| `UPDATE user_spending ... WHERE user_id = k` (existing keys 50001-50003) | 3: `page user_spending_pkey page=138` (one per session, no tuple or heap locks) |
+| `INSERT ... ON CONFLICT (user_id) DO UPDATE` on the same existing keys | **0** |
+| `INSERT ... ON CONFLICT (id) DO UPDATE` on new uuid7 keys, `proj_new` empty | **0** |
+| the same, `proj_new` with 100,000 rows | **0** |
+
+**A5 - small vs large business table** (three sessions on different rows, phased; plans are the
+ones actually executed, from `EXPLAIN ANALYZE` inside the transactions):
+
+| Table | `pg_class` (relpages, reltuples) | Plan of read and UPDATE | SIReadLock rows | S3 / S2 / S1 COMMIT |
+|---|---|---|---|---|
+| `small_orders` 30 rows, never analyzed | (0, -1) | Index Scan using `small_orders_pkey` | 3 x `page small_orders_pkey page=1` | ok ok ok |
+| `small_orders` 30 rows, analyzed | (1, 30) | **Seq Scan** on `small_orders` | 3 x **`relation small_orders`** (heap) | ok **40001 40001** (pivot, commit attempt) |
+| `orders` 100,000 rows, never analyzed | (0, -1) | Index Scan using `orders_pkey` | 3 x `page orders_pkey page=1` | ok ok ok |
+| `orders` 100,000 rows, analyzed | (1392, 100000) | Index Scan using `orders_pkey` | 3 x `page orders_pkey page=1` | ok ok ok |
+
+**A6 - uuid7 locality (post hoc, see the change record)**. Each session reads one row by
+primary key, then INSERTs one new order; SIRead locks observed after both inserts; COMMIT S2,
+then S1.
+
+| Keys | Rows read | Order | SIReadLock rows | S2 / S1 COMMIT |
+|---|---|---|---|---|
+| uuid7 | each session's own recent row | phased | S1 and S2: `page orders_pkey page=387` (the **same** leaf, the rightmost) + a heap tuple each | ok / **40001** (pivot, commit attempt) |
+| uuid7 | each session's own recent row | sequential | same | ok / ok |
+| uuid7 | old rows | phased / sequential | `orders_pkey` pages 233 and 24 (different leaves) | ok / ok, ok / ok |
+| uuid4 | each session's own recent row | phased / sequential | `orders_pkey` pages 137 and 367 | ok / ok, ok / ok |
+| uuid4 | old rows | phased / sequential | `orders_pkey` pages 427 and 324 | ok / ok, ok / ok |
+
+### B. Existence under load (fast)
+`uv run python spikes/0003-ssi-internal-tables/load.py exist --port 26432` - 16 workers, 2 s
+warm-up + 10 s measured, 5 runs, every variant once per run; all 80 workers per variant reported
+`serializable`. In this run no error other than 40001 occurred (no 40P01, no 23505). This is
+not general: the independent reproduction's B run also got 23 x `53200 not enough elements in
+RWConflictPool to record a read/write conflict` (one `insert_update`/disjoint run, under heavy
+host load), see Reproduction. Attempts are the
+measured ones; "non-HOT" is `n_tup_upd - n_tup_hot_upd` of `orders` over the whole run
+(warm-up included).
+
+| Internal | Business | Fill factor | Attempts per run, median (range) | 40001 per run | 40001 / attempt, median (range) | non-HOT `orders` updates per run |
+|---|---|---|---|---|---|---|
+| `claim` | none | 70 | 93,788 (56,379-98,469) | 0, 0, 0, 0, 0 | 0 | - |
+| `claim_retry` | none | 70 | 45,799 (25,015-54,536) | 0, 0, 0, 0, 0 | 0 | - |
+| `full` | none | 70 | 49,907 (32,564-53,055) | 0, 0, 0, 0, 0 | 0 | - |
+| `read_insert` | none | 70 | 56,368 (39,775-58,092) | 30,829, 43,855, 42,964, 45,094, 44,338 | 77.7% (77.5-77.8) | - |
+| `insert_update` | none | 70 | 63,014 (51,429-75,618) | 40, 91, 23, 71, 54 | 0.078% (0.038-0.120) | - |
+| `none` | disjoint | 70 | 71,960 (25,567-74,997) | 0, 0, 0, 0, 0 | 0 | 0 in every run |
+| `pad1` | disjoint | 70 | 53,203 (35,963-55,624) | 0, 0, 0, 0, 0 | 0 | 0 |
+| `pad2` | disjoint | 70 | 46,947 (39,916-49,772) | 0, 0, 0, 0, 0 | 0 | 0 |
+| `pad4` | disjoint | 70 | 34,854 (24,623-38,114) | 0, 0, 0, 0, 0 | 0 | 0 |
+| `claim` | disjoint | 70 | 47,354 (32,104-61,177) | 0, 0, 0, 0, 0 | 0 | 0 |
+| `claim_retry` | disjoint | 70 | 30,787 (24,857-40,216) | 0, 0, 0, 0, 0 | 0 | 0 |
+| `full` | disjoint | 70 | 33,460 (23,685-40,167) | 0, 0, 0, 0, 0 | 0 | 0 |
+| `read_insert` | disjoint | 70 | 40,967 (23,867-44,174) | 20,023, 17,306, 29,474, 30,339, 31,830 | 72.1% (71.9-72.5) | 0 |
+| `insert_update` | disjoint | 70 | 43,400 (30,694-50,009) | 5, **0**, 3, 3, 1 | 0.006% (0-0.012) | 0 |
+| `pad1` | disjoint | **100** | 42,970 (26,166-61,888) | 6, 6, 9, 9, 4 | 0.016% (0.006-0.034) | 2,247-4,204 |
+| `claim` | disjoint | **100** | 52,601 (24,198-61,167) | 6, 4, 6, 7, 13 | 0.012% (0.011-0.024) | 2,565-3,940 |
+
+Where the 40001 were raised (all runs summed; message always `could not serialize access due
+to read/write dependencies among transactions`):
+- `read_insert`/none: `COMMIT` 146,217 ("Canceled on identification as a pivot, during commit
+  attempt"), `INSERT INTO run_claim` 60,802 ("... as a pivot, during write"), `COMMIT` 61
+  ("Canceled on commit attempt with conflict in from prepared pivot").
+- `read_insert`/disjoint: `COMMIT` 73,627, `UPDATE orders` 51,207 ("during conflict out
+  checking" / "during conflict in checking"), `SELECT * FROM orders` 3,825, `INSERT INTO
+  run_claim` 313 - the business statements fail because the transaction is already a pivot
+  through `run_claim`.
+- `insert_update`/none: `COMMIT` 278, `UPDATE run_claim_u` 1; 62-162 of its updates per run
+  were non-HOT. `insert_update`/disjoint: `COMMIT` 12.
+- fill factor 100, `pad1` and `claim` alike: `COMMIT` 26 / 25 and `UPDATE orders` 8 / 11 - the
+  business baseline itself conflicts once updates stop being HOT, with or without the claim.
+
+### C and D, first runs - discarded (host contaminated)
+Not evidence for any verdict; kept because the method requires discarded data to stay visible.
+See the change record for the reason. Durable profile, 32 workers (C) / 8-64 workers (D),
+5 runs each. Raw: `results/load_rates_run1_discarded.*`, `results/load_rates_c2rerun_discarded.txt`,
+`results/bench_run1_discarded.*`; tables by
+`uv run python spikes/0003-ssi-internal-tables/summarize.py rates|bench <file>`.
+
+C, 40001 per attempt, median (range) over 5 runs:
+- C1 projections: baseline (no projection) 0 %; `update` disjoint 0 %, Zipf 26.6 % (26.0-27.0),
+  global 79.8 % (76.0-82.1); `upsert_existing` disjoint 0 %, Zipf 26.4 % (25.8-26.7), global
+  79.7 % (79.1-81.8); `upsert_new` 0 %. Every Zipf/global 40001 except a few hundred was
+  `could not serialize access due to concurrent update` at the projection statement.
+- C3 locality: uuid7 + recent 64.5 % (62.7-67.1), 2.82 attempts per commit, ~4,845 exhausted
+  commands per run, raised mostly at `INSERT INTO orders` ("Canceled on identification as a
+  pivot, during write"); uuid7 + old 0 %; uuid4 + recent 0.10 %; uuid4 + old 0.11 %.
+- C2 snapshot aging: first run (background stats not saved) nowait 26.6 %, wait 47.1 %, sleep
+  46.5 %; rerun (with background stats) probes nowait 31.0 % / wait 41.3 % / sleep 41.6 %, the
+  background workers of the same runs 30.2 % / 23.8 % / 23.6 %.
+
+D (first run): uniform attempts per commit at most 1.008 under SERIALIZABLE at every worker
+count; Zipf 1.10 / 1.35 / 1.66 (SERIALIZABLE) vs 1.09 / 1.31 / 1.53 (REPEATABLE READ) at
+8 / 32 / 64 workers; transfer invariant held in every run; pocket users with a negative sum:
+REPEATABLE READ 0-1 per run (at 32 and 64 workers, Zipf), SERIALIZABLE 0 in every run; under
+Zipf, `create` (range read + uuid7 INSERT) had 4-29 % 40001 under SERIALIZABLE and 0 % under
+REPEATABLE READ. TPS is not reported: paired ratios spread 0.48-3.14.
+
+(C and D reruns on a quiet host: pending.)
+
+## Verdict
+
+**Provisional.** Items 1-4 rest on load-independent observations (A, B) and are final once the
+independent reproduction agrees. The rate parts of item 3, item 5 and the rate halves of the
+off-checklist observations wait for the C and D reruns on a quiet host (change record).
+
+| Item | Verdict | Deciding observations |
+|---|---|---|
+| 1. `run_claim` INSERT alone | **Holds** | (1a) 0 SIReadLock rows on `run_claim`, `run_result`, `outbox_log` and their indexes in every A1 variant (fresh ID, reused ID after rollback, full set), empty and 1M rows, and after the fenced INSERTs of A2; (1b) every A1 session committed; (1c) 0 x 40001 in 5/5 runs of `claim`, `claim_retry`, `full` without business statements (45,799-93,788 attempts per run); (1d) 0 x 40001 with disjoint business statements, as in the padded baselines (also 0) |
+| 2. Controls conflict | **Partly** | "read then INSERT": SIReadLock on the rightmost `run_claim_pkey` leaf (or the heap relation when empty), 40001 in both A1 orders, 72-78 % of attempts in B. "INSERT then UPDATE": the same lock and a pivot 40001 in the three-session sequential order, but only 0.04-0.12 % of attempts without business statements and 0-0.012 % with them - **one of five disjoint runs had none**, so the pre-fixed "above the baseline in every run" fails for it. The mechanism the design names is real for both; the claim that the UPDATE form "recreates the same false conflict" overstates its frequency by about three orders of magnitude in this harness. |
+| 3. Fencing | **Holds** | A2: the second INSERT waits on the first transaction's xid (`Lock/transactionid`, ShareLock); commit -> **23505** `duplicate key value violates unique constraint "run_claim_pkey"`; rollback -> proceeds and commits; rerun after commit -> 23505, also when the rerun's snapshot predates the commit (F4); never 40001; identical with the first transaction at READ COMMITTED. **Condition:** this holds because `run_claim` is not read; when both claimants read the ID before inserting it, the waiting one gets 40001 instead of 23505 (reproducer's probe 2(b)) - one more reason for the internal-table rule |
+| 3. Inline projection retry rate | **Pending rerun** | First (discarded) run: disjoint keys 0 % in every write form = baseline; Zipf ~26 %, global ~80 %. A4 (load-independent): `ON CONFLICT DO UPDATE` takes no SIRead lock |
+| 4a. Internal tables empty / 1M | **Holds** | as 1a, in both states |
+| 4b. "Table-level lock when small" | **Partly** | The relation-level SIRead lock is real and causes pivot 40001 between transactions on different rows, but its cause is the **plan**, not the size: an analyzed 30-row table is read by Seq Scan -> `relation small_orders` (heap) -> 40001; the same table never analyzed is read by Index Scan -> page lock -> no conflict; empty analyzed tables were seq-scanned too (A1 controls: `relation run_claim`) |
+| 5. SERIALIZABLE vs REPEATABLE READ | **Pending rerun** | The first run was contaminated by other workloads (change record) |
+
+**Off-checklist observations**
+- **Upsert projections:** `INSERT ... ON CONFLICT DO UPDATE` took no SIReadLock at all - neither
+  for a new uuid7 key (empty or 100,000-row table) nor for an existing key - whereas a plain
+  `UPDATE ... WHERE key = $k` took an index-page SIRead lock (A4). Upsert-form projections do
+  not reintroduce the internal-table problem.
+- **uuid7 locality of user tables:** confirmed without load (A6): two unrelated transactions
+  that each read their own recent row by primary key and then INSERT a new row lock the same
+  rightmost leaf page and one gets 40001; with uuid4 keys or old rows they lock different leaves
+  and both commit. The rate (64.5 % per attempt in the discarded C3 run, vs ~0.1 % for uuid4)
+  waits for the rerun.
+- **Snapshot aging while waiting on a claim:** the claim INSERT takes the snapshot and an xid
+  **before** it waits (A3: `backend_xmin`/`backend_xid` set while waiting, none after `BEGIN` or
+  `SET LOCAL`); after the wait the transaction reads pre-wait values and its UPDATE of a row
+  changed meanwhile fails with `40001 ... due to concurrent update`. The rate effect (discarded
+  run: about +10 points of 40001 for a 50 ms wait, identical for a 50 ms sleep on an open
+  snapshot - the cost is the snapshot's age, not the wait) waits for the rerun.
+- Also seen: (i) a transaction waiting on a claim already holds an xid, so it holds back the
+  outbox log's xid watermark (design 4.10, 7.7) for as long as it waits; (ii) `COMMIT` of a
+  transaction already aborted by an error returns without an error (the server rolls back) -
+  the runner must decide the outcome from the first error, which pipeline mode makes natural
+  because later statements are skipped; (iii) at the default fill factor (100) the business
+  baseline itself produced 40001 between transactions on disjoint rows (0.006-0.034 % per
+  attempt), through non-HOT updates inserting into shared primary-key leaf pages; (iv) under
+  SSI load PostgreSQL can raise **53200** (`not enough elements in RWConflictPool to record a
+  read/write conflict`) instead of 40001 (reproducer's B run, 23 times in one run; not
+  reproduced on demand, cause not isolated). The design retries only 40001/40P01.
+
+**Relation to spike 0002 (X8, ADR-0005) and to #58**
+- Agreement with spike 0002's database observations: the `run_claim` INSERT fixes the snapshot
+  and `SET LOCAL` does not (A3 here, `backend_xmin` observed; X8 there); the hot-row failures seen
+  here in C1 (Zipf and global projection keys) are all the same-row kind, `could not serialize
+  access due to concurrent update`, at the projection statement - ADR-0005's first kind. No
+  observation here contradicts X8 or ADR-0005.
+- #58 (an idempotency key reused with other arguments): if a fingerprint of the bound arguments
+  is compared, the comparison must not read `run_claim` (or `run_result`) inside the claiming
+  SERIALIZABLE transaction. Reading `run_claim` there is this spike's "read then INSERT" control:
+  72-78 % of attempts failed with 40001 in B (both runs), and when two claimants of the same ID
+  both read it first, the waiting one gets 40001 instead of 23505 (reproduction probe 2(b)), so
+  the idempotent path would turn into a retry. Writing the fingerprint with the claim (an INSERT,
+  no read) and comparing it on the 23505 replay path, which already reads `run_result` in a
+  separate READ COMMITTED transaction, stays within the rule; no observation here covers a
+  fingerprint column itself.
+- Carried-over rates (C4: retry, `RetryExhausted` and `57014` on one hot row with and without
+  `for_update`) are pending the rerun; ADR-0005 Decision 4's candidates are not in this spike
+  (change record).
+
+**Consequence for the design - draft, not yet applied** (applied only after an agreeing
+reproduction; anything that changes a decision goes through a `Proposed` ADR and architect review
+after the clean rerun):
+1. 8.3 internal-table rule: replace "Needs confirmation: ..." with a statement that spike 0003
+   confirmed it (link), and correct "In the early stage when the table is small, a table-level
+   lock is taken" to name the cause: a sequential-scan read (which the planner chooses for small
+   or empty analyzed tables) takes a relation-level SIRead lock on the heap, so every write to
+   that table conflicts with it. 4.6 is unchanged (it does not make the small-table claim).
+2. 8.3 "Why the result is INSERTed into a separate table": keep the decision; note that the
+   UPDATE form conflicts far less often than look-up-then-INSERT, but does conflict.
+3. 9.2: tick items 1, 3 (fencing part), 4 after the reproduction; item 2 ticked as "partly"
+   with the link; items 3 (rate) and 5 after the rerun.
+4. **Candidate decision change (ADR candidate):** the default `pk(generated="uuid7")` for user
+   entities (4.2) makes "read a recent row by PK + INSERT into the same table" a false-conflict
+   pattern under SERIALIZABLE (A6). Options to weigh in the ADR after the rerun: keep uuid7 and
+   document the cost in 7.3 (and in error messages / metrics); change the default to a
+   non-monotonic key (uuid4 - loses insert locality and time order); or a per-entity choice.
+   `generated="identity"` is ever-increasing too, so it shares the pattern.
+5. Open question for the runner (#22/#23): whether 53200 from the SSI conflict pool is
+   classified as retryable, surfaced as a distinct error, or prevented by sizing
+   (`max_connections` / `max_pred_locks_per_transaction`); not settled by this spike.
+6. 7.3 (cost of the SERIALIZABLE default): add the two concrete false-conflict sources found
+   here - plan-dependent relation locks on small tables, and right-edge locality of
+   ever-increasing primary keys - with the item 5 numbers once rerun.
+
+## Reproduction
+
+### Round 1: sections A and B (existence, fast profile)
+
+- **Who:** pg-researcher, working independently. It had not run the spike before. It read Question, Setup and Method (including the change record) and the code under `spikes/0003-ssi-internal-tables/`, and wrote down its own observations before reading Observations and Verdict.
+- **Date:** 2026-11-25 (20:48 to 21:12 local time).
+- **Versions observed:**
+  - `PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2) on aarch64-unknown-linux-gnu, compiled by gcc (Debian 14.2.0-19) 14.2.0, 64-bit` (container `platina-postgres-1`, port 26432).
+  - psycopg 3.3.9, binary, libpq 180006. Python 3.14.7.
+  - Branch `docs/spike-0002-ssi-internal-tables` at `10a8517`, with the spike files untracked.
+  - Settings from `SHOW` match Setup: `max_pred_locks_per_transaction = 64`, `max_pred_locks_per_relation = -2`, `max_pred_locks_per_page = 2`, `synchronous_commit = on`, `default_transaction_isolation = read committed`, `shared_buffers = 256MB`, `max_connections = 300`, `fsync = off`, `full_page_writes = off`, `wal_level = replica`.
+- **Not reproduced in this round:** sections C and D (rates). Port 26433 was never used.
+- **Host:**
+  - Load averages (1/5/15 min, 15 cores) were 9.79 / 21.86 / 32.50 at the start, 21.51 when the load harness started, 35.21 / 36.94 / 34.05 when it ended, and 33.82 at the end of all runs.
+  - Another client was on the same fast database at the start: schema `repro0002_28861`, sessions `T1` (active) and `T2` (`idle in transaction`). Both were gone by 21:12. [Author's note, added later: the schema name is the one `spikes/0002-use-cases-on-paper/repro/db/harness.py` (spike 0002's database reproduction) creates, `repro0002_<pid>`.]
+  - Throughput numbers below therefore say nothing about speed. Only existence and pattern are compared.
+
+**What was run**
+1. The spike code copied to `spikes/0003-ssi-internal-tables/results/repro/code/` (git-ignored) and the copies run, so all output landed under the copy's `results/`:
+   - `uv run python <copy>/interleave.py --port 26432` (A1-A5, 677 log lines, 21.8 s);
+   - `uv run python <copy>/interleave.py --port 26432 A6`;
+   - `uv run python <copy>/load.py exist --port 26432` (80 records, 19 min 23 s).
+2. Its own probe, `results/repro/probe/probe.py` (psycopg; own schema `pgr0002`, dropped at the end). Interleavings pinned, one statement at a time; a blocking statement runs from a thread. It covers:
+   - P1: fresh uuid7 claim, then the full internal set (claim, outbox with an `xid` index, result), with tables empty and with 1,000,000 claims and outbox rows.
+   - P2: re-INSERT of a key that was inserted and rolled back, by the same session and by another session, in both states.
+   - P3a/P3b: "SELECT then INSERT", lock rows plus `EXPLAIN ANALYZE`; then two sessions in phased order, 5 pinned reps per state.
+   - P4: fencing with S1 at SERIALIZABLE and at READ COMMITTED: wait then commit, wait then rollback, rerun after commit, snapshot before S1's commit; extra case: S2 reads X first, then S1 inserts and commits X, then S2 inserts X.
+   - P5: `ON CONFLICT DO UPDATE` on an existing bigint key, a new bigint key, a new uuid7 key and an existing uuid7 key, against a plain `UPDATE` for contrast.
+   - P6: "read own recent row by PK + INSERT", uuid7 vs uuid4, recent vs old rows, two sessions phased, 20 pinned reps per cell.
+3. A second probe, `results/repro/probe/probe2.py` (schema `pgr0002b`, dropped):
+   - (a) the `insert_update` load (16 processes x 10 s), with and without one idle SERIALIZABLE transaction holding a snapshot, 2 reps each, to look for the cause of a 53200 seen in B;
+   - (b) both sessions read X, then both INSERT X; S2 waits; S1 commits.
+
+After the runs only `public` remains on the fast database.
+
+**Method vs code.** The code does what the Method says. Small, harmless differences:
+- A2 runs the `current_setting` check between the observation and S2's COMMIT; that check produces the `25P02` lines.
+- A1 `full` runs `SELECT pg_current_xact_id()::text`, not the bare call the Method shows.
+- In A6 the log label `rows=` is the table's row count.
+- `load.py` writes only `load_exist.jsonl`; the `load_exist.txt` named under Observations is redirected stdout.
+- B counts and moves on after *any* error, not only 40001/40P01. That is how the 53200 below became visible.
+
+**Observations**
+
+*A1.* Lock rows, pages and outcomes identical to the write-up's table, row for row:
+- `claim`, `claim_retry` and `full`: 0 SIReadLock rows in both orders and both states; every session commits.
+- `read_insert` and `insert_update` with tables empty: 3 x `relation run_claim` / `relation run_claim_u` (the heap); `ok 40001 40001` in both orders.
+- 1M rows: 3 x `page run_claim_pkey page=3852` / `run_claim_u_pkey page=3852`; `read_insert` `ok 40001 ok` (sequential) and `ok 40001 40001` (phased); `insert_update` `ok 40001 ok` (sequential) and `ok ok ok` (phased).
+- Every 40001: `could not serialize access due to read/write dependencies among transactions`, detail `Reason code: Canceled on identification as a pivot, during commit attempt.`
+
+*A2.* Identical, with S1 at SERIALIZABLE and at READ COMMITTED:
+- F1 and F2: S2 waits with `wait_event=Lock/transactionid`, ungranted `('transactionid', 'ShareLock')`.
+- F1: `ERROR 23505: duplicate key value violates unique constraint "run_claim_pkey" | detail: Key (id)=(...) already exists.`, 0 SIRead rows, `count = 1`.
+- F2: S2's INSERT `ok rowcount=1`, 0 SIRead rows, COMMIT ok, `count = 1`.
+- F3 and F4: 23505, never 40001.
+
+*A3.* Same pattern; only xid values differ (`backend_xid=5024257 backend_xmin=5024256`): `backend_xmin=None` after `BEGIN` and after `SET LOCAL`; xid and xmin set while the claim waits. F5: S2 reads `0`, its UPDATE fails with `40001: could not serialize access due to concurrent update`, final 100. F5-read commits. F5-control ends at 1.
+
+*A4.* Identical: plain `UPDATE` 3 x `page user_spending_pkey page=138`; `ON CONFLICT DO UPDATE` on existing keys, and on new uuid7 keys with `proj_new` empty or at 100k rows: **0** rows; all sessions commit.
+
+*A5.* Identical:
+
+| Table | `pg_class` (relpages, reltuples) | Plan | SIRead lock | Outcome |
+|---|---|---|---|---|
+| 30 rows, never analyzed | `(0, -1.0)` | Index Scan | `page small_orders_pkey page=1` | all ok |
+| 30 rows, analyzed | `(1, 30.0)` | **Seq Scan** | 3 x `relation small_orders` | `ok 40001 40001` |
+| 100k rows, never analyzed | `(0, -1.0)` | Index Scan | `orders_pkey page=1` | all ok |
+| 100k rows, analyzed | `(1392, 100000.0)` | Index Scan | `orders_pkey page=1` | all ok |
+
+*A6.*
+- uuid7, recent rows: both sessions lock `page orders_pkey page=387`, plus heap tuples `orders page=1333 tuple=26/27`. Phased: S2 ok, S1 `40001 ... pivot, during commit attempt`. Sequential: ok / ok.
+- uuid7 old rows: pages 143 / 247, all ok. uuid4 recent rows: pages 499 / 498 (adjacent but distinct), all ok. uuid4 old rows: pages 266 / 300, all ok. (Page numbers for random rows differ from the write-up; same conclusion.)
+
+*B.* All 80 records report `{'iso=serializable': 16}`; at fill factor 70 `orders` had 0 non-HOT updates in every run.
+
+| Internal | Business | ff | 40001 per run | 40001 / attempt, median (range) |
+|---|---|---|---|---|
+| `claim` / `claim_retry` / `full` | none | 70 | 0,0,0,0,0 each | 0 |
+| `read_insert` | none | 70 | 38,126, 26,281, 26,508, 12,572, 9,587 | 77.8 % (77.0-77.8) |
+| `insert_update` | none | 70 | 40, 52, 12, 40, 16 | 0.065 % (0.036-0.142) |
+| `none` / `pad1` / `pad2` / `pad4` | disjoint | 70 | 0 in every run | 0 |
+| `claim` / `claim_retry` / `full` | disjoint | 70 | 0 in every run | 0 |
+| `read_insert` | disjoint | 70 | 3,516, 18,430, 22,842, 18,420, 13,034 | 72.0 % (71.7-72.2) |
+| `insert_update` | disjoint | 70 | 10, **0**, 1, 1, 4 | 0.0033 % (0-0.039) |
+| `pad1` | disjoint | 100 | 9, 1, 2, 4, 4 | 0.013 % (non-HOT `orders` 2,048-3,315) |
+| `claim` | disjoint | 100 | 6, 4, 8, 5, 6 | 0.018 % (non-HOT 1,914-3,703) |
+
+Where the 40001 were raised: `read_insert`/none: COMMIT 78,967 (pivot, commit attempt) + 90 (prepared pivot), `INSERT INTO run_claim` 34,017 (during write). `read_insert`/disjoint: COMMIT 44,159, `UPDATE orders` 29,757, `SELECT * FROM orders` 2,157, `INSERT INTO run_claim` 169. ff 100: `COMMIT` and `UPDATE orders` for both `pad1` and `claim`.
+
+**53200 in B, not in the write-up.** In rep 1 of `insert_update`/disjoint: **23 x `53200 not enough elements in RWConflictPool to record a read/write conflict`** (22 at `INSERT INTO run_claim_u`, 1 at `UPDATE run_claim_u`). Once only, under heavy host load, possibly while another client was still on the server. Probe 2(a) did not bring it back (16 processes x 10 s, with and without an idle SERIALIZABLE transaction holding a snapshot: only 40001, 276 / 211 / 39 / 435 per 10 s). The cause is **not isolated**; what stands is that under this SSI load PostgreSQL can return 53200 (out of memory, not retryable by the design's 40001/40P01 rule) instead of 40001.
+
+**Own probe** (`probe_out.txt`, `probe2_out.txt`):
+- P1 / P2: 0 SIReadLock rows in every case, empty and 1M: after a fresh uuid7 claim; after the full internal set (claim + outbox with an `xid` index + result + `pg_current_xact_id()`); after re-INSERT of a key rolled back by the same session or by another session.
+- P3a: empty analyzed table: `Seq Scan on claim` -> `relation claim` (heap); 1M rows: `Index Only Scan using claim_pkey` -> `page claim_pkey 3852` (rightmost leaf).
+- P3b: two sessions phased: 5/5 reps empty and 5/5 at 1M end with S1 `40001 ... Canceled on identification as a pivot, during commit attempt.` after S2 committed; both hold the same lock (relation when empty, page 3852 at 1M).
+- P4: reproduces A2 at both S1 levels (wait `('Lock', 'transactionid')`, ungranted `('transactionid', 'ShareLock', False)`; commit -> `23505 duplicate key value violates unique constraint "claim_pkey"`; rollback -> S2 proceeds and commits, `count = 1`; rerun after commit and the F4 shape -> 23505; extra case where S2 *read* X before S1 inserted and committed it -> still 23505).
+- Probe 2(b): when *both* sessions read X before inserting it, the waiting S2 gets `40001 ... Canceled on identification as a pivot, during conflict in checking.` instead of 23505.
+- P5: `ON CONFLICT DO UPDATE` took 0 SIReadLock rows for an existing bigint key, a new bigint key, a new uuid7 key and an existing uuid7 key, in both states; the plain `UPDATE` took `page proj_pkey 138`.
+- P6 (20 pinned phased reps per cell): uuid7 recent **20/20** end with 40001, both holding `page t_pkey 387`; uuid7 old 0/20; uuid4 recent 0/20; uuid4 old 0/20. (Its "old" sample used `TABLESAMPLE SYSTEM (1) LIMIT 2`, so both sessions read the same old leaf; they still did not conflict, because the inserts land elsewhere.)
+
+**Differences from the write-up's Observations**
+1. B "No error other than 40001 occurred" did not hold in this run: 23 x 53200 (above). (The write-up was corrected to say so.)
+2. B counts and attempts differ, as expected on a loaded host; the 40001 pattern per variant is the same, including **one zero run** for `insert_update`/disjoint; the `insert_update`/none percentages overlap (0.038-0.120 % vs 0.036-0.142 %).
+3. A6 leaf page numbers for old and uuid4 rows differ (random choice); same outcome.
+4. A3 xid values differ; same outcome.
+
+**Per item**
+
+| Item | Reproducer | Reason |
+|---|---|---|
+| 1 | **agree: holds** | (1a) 0 SIRead rows in A1 (`claim`, `claim_retry`, `full`, empty and 1M), after A2's fenced INSERTs, and in P1/P2 (also a key rolled back by another session); (1b) all A1 sessions commit; (1c) 0 x 40001 in 5/5 runs; (1d) 0 = padded baselines at ff 70. |
+| 2 | **agree: partly** | Both controls take the lock and give a pivot 40001 in A1 and in P3b (10/10). Under load `read_insert` gives ~72-78 % 40001, but `insert_update`/disjoint had 0 in one of five runs here too. With business `none` it was above zero in 5/5 runs in both runs, so the "partly" depends on reading the criterion against the disjoint/`pad2` baseline; that reading is the conservative one. |
+| 3 (fencing) | **agree: holds** | Wait on `transactionid` ShareLock; commit -> 23505, rollback -> proceeds, rerun -> 23505; F4 -> 23505; same at both S1 levels; also 23505 when only S2 had read X. Condition: probe 2(b) shows **40001 instead of 23505 when both claimants read `run_claim` first** - "never 40001" holds only while the internal-table rule holds. |
+| 4a | **agree: holds** | As 1a, empty and 1M. |
+| 4b | **agree: partly** | The relation-level SIRead lock and the 40001 it causes between different rows are real; the cause is a Seq Scan plan (analyzed small or empty table), not size: a never-analyzed 30-row table is read by Index Scan and does not conflict. P3a shows the same for an empty analyzed `claim`. |
+| A4 upsert (off-checklist) | **agree** | 0 SIRead rows for `ON CONFLICT DO UPDATE`, new and existing keys, empty and 100k; P5 adds the bigint new key and the existing uuid7 key; a plain `UPDATE` takes an index-page lock. |
+| A6 uuid7 locality (off-checklist) | **agree (existence)** | Same rightmost leaf (`page=387`) and a pivot 40001 in phased order; none for uuid4 or old rows; P6 pinned 20/20 vs 0/20, 0/20, 0/20. The rate under load is not checked (section C). |
+
+No verdict disagreed with. Two corrections requested before the verdicts are applied, both made in this write-up: (1) Observations B no longer says only 40001 can occur, and 53200 is recorded; (2) item 3 states that "23505, never 40001" depends on `run_claim` never being read inside the claiming transactions.
+
+Output: `spikes/0003-ssi-internal-tables/results/repro/` (`interleave_stdout.txt`, `interleave_a6_stdout.txt`, `load_exist_stdout.txt`, `load_uptime.txt`, `code/results/interleave.txt`, `code/results/load_exist.jsonl`, `probe/probe.py`, `probe/probe_out.txt`, `probe/probe2.py`, `probe/probe2_out.txt`).
+
+### Round 2: sections C and D (rates, durable profile)
+Pending: after the C and D reruns on a quiet host, and never at the same time as them.
+

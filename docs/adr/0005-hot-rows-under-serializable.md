@@ -93,9 +93,10 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
 - The design stops promising something PostgreSQL does not do: users with a hot row learn early
   that neither `lock="for_update"` nor REPEATABLE READ removes the retries on that row. What to
   use instead is decided after 9.2.
-- 9.2 gets more items, on the durable profile: the retry rate, the `RetryExhausted` rate and the
-  `57014` rate on one hot row with and without `for_update`; the candidates of point 4, including
-  the session-level advisory lock before `BEGIN`.
+- 9.2 (spike 0003, #3) gets one more item, on the durable profile: the retry rate, the
+  `RetryExhausted` rate and the `57014` rate on one hot row with and without `for_update`. The
+  comparison of the candidates of point 4, including the session-level advisory lock before
+  `BEGIN`, is a follow-up issue that uses that measurement as its baseline, not part of 9.2.
 - Use cases with a hot row and a rule that reads it (stock allocation, an overdraft check) stay on
   retries until that decision is made.
 
@@ -178,3 +179,7 @@ unverified.
   line wrapping fixed.
 - 2026-11-25 - accepted by the maintainer. The design text listed in this ADR was changed (section
   "Design text changed on acceptance", EN + KO); the `57014` question is #61.
+- 2026-11-25 - at the maintainer's decision, without changing the direction: Consequences now
+  splits the 9.2 work - spike 0003 measures the single hot row (retry, `RetryExhausted` and
+  `57014` rates with and without `for_update`); the comparison of point 4's candidates moves to a
+  follow-up issue with that measurement as its baseline.
