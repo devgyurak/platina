@@ -543,7 +543,12 @@ These came up in several use cases; the per-use-case sections refer to them by n
   as the first statement (`partB.txt`, scenarios X1, X1', X2). 8.3 already records the REPEATABLE READ half (its
   `StaleSnapshot` correction: "modifying a row that was updated concurrently makes PostgreSQL raise
   40001 first") but still lists `for_update` and REPEATABLE READ as escape hatches (8.3, 7.3, and
-  4.6's mapping of `@Lock(PESSIMISTIC_WRITE)`). Because this changes a statement of a section 8
+  4.6's mapping of `@Lock(PESSIMISTIC_WRITE)`). All of this is the same-row kind of `40001`
+  (`could not serialize access due to concurrent update`), raised under REPEATABLE READ and
+  SERIALIZABLE alike. The other kind, SSI's `could not serialize access due to read/write
+  dependencies among transactions` (seen in the reproduction's part C, under SERIALIZABLE), is the
+  write-skew conflict; REPEATABLE READ does not raise it (PostgreSQL documentation, not observed
+  here), so REPEATABLE READ + `version` remains an escape hatch from that kind only. Because this changes a statement of a section 8
   decision, it is written up as ADR-0005 (Proposed). Rates are not measured here (9.2).
 - **X9 - `RunResult.value` is `object`.** `Changes.returning(v)` loses the type; a caller gets it
   back only through `isinstance` or a cast (`fail_findings.py` line 34: pyright

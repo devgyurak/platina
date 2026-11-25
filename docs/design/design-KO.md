@@ -1,4 +1,4 @@
-<!-- i18n: source=docs/design/design.md source-sha256=353284b611ce translation-sha256=3287d6c96eac -->
+<!-- i18n: source=docs/design/design.md source-sha256=fdd87f0b4548 translation-sha256=76d3da7938ab -->
 # Platina 설계 문서
 
 > **Platina**: 백금(platinum)의 옛 스페인어 이름. 백금이 산에도 녹지 않고 반응하지 않듯, 도메인 코드는 DB와 반응하지 않는다.
@@ -860,7 +860,7 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
 외부 결과가 쓰기를 결정하는 흐름은 process 핸들러와 여러 유스케이스로 쪼개진다. JPA의 메서드 하나가 이벤트 흐름이 되는 비용은 그대로 남는다.
 
 ### 7.3 SERIALIZABLE 기본값의 비용
-경합이 심한 테이블에서는 직렬화 실패와 재시도가 늘어난다. 핫 로우에는 `lock="for_update"`나 `isolation=REPEATABLE_READ` + `version`으로 내려가야 하고, 후자는 write skew를 막지 못한다. (검토 중, ADR-0005(Proposed): 스파이크 0002는 트랜잭션의 스냅샷 이후 동시에 실행되는 Command가 갱신하고 커밋한 행에서 REPEATABLE READ와 SERIALIZABLE 모두 `lock="for_update"`도, 읽지 않는 증감(blind increment)도 여전히 40001로 끝나는 것을 관찰했다(pg-researcher가 재현했다).) inline 프로젝션이 만드는 핫 로우는 키 규칙(§4.10)으로 대부분 막지만, 엔티티 ID 키도 뜨거울 수 있다. 이 비용이 실제로 얼마인지는 벤치마크로 확인해야 한다(§9).
+경합이 심한 테이블에서는 직렬화 실패와 재시도가 늘어난다. 핫 로우에는 `lock="for_update"`나 `isolation=REPEATABLE_READ` + `version`으로 내려가야 하고, 후자는 write skew를 막지 못한다. (검토 중, ADR-0005(Proposed): 스파이크 0002는 트랜잭션의 스냅샷 이후 동시에 실행되는 Command가 갱신하고 커밋한 행에서 REPEATABLE READ와 SERIALIZABLE 모두 `lock="for_update"`도, 읽지 않는 증감(blind increment)도 여전히 40001("concurrent update")로 끝나는 것을 관찰했다(pg-researcher가 재현했다).) inline 프로젝션이 만드는 핫 로우는 키 규칙(§4.10)으로 대부분 막지만, 엔티티 ID 키도 뜨거울 수 있다. 이 비용이 실제로 얼마인지는 벤치마크로 확인해야 한다(§9).
 
 ### 7.4 대량 쓰기의 남은 문제
 - 집합 기반 갱신은 `@invariant`가 없는 필드에만 허용
@@ -988,7 +988,7 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
 - 결정: 유스케이스는 기본 SERIALIZABLE로 실행하고, 직렬화 실패 시 자동 재시도한다. Query 경로는 READ COMMITTED.
 - 근거: PostgreSQL은 SERIALIZABLE을 쓰는 애플리케이션이 직렬화 실패(SQLSTATE 40001)를 재시도할 준비가 돼 있어야 한다고 명시하고, 정확성을 보장할 수 없어 DB가 자동 재시도를 제공하지 않는다고도 밝힌다. 대부분의 ORM에서는 이 재시도가 위험하지만(트랜잭션 안의 부수효과가 반복됨), Platina의 유스케이스는 순수 함수라 전체 재실행이 안전하다.
 - 효과: "읽기 범위 버전 검증" 같은 별도 기능이 필요 없다. write skew는 SSI가 막는다.
-- 탈출구: `@usecase(isolation=REPEATABLE_READ)` + `version`, 또는 `lock="for_update"` 프로필. (검토 중: 어느 쪽도 동시에 실행되는 Command가 갱신하고 커밋한 행에서 40001을 피하지 못한다 - 스파이크 0002에서 나온 ADR-0005, Proposed.) **READ COMMITTED는 Command에 허용하지 않는다.** 로드 계획의 문장마다 스냅샷이 달라 "로드한 스냅샷은 한 시점의 모습"이라는 전제가 깨진다. REPEATABLE READ는 write skew를 막지 못하므로, 읽기 집합에 기반한 규칙이 있으면 SERIALIZABLE에 남아야 한다.
+- 탈출구: `@usecase(isolation=REPEATABLE_READ)` + `version`, 또는 `lock="for_update"` 프로필. (검토 중: 어느 쪽도 동시에 실행되는 Command가 갱신하고 커밋한 행에서 같은 행의 40001("concurrent update")을 피하지 못한다. REPEATABLE READ + `version`은 SSI의 읽기/쓰기 의존성 40001은 여전히 피한다 - 스파이크 0002에서 나온 ADR-0005, Proposed.) **READ COMMITTED는 Command에 허용하지 않는다.** 로드 계획의 문장마다 스냅샷이 달라 "로드한 스냅샷은 한 시점의 모습"이라는 전제가 깨진다. REPEATABLE READ는 write skew를 막지 못하므로, 읽기 집합에 기반한 규칙이 있으면 SERIALIZABLE에 남아야 한다.
 
 **재시도 정책**
 - 결정: 40001과 40P01은 무조건 재시도. 23505는 `on_unique=True`를 명시한 유스케이스만(실행 ID 테이블의 23505는 멱등 경로로 따로 처리). 최대 4회 시도, 지수 백오프 + full jitter(기준 10ms, 상한 200ms), 재시도마다 로드부터 다시.
