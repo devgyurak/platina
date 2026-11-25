@@ -51,6 +51,13 @@ All notable changes are documented here. Format: [Keep a Changelog](https://keep
   `Fix:`; pickle and copy keep every field; `DatabaseError` requires `sqlstate` and keeps the
   driver exception as `__cause__`. Design 4.13 uses the `Location:` line throughout and splits
   the first example's `·` line in two. The first runtime code of the package.
+- Spike 0003 (design 9.2, SSI false conflicts and the internal-table rule, PostgreSQL 18.6): write-up
+  `docs/spikes/0003-ssi-internal-tables.md`, independently reproduced in two rounds by
+  pg-researcher (existence on the fast profile, rates on the durable profile under a quiet-host
+  gate); design 9.2 ticked, 8.3 states the confirmed rule (no read lock from an INSERT's unique
+  check; the small-table lock comes from sequential-scan plans) and 7.3 the measured cost.
+  ADR-0006 (Proposed) on ever-increasing entity keys; ADR-0005's Consequences now leave the
+  hot-row candidate comparison to a follow-up issue.
 
 ### Changed
 - Entity syntax (ADR-0003, accepted): entities inherit `Entity` with table options as class

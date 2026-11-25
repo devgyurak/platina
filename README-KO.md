@@ -29,10 +29,11 @@ await app.run(pay.bind(order=Order.ref(order_id), wallet=wallets.by_user(user_id
 
 ## 상태
 
-**설계 확정, 구현은 막 시작함.** 지금은 예외 계층(`platina.PlatinaError`와 하위 클래스)만 있고, 위 코드는 목표 문법이며 동작하는 API가 아니다. 타입 표면
-스파이크([`docs/spikes/0001-type-surface.md`](docs/spikes/0001-type-surface.md))와 실제 유스케이스
-10개를 종이로 옮긴 실험([`docs/spikes/0002-use-cases-on-paper.md`](docs/spikes/0002-use-cases-on-paper.md))은
-끝났고, 설계 문서의 나머지 실험(SSI 동시성, Alembic 왕복, 측정)이 프로토타입의 나머지보다 먼저다.
+**설계 확정, 구현은 막 시작함.** 지금은 예외 계층(`platina.PlatinaError`와 하위 클래스)만 있고, 위 코드는 목표 문법이며 동작하는 API가 아니다. 스파이크 세
+개가 끝났다: 타입 표면([`docs/spikes/0001-type-surface.md`](docs/spikes/0001-type-surface.md)),
+종이 위에 옮긴 실제 유스케이스 10개([`docs/spikes/0002-use-cases-on-paper.md`](docs/spikes/0002-use-cases-on-paper.md)),
+SSI 동시성([`docs/spikes/0003-ssi-internal-tables.md`](docs/spikes/0003-ssi-internal-tables.md)).
+설계 문서의 나머지 실험(Alembic 왕복, 측정)이 프로토타입의 나머지보다 먼저다.
 
 - 설계 문서: [`docs/design/design.md`](docs/design/design.md) (한국어: [`design-KO.md`](docs/design/design-KO.md))
 - 현재 아키텍처: [`docs/architecture.md`](docs/architecture.md)
