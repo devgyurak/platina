@@ -1,6 +1,6 @@
 # ADR-0005: `lock="for_update"` is not an escape hatch from serialization failures
 
-- Status: Proposed
+- Status: Accepted (maintainer, 2026-11-25)
 - Date: 2026-11-25
 - Related: design sections 3.1, 4.3, 4.4, 4.6 (Spring/JPA mapping), 7.3, 8.3 ("Default isolation
   level", "Retry policy", "The roles of version"), 8.4, 9.2, 9.4; issue #5; spike 0002
@@ -49,7 +49,7 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
     insert and its lock request still makes it fail);
   - two waiters behind one holder both fail;
   - a waiter whose `statement_timeout` expires first gets `57014`, not `40001` (an observation;
-    how a lock wait interacts with 4.6's retry rule is left to a separate issue).
+    how a lock wait interacts with 4.6's retry rule is left to #61).
 
   One run per scenario on the fast profile: it shows that it happens, not how often. It matches
   PostgreSQL's documented rule for these levels
@@ -99,19 +99,29 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
 - Use cases with a hot row and a rule that reads it (stock allocation, an overdraft check) stay on
   retries until that decision is made.
 
-## Design text to change if accepted
-Not changed while this ADR is Proposed (only the "under review" notes in 7.3 and 8.3 point here).
-On acceptance, in `docs/design/design.md` and `docs/design/design-KO.md` (line numbers as of this
-ADR):
-- 7.3, first paragraph (line 863): the hot-row sentence, by Decisions 2 and 4; remove the note.
-- 8.3 "Default isolation level", the "Escape hatch" bullet (line 991): by Decision 2 (which
-  `40001` each hatch avoids); remove the note.
-- 4.4, the `.add(n)` row of the write table (line 353): "avoids the read, not the conflict".
-- 4.6, the Spring/JPA mapping row `@Lock(PESSIMISTIC_WRITE)` -> `Profile(..., lock="for_update")`
-  (line 555): what the profile does under SERIALIZABLE (Decision 3).
-- 3.1, "Pessimistic locking: `Load(..., lock=FOR_UPDATE)` for hot rows" (line 137): no longer an
-  escape hatch (Decision 3; notation per X12).
-- 4.3, the `for_update` profile comment "pessimistic lock for hot rows" (line 311): same.
+## Design text changed on acceptance
+On acceptance (2026-11-25), in `docs/design/design.md` and `docs/design/design-KO.md`:
+- 7.3, first paragraph (line 863): the "under review" note became the decision - two kinds of
+  `40001`; REPEATABLE READ + `version` escapes the read/write-dependency kind; neither
+  `lock="for_update"` nor a blind increment avoids the same-row kind on a hot row; the profile
+  counts as "fail early"; whether `lock=` stays and the approach for hot rows are decided after
+  9.2 (candidates here, not repeated there). Links this ADR.
+- 8.3 "Default isolation level", the "Escape hatch" bullet (line 991): REPEATABLE READ + `version`
+  escapes SSI's read/write-dependency failures; there is no escape hatch from the same-row `40001`;
+  the profile only makes the conflict surface at the load stage. Links this ADR.
+- 4.4, the `.add(n)` row of the write table (line 353): "concurrent writers of the same row still
+  conflict with 40001".
+- 4.6, the Spring/JPA mapping row `@Lock(PESSIMISTIC_WRITE)` (line 555): under SERIALIZABLE a
+  waiter still fails with `40001` once the holder has updated and committed, and is retried - not
+  an escape hatch.
+- 3.1, "Pessimistic locking" (line 137): the lock is taken at the load stage and fails early; it
+  does not avoid the same-row `40001`; whether `lock=` stays is decided after 9.2.
+- 4.3, the `for_update` profile comment (line 311): "row lock at the load stage: fails early, does
+  not avoid 40001".
+
+The 3.1 / 4.3 notation difference (spike 0002 X12) is left as it was (Decision 3). The candidate
+of a session-level advisory lock before `BEGIN` is not mentioned in the design text: it is
+unverified.
 
 ## Alternatives considered
 - Allow READ COMMITTED + `for_update` for named hot-row use cases: removes the failures but breaks
@@ -166,3 +176,5 @@ ADR):
   session-level advisory lock before `BEGIN` added as an unverified candidate and the
   in-transaction lock rejection narrowed; the design locations to change on acceptance listed;
   line wrapping fixed.
+- 2026-11-25 - accepted by the maintainer. The design text listed in this ADR was changed (section
+  "Design text changed on acceptance", EN + KO); the `57014` question is #61.

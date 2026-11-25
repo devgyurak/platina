@@ -549,7 +549,9 @@ These came up in several use cases; the per-use-case sections refer to them by n
   dependencies among transactions` (seen in the reproduction's part C, under SERIALIZABLE), is the
   write-skew conflict; REPEATABLE READ does not raise it (PostgreSQL documentation, not observed
   here), so REPEATABLE READ + `version` remains an escape hatch from that kind only. Because this changes a statement of a section 8
-  decision, it is written up as ADR-0005 (Proposed). Rates are not measured here (9.2).
+  decision, it is written up as ADR-0005, accepted by the maintainer on 2026-11-25 (design 3.1, 4.3,
+  4.4, 4.6, 7.3 and 8.3 changed accordingly). Rates are not measured here (9.2).
+  The `57014` outcome of a lock wait and 4.6's retry rule are tracked as #61.
 - **X9 - `RunResult.value` is `object`.** `Changes.returning(v)` loses the type; a caller gets it
   back only through `isinstance` or a cast (`fail_findings.py` line 34: pyright
   `reportReturnType`, mypy `return-value`). That line is rejected because of a declaration this
@@ -908,11 +910,11 @@ statement about hot rows does not hold on PostgreSQL (X8, ADR-0005).
 | Entity equality and hashing | No use case needed entity `==` or an entity as a set member or dict key: every "same row" question (merge, transfer, seat in show) compared IDs, and every diff was keyed by IDs. But the test API does look rows up by entity: `r.updated(entity)` / `r.removed(entity)` on snapshots that were nested (a stock inside a variant, a line inside an order) or passed through a chain, which needs key-based identity (type + primary key) for the lookup. Tests compared inserted rows by fields, because an expected entity cannot be constructed in a test body and a stub has another ID. The provisional rule's concern showed once: one row loaded through two paths gives two snapshots that would be unequal (use case 5). 4.12's dict-literal assertion is a pyright error (X2) - a `Column` hashing question, not an entity one | 1, 3, 4, 5, 6, 8 | #54 |
 | `path(...).add(...)` length | 3 of 10 use cases, 4 lines: 60-70 characters for one increment of a part of an embedded value (`wallet.set(Wallet.balance.path(Money.amount).add(-order.total.amount))`); every other increment is a plain column (`Coupon.used.add(1)`, `Stock.allocated.add(qty)`, 30-46 characters). The length is concentrated in money; the increment brings no concurrency benefit on the same row (X8) | 1, 2, 8 | design 9.5 |
 | Commit planner | Use case 9 needs edges for updates of FK columns (insert an address, then point the user at it; clear the user's default, then delete the address). The tables form an FK cycle but the row-level order is acyclic; 10.7 names edge kinds for inserts and deletes only | 9 | #15 (comment), #6 |
-| Phase 1 scope | Phase 1 needs: a delete for a root (X4) and a rule for `insert_all` in the commit batch (X3) - basic writes, not features; a decision on loads for `Load.after` results and set loads (X7), or a documented caller-side pattern; the `bind` rule for dependent loads (X5, with #48); nested load paths (X6); the commit planner row above; the key-reuse rule (X14). `@batch_usecase` (Phase 2) does not cover recurring "expire what is due" jobs as shown. The `@process` handlers of 1, 2, 7, 10 are Phase 2 (9.6), so in Phase 1 no use case can send a receipt or execute a refund. The hot-row text needs ADR-0005 before it is documented | all | #6 |
+| Phase 1 scope | Phase 1 needs: a delete for a root (X4) and a rule for `insert_all` in the commit batch (X3) - basic writes, not features; a decision on loads for `Load.after` results and set loads (X7), or a documented caller-side pattern; the `bind` rule for dependent loads (X5, with #48); nested load paths (X6); the commit planner row above; the key-reuse rule (X14). `@batch_usecase` (Phase 2) does not cover recurring "expire what is due" jobs as shown. The `@process` handlers of 1, 2, 7, 10 are Phase 2 (9.6), so in Phase 1 no use case can send a receipt or execute a refund. The hot-row text is settled by ADR-0005 (accepted); `57014` on a lock wait is #61 | all | #6 |
 
-Consequence for the design: X8 changes a statement of a section 8 decision, so it is ADR-0005
-(Proposed), linked from 7.3 and 8.3 with a note; the decision itself is not changed until the
-maintainer accepts it. The other findings are open questions for the maintainer, each with
+Consequence for the design: X8 changes a statement of a section 8 decision, so it is ADR-0005,
+accepted by the maintainer (2026-11-25); design 3.1, 4.3, 4.4, 4.6, 7.3 and 8.3 now state it, and
+the lock-wait timeout question is #61. The other findings are open questions for the maintainer, each with
 alternatives above, now tracked as issues: X4 (delete a root) #57, X14 (key reuse) #58, X7 and X6
 (set loads, loads on `Load.after` results, nested paths) #59, X3 (`insert_all` in the commit
 batch, inserting through parent relations) #60. Proposed as scope of existing issues (comments,

@@ -32,8 +32,10 @@ All notable changes are documented here. Format: [Keep a Changelog](https://keep
   `docs/spikes/0002-use-cases-on-paper.md`, reviewed by the architect sub-agent and reproduced by
   type-reviewer (type checks) and pg-researcher (database observations); design 9.4 table gains a
   result column. Partly holds; open decisions for the maintainer (delete of a root,
-  idempotency-key reuse, set loads, `insert_all` in the commit batch) and ADR-0005 (Proposed:
-  `lock="for_update"` is not an escape hatch from serialization failures).
+  idempotency-key reuse, set loads, `insert_all` in the commit batch: #57-#60, and #61 for a
+  lock-wait timeout) and ADR-0005 (accepted: `lock="for_update"` is not an escape hatch from
+  serialization failures; design 3.1, 4.3, 4.4, 4.6, 7.3 and 8.3 distinguish the same-row and the
+  read/write-dependency `40001`).
 
 ### Changed
 - Entity syntax (ADR-0003, accepted): entities inherit `Entity` with table options as class
