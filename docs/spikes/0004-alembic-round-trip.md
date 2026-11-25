@@ -499,7 +499,7 @@ Read from its README, documentation, `pyproject.toml`, `src/alembic_utils/replac
 
 | Item | Verdict | Criteria passed (1 create / 2 catalog / 3 change / 4 downgrade) | One-line reason |
 |---|---|---|---|
-| ① `renamed_from` | **partly** | Columns (1a, 1c, 1d, 1e): 1, 3, 4 pass; 2 passes except names (PostgreSQL 18 NOT NULL names; in 1d the CHECK name without the plugin). Table (1b): 1, 4 pass; 3 fails its second autogenerate (convention-named unique constraint), 2 fails on every table-derived name | The `process_revision_directives` plan works for columns but needs its own downgrade, renderer and ordering; a table rename leaves names behind |
+| ① `renamed_from` | **partly** | Columns (1a, 1c, 1d, 1e): 1, 3, 4 pass; 2 fails on names only - columns, types, rows, FK and index are right, but PostgreSQL 18 NOT NULL constraint names (and in 1d the CHECK name without the plugin) keep the old name. Table (1b): 1, 4 pass; 3 fails its second autogenerate (convention-named unique constraint), 2 fails on every table-derived name | The `process_revision_directives` plan works for columns but needs its own downgrade, renderer and ordering; a table rename leaves names behind |
 | ② lambda `Check` | **partly** | Defaults: 1, 2 on creation only, 3 fails (add, change, remove all invisible). With `checkconstraint_byname`: add/remove pass, change fails under a stable name; with expression-derived names all four pass | Holds only with an opt-in plugin **and** names that change with the expression |
 | ③ `version` trigger | **holds** (with the spike's extension; **does not hold** with Alembic alone) | All four, every sub-case, with custom operations + `Plugin` comparator; none of 2 and 3 with stock Alembic | Alembic's own extension points suffice; no third-party package needed for this object |
 | ④ expression / partial indexes | **partly** | 1, 2, 4 pass; 3 passes for expression and `desc()` changes, fails for a `WHERE`-only change under the same name; with expression-derived names all four pass | No false diffs; the partial-index predicate is not compared |
@@ -561,4 +561,79 @@ own reverse and ordering; the trigger operations and comparator; a `render_item`
 Platina's types; a fresh `MetaData` per autogenerate (F1); and decisions 1-3 above.
 
 ## Reproduction
-(filled in by pg-researcher from this write-up alone)
+
+- **Who:** the `pg-researcher` sub-agent, 2026-11-25, in this worktree, database
+  `spike0004_repro` on the fast profile (created, then dropped: `pg_database` afterwards
+  `['platina', 'postgres', 'spike0004', 'template0', 'template1']`).
+- **What it was given:** this write-up cut before Observations (Question, A1-A7, H1-H9, Setup,
+  Method without "Changes to the method") plus neutral harness facts (fresh `MetaData` per call,
+  `produce_migrations` after a downgrade, the three configurations). It did not read the
+  Observations, the Verdict, `results/`, the commit bodies, or the author's `run.py`,
+  `scenarios.py`, `catalog.py`, `probes.py`. It imported only the subject under test
+  (`registry.py`, `ext.py`, `alembic_env/`) and wrote its own driver, scenario declarations and
+  catalog checks: `spikes/0004-alembic-round-trip/repro/` (`repro_harness.py`, `repro_states.py`,
+  `repro_run.py`, `repro_probes.py`; raw output in `repro/out/`, git-ignored).
+- **Commands:**
+  ```
+  uv run python spikes/0004-alembic-round-trip/repro/repro_run.py setup
+  uv run python spikes/0004-alembic-round-trip/repro/repro_run.py <item> <stock|baseline|ckplugin> <columns|hash>
+  uv run python spikes/0004-alembic-round-trip/repro/repro_probes.py
+  uv run python spikes/0004-alembic-round-trip/repro/repro_run.py teardown
+  ```
+  21 runs (items 1-6 across configurations and namings, plus `1bx` for the case below) and the
+  probes. Its declarations differ from the author's (other table and column names, e.g.
+  `customers -> clients`, `name -> full_name`, `code -> sku`), which is intended.
+
+**Its results per item** (C1 create, C2 catalog, C3 change, C4 downgrade):
+- **Item 1.** Stock: C3 fails in every sub-case - NOT NULL columns with a row give
+  `NotNullViolation`; it also ran the nullable variant: the upgrade succeeds and the value is lost
+  (`SELECT full_name` -> `[(None,)]`), a table rename loses the row (`[]`), and in 1d PostgreSQL
+  drops the CHECK with its column, Alembic never re-adds it, and the second autogenerate is still
+  `EMPTY`. With the rewrite: 1a, 1c, 1e pass C1/C3/C4 with rows kept
+  (`op.alter_column('customers', 'name', ..., new_column_name='full_name')`, `[('Ada',)]`); C2 is
+  partial on PostgreSQL 18 NOT NULL names. 1d: C3 and C4 pass (index and FK dropped and
+  re-created under new names); C2 fails under `baseline` (the CHECK keeps a stale name - with
+  `hash` naming too, as the hash covers the column name) and is partial under `ckplugin` (the
+  CHECK is re-created). 1b: first run with no unique column passed C3; at the author's request it
+  ran `1bx` (a `unique=True` column and an incoming FK): **the second autogenerate is not empty**
+  (`op.drop_constraint(op.f('uq_customers_email'), 'clients', type_='unique')`,
+  `op.create_unique_constraint(op.f('uq_clients_email'), 'clients', ['email'])`), identical under
+  `baseline` and `ckplugin`; C2 fails on `pk_customers`, `uq_customers_email` and the NOT NULL
+  names; the FK is right (`FOREIGN KEY (customer_id) REFERENCES clients(id)`), the row is kept,
+  C4 MATCH; applying the leftover in a third revision settles everything except the PK and NOT NULL
+  names. It changed its own 1b row from pass to partial.
+- **Item 2.** `baseline` (both namings): add, change and remove all generate `pass`.
+  `ckplugin`/`columns`: add and remove detected, change under the same name not.
+  `ckplugin`/`hash`: all four pass (`drop_constraint('ck_orders_0ccbe12f')` +
+  `create_check_constraint('ck_orders_9e486203', 'orders', 'quantity >= 0')`).
+- **Item 3.** Stock: no trigger or function; an `UPDATE ... RETURNING version` gives `[(1,)]`.
+  With the extension: all four pass in every state; the bump works (`[(2,)]`), V2 raises
+  `version went backwards on orders`, and the function's md5 returns to V1 after the downgrade.
+  A same-named trigger redefined by hand as `AFTER INSERT` is not detected (`EMPTY`).
+- **Item 4.** No false diff (`lower((email)::text)` in the catalog, second autogenerate `EMPTY`);
+  expression and `desc` changes detected; a `WHERE`-only change under the same name generates
+  `pass`; with `hash` naming all four pass.
+- **Item 5.** Before partitions all four pass. After partitions created outside migrations, the
+  next revision prepends `drop_table` for each partition (and `drop_index` for their indexes).
+  With an index on the parent the upgrade fails (`cannot drop index outbox_log_2026_11_topic_idx
+  because index ix_outbox_log_topic requires it`); without one it succeeds and **drops the
+  partitions with their rows** (`count(*)` 1 -> 0). The downgrade fails (`baseline`:
+  `AttributeError: module 'sqlalchemy' has no attribute 'NullType'`; `stock`: `cannot inherit
+  from partitioned table "run_claim"`). `RANGE (id) -> HASH (id)`: `EMPTY`. A primary key or
+  unique constraint without the partition key is generated without warning and fails at upgrade
+  (`unique constraint on partitioned table must include all partitioning columns`).
+- **Item 6.** The composite unique key and `allocated <= quantity`: all four pass (the CHECK
+  change itself is covered by item 2).
+- **Hypotheses:** H1, H2, H3, H5, H6, H7, H8, H9 hold; H4 does not hold. H7, H8 and H9 were also
+  checked against the installed source objects (`"compare_check_constraint" in
+  vars(PostgresqlImpl)` is `False`; `_dialect_options` of a partial index returns `()`;
+  `AlterColumnOp(..., modify_name='new').reverse()` has `modify_name` `None`).
+- **Not run by it:** `ckplugin` for items 3-5, `stock` for items 2 and 6, `hash` for items 3 and 5;
+  `alembic_utils` and the `include_name` filter (outside the subject).
+
+**Agreement:** agree. Every item verdict and every hypothesis matches. It ran two things the
+author only inferred (nullable renames losing values; partition rows dropped) and found two the
+author did not run (the silent CHECK loss under stock 1d; the hand-redefined trigger going
+undetected); none changes a verdict. The one difference in its first report (1b's second
+autogenerate) came from a table without a unique column; on the author's shape it reproduced the
+author's result.
