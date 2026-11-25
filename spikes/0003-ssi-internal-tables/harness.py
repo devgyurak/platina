@@ -312,7 +312,8 @@ def external_cpu() -> dict[str, float]:
     containers = 0.0
     for line in stats.splitlines():
         name, pct = line.split()
-        if not name.startswith("platina-"):
+        # a starting or stopping container reports "--"; it uses no CPU worth counting
+        if not name.startswith("platina-") and pct != "--":
             containers += float(pct.rstrip("%"))
     return {
         "external_pct": round(host + containers, 1),

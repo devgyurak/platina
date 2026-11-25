@@ -606,7 +606,63 @@ REPEATABLE READ 0-1 per run (at 32 and 64 workers, Zipf), SERIALIZABLE 0 in ever
 Zipf, `create` (range read + uuid7 INSERT) had 4-29 % 40001 under SERIALIZABLE and 0 % under
 REPEATABLE READ. TPS is not reported: paired ratios spread 0.48-3.14.
 
-(C and D reruns on a quiet host: pending.)
+### C. Rates, rerun on a quiet host (durable)
+`uv run python spikes/0003-ssi-internal-tables/load.py rates --port 26433` (2026-11-25,
+21:44-23:19 local), quiet-host gate second version: 120 runs kept (24 variants x 5), 26 runs
+discarded and rerun (mean external CPU during the run 507-829 %); the kept runs' mean external CPU
+was 67-498 %. Every worker reported `serializable`. Tables: `uv run python
+spikes/0003-ssi-internal-tables/summarize.py rates`. Values are median (range) over 5 runs; 32
+workers unless stated; no error other than 40001 occurred (no 40P01, no 57014, no 53200).
+
+| Variant | 40001 / attempt | Attempts / commit | Exhausted commands / run |
+|---|---|---|---|
+| C1 baseline (no projection) | 0 % | 1.000 | 0 |
+| C1 `update` disjoint keys | 0 % | 1.000 | 0 |
+| C1 `update` Zipf `store_id` | 26.8 % (26.5-27.7) | 1.366 | 336 |
+| C1 `update` one global key | 82.1 % (80.5-82.6) | 5.60 | 7,068 |
+| C1 `upsert_existing` disjoint keys | 0 % | 1.000 | 0 |
+| C1 `upsert_existing` Zipf | 27.1 % (26.6-27.5) | 1.372 | 308 |
+| C1 `upsert_existing` global | 81.2 % (78.8-86.5) | 5.32 | 7,482 |
+| C1 `upsert_new` (new uuid7 key) | 0 % | 1.000 | 0 |
+| C2 probes `nowait` | 26.9 % (25.9-27.2) | 1.369 | 172 |
+| C2 probes `wait` (50 ms on a held claim) | 46.6 % (45.7-47.2) | 1.871 | 23 |
+| C2 probes `sleep` (50 ms on an open snapshot) | 46.2 % (45.1-47.4) | 1.858 | 28 |
+| C3 uuid7 keys, read own recent row | **69.2 % (65.1-72.3)** | 3.24 | 4,936 |
+| C3 uuid7 keys, read an old row | 0 % | 1.000 | 0 |
+| C3 uuid4 keys, read own recent row | 0.10 % (0.09-0.12) | 1.001 | 0 |
+| C3 uuid4 keys, read an old row | 0.11 % (0.08-0.13) | 1.001 | 0 |
+
+- C1: every Zipf/global 40001 except a few hundred per variant is `could not serialize access due
+  to concurrent update` at the projection statement (`UPDATE store_revenue` / `INSERT INTO
+  store_revenue ... ON CONFLICT`); the rest are read/write-dependency pivots (e.g. 445 at COMMIT
+  for `update`/Zipf over 5 runs).
+- C2: background workers (same runs, always `nowait`) 27.0 % / 18.6 % / 18.8 % for the
+  `nowait` / `wait` / `sleep` runs - the probes' higher rate is not a heavier write load (the
+  background saw less). Almost all failures are `concurrent update` at `UPDATE orders`.
+- C3: uuid7 + recent failures are read/write-dependency pivots, mostly at `INSERT INTO orders`
+  (126,628 "Canceled on identification as a pivot, during write" over 5 runs), then at the outbox
+  INSERT and COMMIT.
+
+**C4 - one hot row** (durable, 5 runs per cell, `statement_timeout = '2s'`; the final value of
+the row equalled the number of committed commands in all 45 runs):
+
+| Workers | Load form | 40001 / attempt | Attempts / commit | `RetryExhausted`, % of commands | 57014 / attempt | Failing statement |
+|---|---|---|---|---|---|---|
+| 8 | `blind` | 41.3 % (30.2-47.0) | 1.70 | 9.6 (6.5-11.2) | 0 | `UPDATE hot` |
+| 8 | `read` | 40.2 % (31.1-46.1) | 1.67 | 9.3 (7.0-11.6) | 0 | `UPDATE hot` |
+| 8 | `for_update` | 40.1 % (30.0-48.2) | 1.67 | 9.2 (6.7-12.1) | 0 | `SELECT ... FOR UPDATE` |
+| 32 | `blind` | 78.1 % (73.5-81.4) | 4.57 | 39.7 (34.3-45.1) | 0 | `UPDATE hot` |
+| 32 | `read` | 78.5 % (77.2-81.3) | 4.65 | 41.0 (39.1-45.0) | 0 | `UPDATE hot` |
+| 32 | `for_update` | 77.2 % (72.1-79.9) | 4.39 | 39.3 (33.7-43.0) | 0 | `SELECT ... FOR UPDATE` |
+| 64 | `blind` | 91.0 % (90.7-91.8) | 11.1 | 68.9 (68.0-71.1) | 0 | `UPDATE hot` |
+| 64 | `read` | 91.1 % (91.0-92.8) | 11.3 | 69.3 (68.8-74.4) | 0 | `UPDATE hot` |
+| 64 | `for_update` | 89.7 % (88.1-90.4) | 9.74 | 65.5 (61.5-67.2) | 0 | `SELECT ... FOR UPDATE` |
+
+All C4 failures are `could not serialize access due to concurrent update`, except a few dozen
+read/write-dependency failures at COMMIT (at most 32 per cell over 5 runs). No lock wait reached
+the 2 s `statement_timeout`.
+
+(D rerun on a quiet host: pending.)
 
 ## Verdict
 

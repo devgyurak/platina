@@ -28,7 +28,11 @@ def mr(xs: list[float], fmt: str = "{:.4f}") -> str:
 def rates(name: str = "load_rates.jsonl") -> None:
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for r in load(name):
-        keys = [k for k in ("kind", "form", "dist", "variant", "key", "read") if k in r]
+        keys = [
+            k
+            for k in ("kind", "form", "dist", "variant", "key", "read", "mode", "workers")
+            if k in r and not (k == "workers" and r["kind"] != "hot")
+        ]
         groups[" ".join(f"{k}={r[k]}" for k in keys)].append(r)
     print(
         "| Variant | Runs | Attempts/run | 40001 / attempt | Attempts / commit | Exhausted / run | Background 40001 / attempt |"
@@ -48,6 +52,20 @@ def rates(name: str = "load_rates.jsonl") -> None:
             f"| {label} | {len(rs)} | {mr(att, '{:.0f}')} | {mr(rate, '{:.3f}%')} | "
             f"{mr(apc, '{:.3f}')} | {mr(exh, '{:.0f}')} | {mr(bg, '{:.3f}%')} |"
         )
+    print()
+    print("| Variant | RetryExhausted % of commands | 57014 / attempt | 40001 at statement |")
+    print("|---|---|---|---|")
+    for label, rs in groups.items():
+        if "kind=hot" not in label:
+            continue
+        exh = [100 * r["exhausted"] / r["commands"] for r in rs]
+        t = [100 * r["errors"].get("57014", 0) / r["attempts"] for r in rs]
+        where: dict[str, int] = defaultdict(int)
+        for r in rs:
+            for k, v in r["error_detail"].items():
+                if " | 40001 | " in k:
+                    where[k.split(" | ")[0]] += v
+        print(f"| {label} | {mr(exh, '{:.1f}')} | {mr(t, '{:.3f}%')} | {dict(where)} |")
     print()
     for label, rs in groups.items():
         detail: dict[str, int] = defaultdict(int)
