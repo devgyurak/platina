@@ -8,7 +8,7 @@
 The bar for this document: the maintainer reads it and is convinced. Keep it short.
 
 ## Context
-- Design section 4.2: `pk(generated="uuid7")` is the default, so `Order.new(...)` inside a pure use
+- Design section 4.2: `pk(generated="uuid7")` is the default, so `Order(...)` inside a pure use
   case knows the new ID. The design does not say *who* calls `uuid.uuid7()`.
 - uuid7 reads the clock and a random source. If the core calls it, the core is no longer
   deterministic: replaying the engine with the same script (design section 11.4) produces
@@ -24,8 +24,8 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
    (a `contextvars` value) around each attempt's `uc.invoke(...)` and removes it afterwards; a
    retry gets fresh IDs, like a fresh `Now`. The real source (`uuid.uuid7()`) lives in the shell,
    where the guard allows it. Engine replay passes a fixed source directly, without a runner.
-2. **An active source is never replaced.** `Entity.new(...)` takes its ID from the active
-   source. When a use case or step is called directly, the call wrapper installs a source **only
+2. **An active source is never replaced.** Creating an entity (`Order(...)`, ADR-0003) takes its
+   ID from the active source. When a use case or step is called directly, the call wrapper installs a source **only
    if none is active**; if one is (a use case running under `app.run` calling a step directly),
    it keeps using it. So a direct call nested inside a real run always gets real uuid7 IDs.
 3. **Outside any run, IDs come from one fallback sequence.** A single process-wide deterministic
@@ -33,7 +33,7 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
    called directly with no active source (the call wrapper activates the fallback sequence for
    that call), and `Order.stub(...)`, which draws from it directly. There is no counter per call,
    so IDs are unique within the process: two direct calls in one test, and a stub plus the
-   `Order.new()` inside the call under test, never collide.
+   `Order(...)` inside the call under test, never collide.
    - The sequence is an `itertools.count()` whose `__next__` is the only operation used (no
      read-modify-write such as `n += 1`). The core cannot import `threading`, so a lock is not an
      option. Observed on free-threaded CPython 3.14.7 (macOS arm64; 8 threads x 200,000
@@ -48,12 +48,12 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
      commit"), so a stub or a direct-call result can never be written to the database.
    - Tests that need a specific value pass it explicitly (`Order.stub(id=...)`) or read it from
      the result; they do not rely on the sequence's position.
-4. **`Order.new()` outside any invocation raises `UsageError`.** At module level, in a plain
-   helper, or as an argument built by the caller (`app.run(create.bind(order=Order.new(...)))`)
+4. **`Order(...)` outside any invocation raises `UsageError`.** At module level, in a plain
+   helper, or as an argument built by the caller (`app.run(create.bind(order=Order(...)))`)
    there is no active source, and the fallback sequence is *not* used: the mistake is reported
-   where it is made ("`Order.new()` needs an active ID source: call it inside a use case or step,
+   where it is made ("`Order(...)` needs an active ID source: call it inside a use case or step,
    or use `Order.stub()` in tests"), not later at commit time.
-5. **No special case for the test kit.** `Order.new()` and `Order.stub()` behave the same whether
+5. **No special case for the test kit.** `Order(...)` and `Order.stub()` behave the same whether
    or not `platina.testing` is imported.
 6. The guard keeps forbidding `uuid1/4/6/7/8` (called or referenced), clock calls and `random` in
    the core (A101/A106). Generating version-8 fallback IDs needs none of them (`uuid.UUID(int=...)`
@@ -84,12 +84,12 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
   would swap in counter IDs that reach the database and collide on the primary key across runs.
 - Put `now` and the jitter random source into the same context: a second way to receive the time
   (besides the `Now` parameter), and hidden inputs to the retry policy.
-- A test-kit exception (the kit installs the deterministic source): `Order.new()` would behave
+- A test-kit exception (the kit installs the deterministic source): `Order(...)` would behave
   differently depending on an import, and direct calls without the kit would fail.
 - IDs assigned at commit (placeholders until then): the pure function would no longer know the
   new ID, which section 4.2 explicitly wants (events, child rows referencing it).
 - Pass an ID source as a use-case parameter (`ids: Ids = INJECTED`): explicit, but every use case
-  that creates anything grows a parameter, and `Entity.new` in a `@step` needs it threaded
+  that creates anything grows a parameter, and creating an entity in a `@step` needs it threaded
   through `chain`.
 
 ## History
@@ -107,3 +107,5 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
 - 2026-11-25 - review: corrected the measurement (8 threads x 200,000 draws per run, not 1.6 million
   each); the experiment is now a unit test in the repository.
 - 2026-11-25 - accepted by the maintainer.
+- 2026-11-25 - creation is now the plain constructor `Order(...)` (ADR-0003); the text says
+  `Order(...)` where it said `Order.new()`. No change to the decision.

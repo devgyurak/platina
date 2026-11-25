@@ -1,0 +1,56 @@
+# pyright: reportInvalidTypeVarUse=false
+# ^ Finding L1 of the write-up (field specifiers solve T from the annotation only).
+"""Item 4 alternatives: path helpers and an embedded descriptor whose class access is the value class."""
+
+from collections.abc import Callable
+from typing import Never, dataclass_transform, overload
+
+from lib_design import Column, Op
+
+class PathColumn[T](Column[T]):
+    # (b1) attribute reference of the value class, owner unchecked
+    def path[U](self, field: U, /) -> Column[U]: ...
+    # (b2) getter over the value type, owner checked through the parameter type
+    def at[U](self, getter: Callable[[T], U], /) -> Column[U]: ...
+
+class PCol[T]:
+    @overload
+    def __get__(self, instance: None, owner: type[object], /) -> PathColumn[T]: ...
+    @overload
+    def __get__(self, instance: object, owner: type[object], /) -> T: ...
+    def __set__(self, instance: Never, value: T, /) -> None: ...
+
+# (c) embedded descriptor: class access returns the value class itself
+class Emb[V]:
+    @overload
+    def __get__(self, instance: None, owner: type[object], /) -> type[V]: ...
+    @overload
+    def __get__(self, instance: object, owner: type[object], /) -> V: ...
+    def __set__(self, instance: Never, value: V, /) -> None: ...
+
+@dataclass_transform(frozen_default=True, order_default=True)
+def value[C](cls: type[C], /) -> type[C]: ...
+
+# (d) value-object increment through a declared delta type
+class Additive[D]:
+    """Marker base a value class could inherit to declare what its `.add` takes."""
+
+class AddColumn[T](Column[T]):
+    def add_delta[D](self: AddColumn[Additive[D]], delta: D, /) -> Op: ...
+
+class ACol[T]:
+    @overload
+    def __get__(self, instance: None, owner: type[object], /) -> AddColumn[T]: ...
+    @overload
+    def __get__(self, instance: object, owner: type[object], /) -> T: ...
+    def __set__(self, instance: Never, value: T, /) -> None: ...
+
+def embedded_p[T](*, prefix: str) -> PCol[T]: ...
+def embedded_e[V](*, prefix: str) -> Emb[V]: ...
+def embedded_a[T](*, prefix: str) -> ACol[T]: ...
+
+class Value:
+    """(c') a value base class that gives `Order.total.to(...)` back on `type[V]`."""
+
+    @classmethod
+    def to[S](cls: type[S], value: S, /) -> Op: ...

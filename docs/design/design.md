@@ -23,7 +23,7 @@ Translations: [Korean](design-KO.md)
 | Default isolation level | Command: **SERIALIZABLE + automatic retry** (escape hatch is REPEATABLE READ + version). Query: READ COMMITTED |
 | External IO | Forbidden inside use cases. External IO happens only in **process handlers** |
 | Composition | Steps only via **`with chain(a, b) as (c, a, b)`**. Rebinding the same names to latest-state views; aliases blocked by move marks. `+` only within a single step |
-| Call and write | `app.run(uc.bind(...), options)`. A ref is a placeholder that is an entity at the type level (JPA `getReference`, `.set` not allowed). Fields are `Col[T]`. Creation via keyword constructor, modification via `.set(Order.status.to(...))` |
+| Call and write | `app.run(uc.bind(...), options)`. A ref is a placeholder that is an entity at the type level (JPA `getReference`, `.set` not allowed). Entities inherit `Entity`; fields are `Col[T]`, read on the class as `Column[Owner, T]`. Creation via the keyword constructor `Order(...)`, modification via `.set(Order.status.to(...))`, embedded paths `Order.total.path(Money.amount)` |
 | Commit order | Topological sort of the FK and unique key dependency graph + batching |
 | Round trips | 1 load batch + 1 commit batch (including writes, COMMIT and the LSN query) |
 | Run ID | Every `app.run` has a run ID (caller idempotency key or automatic uuid7). Claimed by INSERT without a lookup → idempotency and commit-outcome resolution (rerun) unified |
@@ -187,7 +187,7 @@ soft delete, auditing, multi-tenancy, pagination, Pydantic DTO generation, saga 
 
 ## 4. Syntax
 
-> The code below is a design proposal. Names and signatures may change in the prototype. In particular, the type surface (`Col[T]` in §4.2, constructor types, embedded paths) is a hypothesis until confirmed by the type stub spike (§9).
+> The code below is a design proposal. Names and signatures may change in the prototype. The type surface of §4.2-§4.6 and the misuse list of §11.8 were confirmed under pyright and mypy by the type stub spike ([spike 0001](../spikes/0001-type-surface.md), ADR-0003, ADR-0004); the other sections are not yet checked by a type spike, and two lines of §4.7 depend on open decisions (marked there).
 > Example domain: the `billing` module of an online store (orders, order items, wallets).
 
 ### 4.0 Concepts at a glance
@@ -236,17 +236,16 @@ app.seal()   # validates load plans, module boundaries, invariants, projection k
 from decimal import Decimal
 from datetime import datetime
 from platina import (
-    entity, value, event, Col, Id, Rel, pk, column, embedded, fk,
+    Entity, value, event, Col, Id, Rel, pk, column, embedded, fk,
     many_to_one, one_to_many, version_column, invariant, Check, Index, server_now,
 )
 
 @value
 class Money:
-    amount: Decimal
-    currency: str = "KRW"
+    amount: Col[Decimal]
+    currency: Col[str] = column(default="KRW")
 
-@entity(table="orders", aggregate_root=True)
-class Order:
+class Order(Entity, table="orders", aggregate_root=True):
     id: Col[Id[Order]] = pk(generated="uuid7")          # default: client-side UUIDv7
     number: Col[str] = column(unique=True, length=20)
     status: Col[OrderStatus] = column(default=OrderStatus.PENDING, enum_as="text")
@@ -261,8 +260,8 @@ class Order:
     created_at: Col[datetime] = column(server_default=server_now())
 
     class Meta:
-        indexes = [Index(lambda: (Order.user_id, Order.created_at.desc()))]
-        checks = [Check(lambda: Order.total.amount >= 0)]   # generated as a DB CHECK constraint
+        indexes = (Index(lambda: (Order.user_id, Order.created_at.desc())),)
+        checks = (Check(lambda: Order.total.path(Money.amount) >= Decimal(0)),)   # generated as a DB CHECK constraint
 
     @invariant(fields=lambda: (Order.status, Order.total))  # invariant checked only in Python
     def paid_requires_total(self) -> bool:
@@ -277,11 +276,13 @@ class OrderPaid:
     # Sequence numbers (aggregate version, position within the transaction) are filled in by the engine at commit. Never written by hand.
 ```
 
-- **Every field is declared as `Col[T]`.** With a plain annotation (`status: OrderStatus = column(...)`), the type checker also sees class access (`Order.status`) as `OrderStatus`. For it to appear as `Column[T]` on the class and `T` on the instance, the annotation itself must be a descriptor type. This is the same reason SQLAlchemy 2.0 uses `Mapped[T]`. Event fields are the same (used in projection key declarations such as `OrderPaid.user_id`).
+- **Entities inherit `Entity`** and pass their table options as class keywords (ADR-0003). A class decorator can make a type checker synthesise a constructor but cannot add members, so `Order.ref`, `Order.where`, `Order.stub` and `order.set` need the base class (spike 0001).
+- **Every field is declared as `Col[T]`.** With a plain annotation (`status: OrderStatus = column(...)`), the type checker also sees class access (`Order.status`) as `OrderStatus`. For it to appear as `Column[Order, OrderStatus]` on the class (the column knows the class that declares it) and `OrderStatus` on the instance, the annotation itself must be a descriptor type. This is the same reason SQLAlchemy 2.0 uses `Mapped[T]`. Event fields and value-object fields are the same (`OrderPaid.user_id` in projection keys, `Money.amount` in embedded paths, ADR-0004).
 - **Snapshots are immutable.** `order.status = PAID` is an error; writes happen only through `.set(...)` (§4.4). Collection fields are a read-only `Sequence[Item]` on the instance.
-- **Creation is a single keyword constructor**: `Order.new(number="A-1", total=..., user_id=...)`. A missing required field is the most common mistake, so it must be caught statically. How to get immutability and constructor type checking at the same time is a spike task (§8.2 "Creation syntax").
+- **Creation is the keyword constructor**: `Order(number="A-1", total=..., user_id=...)`, the same as events and values. A missing required field is a type error in both checkers; generated keys, `version_column()`, server defaults and relations are not parameters (§8.2 "Creation syntax", ADR-0003).
+- **Equality**: two snapshots are equal when they hold the same values (columns and loaded relations, including what is loaded); the hash is the entity type plus the primary key. `==` and `hash()` on a ref raise `UnloadedReference` (ADR-0003).
 - **`owned=True`**: a child that belongs to the aggregate. When a child changes, the root's `version` is bumped as well (JPA `OPTIMISTIC_FORCE_INCREMENT`). So when an edit screen handles an order and its items together, a change to only the items is still caught by the optimistic lock across requests (§4.6). Ordinary FK children (e.g. comments on a post) are not `owned` and do not touch the root.
-- **Client-generated IDs are the default.** Thanks to Python 3.14's `uuid.uuid7()`, the ID of a new entity is known inside the pure function. `generated="identity"` is also supported, but in that case the ID is only available from the commit result (`result.created(Order)`). The core never calls `uuid7()` itself: `Order.new()` takes the ID from the source the engine installs for the invocation; direct calls in tests and `Order.stub()` use a deterministic fallback sequence, and `Order.new()` outside any use case or step is a `UsageError` (ADR-0002).
+- **Client-generated IDs are the default.** Thanks to Python 3.14's `uuid.uuid7()`, the ID of a new entity is known inside the pure function. `generated="identity"` is also supported, but in that case the ID is only available from the commit result (`result.created(Order)`). The core never calls `uuid7()` itself: `Order(...)` takes the ID from the source the engine installs for the invocation; direct calls in tests and `Order.stub()` use a deterministic fallback sequence, and `Order(...)` outside any use case or step is a `UsageError` (ADR-0002).
 - Places that refer to other classes are evaluated late with a `lambda`. String references are not used.
 - Instances for tests: `Order.stub(...)`.
 
@@ -315,7 +316,7 @@ class OrderRepo(Repository[Order]):
         return (
             select(OrderSummary,
                    id=Order.id, number=Order.number,
-                   total=Order.total.amount, item_count=count(Item.id))
+                   total=Order.total.path(Money.amount), item_count=count(Item.id))
             .join(Order.items, outer=True)
             .where(Order.user_id == user_id)
             .group_by(Order.id)
@@ -339,7 +340,8 @@ orders, wallets = OrderRepo(), WalletRepo()
 
 - **A ref is a placeholder.** `Order.ref(id)` and `orders.by_number("A-1")` are `Order` at the type level, but in reality they are a mark meaning "please load this row". Reading a field of a ref on the calling side, or **calling `.set` on a ref**, is an immediate `UnloadedReference` error. `.set` is blocked because it would be a write that skips the load and the `@invariant` checks. To write without loading, state it explicitly as a set change `Order.where(Order.id == x).set(...)` (it gets invariant checks at seal).
 - **Optimistic locking across requests**: if you pass `Order.ref(id, expected_version=v)`, a different loaded version raises `VersionMismatch`. This is the pattern of sending the version received when opening an edit screen along with the save request (HTTP `If-Match`).
-- Finder arguments are checked against the column type. There are no keyword strings.
+- Finder arguments are checked against the column type. There are no keyword strings. A Finder of `Repository[Order]` must be built on a column of `Order`; another entity's column is a type error (ADR-0004).
+- **A query may reference only the entities it selects from or joins.** A column of any other entity is rejected when the query description is built. This is not checked by types: in a call that receives columns of several entities, pyright and mypy infer the owner differently (ADR-0004); whether seal can also catch it is open (#52).
 - **Repository is optional.** Start by writing `Load(...)` directly in the use case signature, and move it to a `Profile` once the same load repeats.
 - **Module boundary**: a Repository handles only the entities of its own module. Only queries published with `Module("billing", exposes=[orders.summaries])` can be used from other modules.
 
@@ -347,8 +349,8 @@ orders, wallets = OrderRepo(), WalletRepo()
 
 | Operation | Meaning | Generated SQL |
 |---|---|---|
-| `Order.status.to(v)` | Assign a value (`v` checked against `T` of `Column[T]`) | `SET status = $1` |
-| `Wallet.balance.add(n)` | DB-side increment/decrement (does not read the current value) | `SET balance = balance + $1` |
+| `Order.status.to(v)` | Assign a value (`v` checked against `T` of `Column[Order, T]`) | `SET status = $1` |
+| `Wallet.balance.path(Money.amount).add(n)` | DB-side increment/decrement of a part of an embedded value (does not read the current value) | `SET balance_amount = balance_amount + $1` |
 | `Order.items.add(item)` | Add a child row | `INSERT` (+ root version increment if `owned`) |
 | `Order.items.remove(item)` | Delete a child row | `DELETE` (+ root version increment) |
 | `Order.items.update(item, Item.price.to(p))` | Update a child row | `UPDATE` (+ root version increment) |
@@ -358,9 +360,9 @@ order.set(Order.status.to(OrderStatus.PAID), Order.paid_at.to(now))   # a single
 Order.where(...).set(Order.status.to(OrderStatus.EXPIRED))             # set change, same syntax
 ```
 
-- Field names are attribute references, so a typo is a type error, and value types are checked too.
+- Field names are attribute references, so a typo is a type error, and value types are checked too. An operation also carries the entity it belongs to: `order.set(Wallet.balance.to(m))`, an operation of another entity inside `Order.where(...)` or `Order.items.update(item, ...)`, and a child of the wrong type are type errors (ADR-0004).
 - Within a single step, changes are collected with `+`: `order.set(...) + wallet.set(...) + emit(...)`. A function sees only one snapshot, so there is no room to read stale values. Writing the same field twice is `ConflictingWrites`.
-- The types of embedded paths (`Order.total.amount`) and value object increments (`Wallet.balance.add(Decimal)`) are a spike task. If that fails, replace them with a path helper (`Order.total.path(Money.amount)`).
+- **Embedded paths** are written `Order.total.path(Money.amount)` (`Column[Order, Decimal]`); a field of another class is a type error. A part of a value object is incremented through its path, `Wallet.balance.path(Money.amount).add(n)`; the whole value is written with `Order.total.to(Money(...))`. `Order.total.amount` cannot be typed by a generic column, and a second increment syntax on the value object was rejected (ADR-0004).
 
 ### 4.5 Use cases: signature and call
 
@@ -380,7 +382,7 @@ def pay(order: PayableOrder, wallet: ChargeableWallet, now: Now = INJECTED) -> C
         raise InsufficientBalance(wallet.id)
     return (
         order.set(Order.status.to(OrderStatus.PAID), Order.paid_at.to(now))
-        + wallet.set(Wallet.balance.add(-order.total.amount))
+        + wallet.set(Wallet.balance.path(Money.amount).add(-order.total.amount))
         + emit(OrderPaid(order_id=order.id, user_id=order.user_id, total=order.total, paid_at=now))
     )
 ```
@@ -399,7 +401,7 @@ result.events           # committed domain events
 result.value            # value returned via Changes.returning(v)
 ```
 
-- **Type checking works with ParamSpec alone.** `bind(*args: P.args, **kwargs: P.kwargs)` of `Usecase[P]` has the same signature as `pay`. A ref is an entity at the type level, and parameters injected by the runner (`Now`, `Actor`, `RequestId`) have the default `INJECTED`, so they can be omitted.
+- **Type checking works with ParamSpec alone.** `bind(*args: P.args, **kwargs: P.kwargs)` of `Usecase[P]` has the same signature as `pay`. A ref is an entity at the type level, and parameters injected by the runner (`Now`, `Actor`, `RequestId`) have the default `INJECTED`, so they can be omitted. Because `INJECTED` is accepted as any parameter's default, the rules for misplaced `INJECTED` defaults and for injected parameters passed to `bind` are open (#48).
 - Run options (`idempotency_key`, `after`, `timeout`) are keywords of `app.run`, so they do not mix with the signature of `bind`.
 - Injected values are supplied fresh for each attempt. On retry, `Now` is refreshed too.
 - In a run where the caller provided an idempotency key, the value of `Changes.returning(v)` is stored, so it must be serializable. Runs with an automatic ID do not store the value, so they have no such requirement.
@@ -528,8 +530,9 @@ async with app.read(consistency="snapshot") as r:                    # REPEATABL
 | Row of the root ref or of a required dependent load is missing | `NotFound` |
 | `expected_version` mismatch | `VersionMismatch`, no retry (the user must be told about the conflict) |
 | Connection lost during COMMIT | Rerun with the same run ID (see above) |
-| Reading a field of a ref / `.set` on a ref | `UnloadedReference` |
-| Reading a field through a moved original (alias) | `MovedSnapshotAccess` |
+| Reading a field of a ref / `.set` on a ref / `==` or `hash()` on a ref | `UnloadedReference` |
+| Reading a field through a moved original (alias), including `==` and `hash()` | `MovedSnapshotAccess` |
+| `hash()` of a new entity with an `identity` key before commit | `UsageError` (ADR-0003) |
 | `.set` on a view outside the chain block | `ChainClosed` |
 | Writing the same field twice within a single step | `ConflictingWrites` |
 | Overlap between a set change and a row change in the same use case | `IntraUsecaseConflict` |
@@ -565,11 +568,13 @@ type OrderWithCount = Annotated[Order, orders.with_item_count]
 def add_item(order: OrderWithCount, sku: str) -> Changes:
     if order.items.count >= 100:
         raise TooManyItems(order.id)
-    return order.set(Order.items.add(Item.new(sku=sku, price=..., position=order.items.count)))
+    # open (#49): how an owned child gets its parent key (spike 0001 F2) - without `order_id` this is a type error today
+    return order.set(Order.items.add(Item(sku=sku, price=..., position=order.items.count)))
 
 # Expression form: if the condition and the match are column expressions, they fold into a subquery with no extra round trip
 type PointWallet = Annotated[Wallet | None,
     Load.when(Order.paid_with == PaymentMethod.POINT, match=Wallet.user_id == Order.user_id)]
+    # open (#51): column-to-column comparison operands (spike 0001 L5) - `==` between two columns is a type error today
 
 # Function form (Load.after): when it is hard to express as an expression. Argument names bind to use case parameters
 def point_wallet(order: Order) -> Wallet | None:
@@ -581,7 +586,7 @@ type PointWalletAfter = Annotated[Wallet | None, Load.after(point_wallet)]   # a
 def refund(order: Annotated[Order, Load(Order.items)], wallet: PointWallet) -> Changes:
     changes = order.set(Order.status.to(OrderStatus.REFUNDED))
     if wallet is not None:
-        changes += wallet.set(Wallet.balance.add(order.total.amount))
+        changes += wallet.set(Wallet.balance.path(Money.amount).add(order.total.amount))
     return changes
 
 # Recursive load
@@ -598,7 +603,7 @@ type RoleTree = Annotated[list[Role], Load.recursive(start=User.roles, via=Role.
 ```python
 @usecase
 def import_products(rows: list[ProductRow]) -> Changes:
-    return insert_all(Product.new(sku=r.sku, price=r.price) for r in rows)   # COPY, chunk streaming
+    return insert_all(Product(sku=r.sku, price=r.price) for r in rows)   # COPY, chunk streaming
 
 @usecase
 def expire_orders(now: Now = INJECTED) -> Changes:
@@ -606,7 +611,7 @@ def expire_orders(now: Now = INJECTED) -> Changes:
 
 @batch_usecase(chunk=5_000, cursor=Account.id, job="apply-interest-2026-11")
 def apply_interest(accounts: Chunk[Annotated[Account, Load(Account.product)]]) -> Changes:
-    return changes(a.set(Account.balance.add(calc_interest(a))) for a in accounts)
+    return changes(a.set(Account.balance.add(calc_interest(a))) for a in accounts)   # balance: Col[Decimal]
 
 await app.run_batch(apply_interest)   # commit per chunk, checkpoint written in the same transaction, resumes on restart
 ```
@@ -914,19 +919,22 @@ On highly contended tables, serialization failures and retries increase. For hot
 - Decision: the initial idea that "import time is Python's compile time" is discarded; validation happens in `app.seal()` (app startup) and `platina check` (CI).
 - Rationale: Python 3.15 added explicit lazy imports (PEP 810), and there is also a global lazy mode flag. When this flag is on, module execution is delayed, so validation that relies on import side effects cannot be trusted. PEP 649's deferred annotations point in the same direction.
 
-**Field type surface: the `Col[T]` wrapper**
-- Decision: every column field of entities and events is declared as `Col[T]` (`status: Col[OrderStatus] = column(...)`). Relations are `Rel[...]`.
-- Rationale: with a plain annotation, the type checker also sees class access (`Order.status`) as `T`. For it to appear as `Column[T]` on the class and `T` on the instance, the annotation itself must be a descriptor type with an overloaded `__get__`. SQLAlchemy 2.0's `Mapped[T]` exists for the same reason. `.to()`, Finders and projection keys all stand on top of this.
-- Cost: annotations get longer. The type of embedded paths (`Order.total.amount`) is hard to express with generics, so it is left as a spike task (path helper on failure).
+**Field type surface: the `Col[T]` wrapper and owner-typed columns**
+- Decision: every column field of entities, events and value objects is declared as `Col[T]` (`status: Col[OrderStatus] = column(...)`, `amount: Col[Decimal]` in `Money`). Relations are `Rel[...]`. Class access is `Column[Owner, T]`, where the owner is the class that declares the field (`Order.status`: `Column[Order, OrderStatus]`); instance access is `T`. Paths into embedded values are `Order.total.path(Money.amount)` (`Column[Order, Decimal]`). `Column`'s owner parameter is covariant and its value parameter invariant, pinned by type tests (ADR-0004).
+- Rationale: with a plain annotation, the type checker also sees class access (`Order.status`) as `T`. For it to appear as a column on the class and `T` on the instance, the annotation itself must be a descriptor type with an overloaded `__get__`. SQLAlchemy 2.0's `Mapped[T]` exists for the same reason. `.to()`, Finders and projection keys all stand on top of this. The owner comes from the `owner` argument of `__get__`, so operations (`Op[Owner]`), predicates and relations carry the entity they belong to. Spike 0001 confirmed all of it under pyright and mypy.
+- **Where the owner is checked**: by types only where the receiver fixes the owner - `order.set(...)`, `Entity.where(...)`, `SetChange.set(...)`, `SetChange.emit_each(...)`, relation operations, the Finders of `Repository[E]`, and `path`. Where the owner would have to be inferred from several arguments of one call it is not checked by types: queries (`select`/`join`/`where`) are validated when their description is built (whether seal can also catch them is #52), and `Profile`, `Load`, `Index`, `Check` and `@invariant(fields=...)` are validated by seal. Reason (spike 0001, P-A): given columns of two entities in one call, pyright infers the owner as the union `Order | Item` and mypy as the common base `Entity`, so the same misuse would be an error under one checker only.
+- Cost: annotations get longer, `Column` has two type parameters wherever it is named, value objects declare `Col[...]` fields, and an increment of a part of a value object goes through its path (`Wallet.balance.path(Money.amount).add(n)`). `Order.total.amount` cannot be typed by a generic column.
 
 **Creation syntax and constructor types**
-- Decision: creation is a single keyword constructor (`Order.new(number=..., total=...)`), modification is a single `.set`. "Only one way" applies per operation. Creation and modification are different operations.
-- Rationale: a missing required field is the most common mistake when creating an entity, so under "correctness first" it must be caught statically. The alternative of unifying creation into the operation syntax as well, `Order.new(Order.sku.to(...), …)`, was rejected because it pushes this check down to runtime.
-- Order of attempts to get the types (decided by the spike):
-  1. The descriptor's `__set__(self, instance: Never, value: T)`: type checkers take constructor parameter types from the value of `__set__`, and assignment may be blocked by the instance type mismatch. If this works, we get both immutability and constructor checking without codegen.
+- Decision: entities inherit the `Entity` base class, and creation is its keyword constructor (`Order(number=..., total=...)`), like events and values; there is no `new`. Modification is a single `.set`. "Only one way" applies per operation. Creation and modification are different operations (ADR-0003).
+- Rationale: a missing required field is the most common mistake when creating an entity, so under "correctness first" it must be caught statically. The alternative of unifying creation into the operation syntax as well, `Order(Order.sku.to(...), …)`, was rejected because it pushes this check down to runtime. A separate classmethod `new` can only be typed by copying the constructor's signature, so the plain constructor would type-check next to it; dropping `new` removes the second way instead of detecting it.
+- Order of attempts to get the types: step 1 holds (spike 0001), so steps 2 and 3 are not needed.
+  1. **Chosen.** The descriptor's `__set__(self, instance: Never, value: T)`: the constructor synthesised through `dataclass_transform(kw_only_default=True, frozen_default=True, ...)` on `Entity` takes each parameter type from the value of `__set__`, and assignment is blocked (pyright `reportAttributeAccessIssue`, mypy `misc` and `arg-type`). Field specifiers declare `init: Literal[False]` for generated keys, `version_column()`, server defaults and relations, so they are not parameters.
   2. Typed creation functions in a generated **real Python module**.
   3. Runtime checks only (last resort).
-- Generating `.pyi` stubs was rejected. A stub cannot overlay just `new()`; it replaces the types of the whole module, so until you add a field and regenerate, the editor shows the old shape.
+- Generating `.pyi` stubs was rejected. A stub cannot overlay just the constructor; it replaces the types of the whole module, so until you add a field and regenerate, the editor shows the old shape.
+- Entities are hashable at the type level (`frozen_default=True`; without it pyright and mypy disagree on `{order}`). Runtime equality compares the snapshot's values (columns and loaded relations, including what is loaded), the hash is the entity type plus the primary key; refs raise `UnloadedReference`, a new entity with an `identity` key has no hash before commit (`UsageError`), a chain view compares its latest state, and a moved alias raises `MovedSnapshotAccess` (ADR-0003).
+- Open: `Order.stub(...)` keywords are not type-checked (#50), and how an owned child gets its parent key (§4.7) is not decided (#49).
 
 **Dependent loads: declarative only, no generators**
 - Decision: additional data needed is declared with `Load.when` (column expression) or `Load.after` (typed pure function). There is no way to request data with `yield` inside a use case.
@@ -952,7 +960,7 @@ On highly contended tables, serialization failures and retries increase. For hot
 
 **Write syntax: a single `.set(Column operation)`**
 - Decision: there is one way to write: pass field operations, as in `order.set(Order.status.to(PAID), Order.paid_at.to(now))`. Collections are also expressed with the `Order.items.add/remove/update` operations. The syntax is the same as for set changes (`Order.where(...).set(...)`).
-- Rationale: thanks to the `Col[T]` descriptor, names and types are checked through `Column[T].to(v: T)` without codegen, and snapshots remain immutable at the type level too.
+- Rationale: thanks to the `Col[T]` descriptor, names and types are checked through `Column[Owner, T].to(v: T)` without codegen, and snapshots remain immutable at the type level too.
 - Alternatives considered and rejected:
   - Keyword style `.set(status=PAID)`: the type checker cannot catch typos in field names.
   - Assignment via `with order.edit() as o:` (returning Self): to allow assignment, collection field types must be `list`, so even `order.items.append()` on a snapshot passes type checking.
@@ -960,7 +968,7 @@ On highly contended tables, serialization failures and retries increase. For hot
 - Cost: longer than assignment syntax. We chose "only one way" and type safety over familiarity.
 
 **Aggregate boundaries: `aggregate_root` and `owned`**
-- Decision: aggregate boundaries are declared with `@entity(aggregate_root=True)` and `one_to_many(..., owned=True)`. One declaration is used in three places: ① changes to `owned` children bump the root `version`, ② sequence numbers of `@event(aggregate=...)`, ③ module boundary checks.
+- Decision: aggregate boundaries are declared with `class Order(Entity, table="orders", aggregate_root=True)` and `one_to_many(..., owned=True)`. One declaration is used in three places: ① changes to `owned` children bump the root `version`, ② sequence numbers of `@event(aggregate=...)`, ③ module boundary checks.
 - Rationale: when an edit screen handles an order and its items together, a change to only the items must still be caught by the optimistic lock across requests (JPA `OPTIMISTIC_FORCE_INCREMENT`). But applying this to every FK child would mean that merely adding a comment to a post updates the post row, which quickly becomes a hot row under the SERIALIZABLE default. So it is limited to children that belong to the aggregate.
 
 **Partial loads of large aggregates**
@@ -1143,13 +1151,13 @@ On highly contended tables, serialization failures and retries increase. For hot
 Over five rounds of review, the comments moved steadily down into implementation details. The remaining questions cannot be answered by documents; only experiments can answer them. In particular, with SSI interactions, both reviewers and the designer repeated the same kind of mistake on paper. So the following four experiments come before implementation.
 
 ### 9.1 Type stub spike (top priority)
-The whole syntax of §4 depends on this. Without an implementation, run the pass and fail files of §11.8 through pyright and mypy with stubs alone.
-- [ ] `Col[T]`: class access `Column[T]`, instance access `T`
-- [ ] Constructor: does `__set__(self, instance: Never, value: T)` give constructor parameter types while blocking assignment? If not, typed creation functions in a generated module
-- [ ] `with chain(a, b) as (c, a, b)`: does TypeVarTuple preserve the type of each name?
-- [ ] `bind`: name and type checking with ParamSpec, omission of `INJECTED` defaults
-- [ ] Embedded paths (`Order.total.amount`) and value object operations (`Wallet.balance.add(Decimal)`)
-- [ ] Is `+` between `StepResult`s an error; Finder argument types
+The whole syntax of §4 depends on this. Without an implementation, run the pass and fail files of §11.8 through pyright and mypy with stubs alone. Result: [spike 0001](../spikes/0001-type-surface.md) (independently reproduced, except the variance probes run afterwards), ADR-0003, ADR-0004.
+- [x] `Col[T]`: class access `Column[T]`, instance access `T` - holds; class access is now `Column[Owner, T]` (ADR-0004)
+- [x] Constructor: does `__set__(self, instance: Never, value: T)` give constructor parameter types while blocking assignment? If not, typed creation functions in a generated module - holds at step 1, on an `Entity` base class; creation is `Order(...)` (ADR-0003)
+- [x] `with chain(a, b) as (c, a, b)`: does TypeVarTuple preserve the type of each name? - holds
+- [x] `bind`: name and type checking with ParamSpec, omission of `INJECTED` defaults - holds (the seal rule for `INJECTED` defaults is open, #48)
+- [x] Embedded paths (`Order.total.amount`) and value object operations (`Wallet.balance.add(Decimal)`) - not as written; `Order.total.path(Money.amount)` with owner-typed columns holds, increments go through the path (ADR-0004)
+- [x] Is `+` between `StepResult`s an error; Finder argument types - holds
 
 ### 9.2 SSI concurrency experiment
 Measure the rate of false conflicts (serialization failures) under concurrent execution on real PostgreSQL.
@@ -1231,9 +1239,9 @@ The rules we require of users apply equally to Platina's own codebase.
 ```
 platina/
 ├── core/                    # ── no IO (enforced by import-linter) ──
-│   ├── schema/              # @entity/@value metadata, type mapping, registry, seal validation
+│   ├── schema/              # Entity / @value metadata, type mapping, registry, seal validation
 │   ├── expr/                # immutable expression AST (frozen dataclass + slots), structural hash
-│   ├── snapshot/            # immutable snapshots, ref placeholders, move marks, field descriptors (Column[T] / T)
+│   ├── snapshot/            # immutable snapshots, ref placeholders, move marks, field descriptors (Column[Owner, T] / T)
 │   ├── changes/             # field operations (.to/.add/items.add…), + within a step, chain, final diff computation
 │   ├── plan/                # load plan (Load/Profile/when/after/recursive), load stage DAG
 │   ├── planner/             # commit planner: dependency graph → topological sort → batching
@@ -1393,10 +1401,10 @@ ChangeSet
 
 ### 10.8 Snapshots, refs, move marks
 
-- An entity snapshot is a **slots class** generated per entity at seal time (internal values are a tuple). Field access goes through a descriptor, which returns `Column[T]` when accessed on the class and `T` when accessed on an instance.
+- An entity snapshot is a **slots class** generated per entity at seal time (internal values are a tuple). Entities inherit `Entity` (ADR-0003), and `__init_subclass__` cannot add `__slots__`, so the slots class is made by the `Entity` metaclass or as a separate snapshot class. Field access goes through a descriptor, which returns `Column[Owner, T]` when accessed on the class and `T` when accessed on an instance.
 - A **ref** is an "unloaded" instance of the same class. It holds only identifying information (PK or Finder key), and reading a field raises `UnloadedReference`. The runner collects refs when building the load plan.
 - **chain views**: the values returned by `chain(order, wallet)` are view objects pointing to the latest state of the chain (the original entity at the type level). When passed to `c.run` they become the immutable snapshot of that moment; after leaving the block they are frozen at the final state, and `.set` raises `ChainClosed`.
-- **Move marks**: `chain(order, ...)` leaves "this snapshot object has been moved" in the current step's `contextvars` record. Rebinding the same names structurally removes most references to originals, and this mark blocks aliases created before the chain. When the descriptor reads a field, it checks this mark and raises `MovedSnapshotAccess`. The mark is per step scope, so it does not affect other coroutines or threads using the same snapshot.
+- **Move marks**: `chain(order, ...)` leaves "this snapshot object has been moved" in the current step's `contextvars` record. Rebinding the same names structurally removes most references to originals, and this mark blocks aliases created before the chain. When the descriptor reads a field, and when `__eq__` / `__hash__` run, they check this mark and raise `MovedSnapshotAccess`. The mark is per step scope, so it does not affect other coroutines or threads using the same snapshot.
 - **Read tracking** has been removed from correctness responsibilities. It is turned on only in development and test modes, for the "declared but unused relation" warning and for showing the cause in `RelationNotLoaded`.
 - Snapshots stay immutable to the end, so sharing them across threads is safe. Every write is expressed as a field operation value, so no proxies are needed.
 
@@ -1432,9 +1440,9 @@ PlatinaError
 ├── SealError                 # validation failure at startup (module boundaries, invariants, mappings)
 ├── UsageError                # programming error, not retried
 │   ├── RelationNotLoaded
-│   ├── UnloadedReference     # reading a field of a ref or .set on a ref
+│   ├── UnloadedReference     # reading a field of a ref, .set, == or hash() on a ref
 │   ├── ChainClosed           # .set on a view outside the chain block
-│   ├── MovedSnapshotAccess   # reading an original moved by chain
+│   ├── MovedSnapshotAccess   # reading (also == / hash()) an original moved by chain
 │   ├── ConflictingWrites     # writing the same field twice within a single step
 │   ├── IntraUsecaseConflict
 │   └── CommitCycle
@@ -1628,25 +1636,29 @@ result = await app.run(pay.bind(order=Order.ref(oid), wallet=wallets.by_user(uid
 assert_type(result.token, ConsistencyToken)
 rows = await app.query(orders.summaries(user_id=uid))
 assert_type(rows, list[OrderSummary])
-assert_type(Order.status, Column[OrderStatus])
+assert_type(Order.status, Column[Order, OrderStatus])
 assert_type(order.status, OrderStatus)
 with chain(order, wallet) as (c, o2, w2):
-    assert_type(o2, Order); assert_type(w2, Wallet)
-new = Order.new(number="A-1", total=money, user_id=uid)          # required-field check
+    assert_type(o2, Order)
+    assert_type(w2, Wallet)
+new = Order(number="A-1", total=money, user_id=uid)              # required-field check
 
 # tests/typing/fail_misuse.py — every line must be a type error with the named codes [pyright rule, mypy code]
+# fmt: off
 pay.bind(order=oid, wallet=w)                 # expect-error[reportArgumentType, arg-type]: UUID is not Order
 pay.bind(ordr=Order.ref(oid), wallet=w)       # expect-error[reportCallIssue, call-arg]: parameter name typo
 order.set(Order.status.to(123))               # expect-error[reportArgumentType, arg-type]: int is not OrderStatus
-order.status = OrderStatus.PAID               # expect-error[reportAttributeAccessIssue, misc]: snapshots are immutable
-order.items.append(item)                      # expect-error[reportAttributeAccessIssue, attr-defined]: Sequence has no append
-apply_coupon(o, c) + pay(o, w)                # expect-error[reportOperatorIssue, operator]: + not allowed between StepResults
+order.status = OrderStatus.PAID               # expect-error[reportAttributeAccessIssue, misc, arg-type]: snapshots are immutable
+order.items.append(item)                      # expect-error[reportAttributeAccessIssue, reportUnknownMemberType, attr-defined]: Sequence has no append
+apply_coupon(o, c) + pay(o, w)                # expect-error[reportOperatorIssue, reportUnusedExpression, operator]: + not allowed between StepResults
 orders.by_number(42)                          # expect-error[reportArgumentType, arg-type]: Finder[Order, str]
-Order.new(number="A-1")                       # expect-error[reportCallIssue, call-arg]: required fields total, user_id missing
+Order(number="A-1")                           # expect-error[reportCallIssue, call-arg]: required fields total, user_id missing
+# fmt: on
 ```
 
 - `tools/typetests.py` runs both checkers and checks every marked line: each checker must report an error there, and every error it reports on that line must carry one of the listed codes (pyright rules start with `report`, the others are mypy codes). Without the codes, a line that fails for an unrelated reason (a misspelled name) would pass.
-- The codes above are expectations; the type-surface spike (§9.1) pins the real ones, especially for the immutability line, whose error depends on how `__set__` is declared.
+- The codes above are the ones spike 0001 observed (§9.1). Some lines carry more than one code per checker: mypy reports both `misc` (frozen) and `arg-type` (the `Never` instance of `__set__`) on the immutability line, and pyright strict adds `reportUnknownMemberType` to the `append` line and `reportUnusedExpression` to the bare `+` expression (as `_ = ...` it would be `reportUnknownVariableType` instead).
+- A marker makes the line long; `ruff format` would wrap the statement and move the marker off the line that errors, so fail files fence their misuse block with `# fmt: off` / `# fmt: on`.
 
 ### 11.9 Compatibility suite
 

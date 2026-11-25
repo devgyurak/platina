@@ -53,4 +53,6 @@ every direct child of `platina` must appear in it. Public re-exports will live i
 | ADR | Status | Shapes |
 |---|---|---|
 | [0001](adr/0001-assembly-package-and-seal.md) assembly package and seal | Accepted | `platina.app`, the layer contract, where seal's steps live, the executor `outbox` receives, root re-exports (`core`, `sql`, `app` only) |
-| [0002](adr/0002-injected-id-source.md) new IDs from an injected source | Accepted | the ID source of `Entity.new` (installed by the engine, never replaced by a nested direct call), the version-8 fallback sequence for direct calls and stubs, guard A106 |
+| [0002](adr/0002-injected-id-source.md) new IDs from an injected source | Accepted | the ID source of entity creation (`Order(...)`) (installed by the engine, never replaced by a nested direct call), the version-8 fallback sequence for direct calls and stubs, guard A106 |
+| [0003](adr/0003-entity-base-class.md) entities declared with an `Entity` base class and created with `Order(...)` | Accepted | entity declaration (`class Order(Entity, table=...)`), creation by the keyword constructor (no `new`), `frozen_default=True`, value equality with a type-plus-primary-key hash |
+| [0004](adr/0004-owner-typed-columns-and-embedded-paths.md) columns carry their owner; embedded paths are `Order.total.path(Money.amount)` | Accepted | `Column[Owner, T]` with fixed variance, owner checks by type where the receiver fixes the owner (queries when built, the rest at seal), value-object fields declared `Col[...]`, increments through paths |

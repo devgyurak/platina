@@ -20,7 +20,7 @@ def pay(order: PayableOrder, wallet: Annotated[Wallet, Load()], now: Now = INJEC
         raise AlreadyPaid(order.id)
     return (
         order.set(Order.status.to(OrderStatus.PAID), Order.paid_at.to(now))
-        + wallet.set(Wallet.balance.add(-order.total.amount))
+        + wallet.set(Wallet.balance.path(Money.amount).add(-order.total.amount))
     )
 
 await app.run(pay.bind(order=Order.ref(order_id), wallet=wallets.by_user(user_id)))
@@ -29,8 +29,9 @@ await app.run(pay.bind(order=Order.ref(order_id), wallet=wallets.by_user(user_id
 ## Status
 
 **Design settled, nothing implemented yet.** The code above is the target syntax, not a working
-API. The experiments in the design document (type-surface spike, SSI concurrency, Alembic round
-trip, ten real use cases) come before the prototype.
+API. The type-surface spike is done ([`docs/spikes/0001-type-surface.md`](docs/spikes/0001-type-surface.md));
+the other experiments in the design document (SSI concurrency, Alembic round trip, ten real use
+cases) come before the prototype.
 
 - Design document: [`docs/design/design.md`](docs/design/design.md)
 - Current architecture: [`docs/architecture.md`](docs/architecture.md)

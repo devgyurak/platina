@@ -1,4 +1,4 @@
-<!-- i18n: source=docs/design/design.md source-sha256=f1c090e11ce9 translation-sha256=b00df709c405 -->
+<!-- i18n: source=docs/design/design.md source-sha256=6d2441aaba56 translation-sha256=a47ac8a85c28 -->
 # Platina 설계 문서
 
 > **Platina**: 백금(platinum)의 옛 스페인어 이름. 백금이 산에도 녹지 않고 반응하지 않듯, 도메인 코드는 DB와 반응하지 않는다.
@@ -23,7 +23,7 @@
 | 기본 격리 수준 | Command는 **SERIALIZABLE + 자동 재시도**(탈출구는 REPEATABLE READ + version), Query는 READ COMMITTED |
 | 외부 IO | 유스케이스 안에서는 금지. 외부 IO는 **process 핸들러**에서만 |
 | 합성 | 단계는 **`with chain(a, b) as (c, a, b)`**로만. 최신 상태 뷰로 같은 이름 재바인딩, 별칭은 이동 표시로 차단. `+`는 한 단계 안에서만 |
-| 호출·쓰기 | `app.run(uc.bind(...), 옵션)`. ref는 타입상 엔티티인 자리표시자(JPA `getReference`, `.set` 불가). 필드는 `Col[T]`. 생성은 키워드 생성자, 수정은 `.set(Order.status.to(...))` |
+| 호출·쓰기 | `app.run(uc.bind(...), 옵션)`. ref는 타입상 엔티티인 자리표시자(JPA `getReference`, `.set` 불가). 엔티티는 `Entity`를 상속하고, 필드는 `Col[T]`이며 클래스에서는 `Column[Owner, T]`로 읽힌다. 생성은 키워드 생성자 `Order(...)`, 수정은 `.set(Order.status.to(...))`, 임베디드 경로는 `Order.total.path(Money.amount)` |
 | 커밋 순서 | FK·유니크 키 의존성 그래프 위상 정렬 + 배치 |
 | 왕복 | 로드 배치 1회 + 커밋 배치 1회(쓰기·COMMIT·LSN 조회까지) |
 | 실행 ID | 모든 `app.run`에 실행 ID(호출자 멱등 키 또는 자동 uuid7). 조회 없이 INSERT로 선점 → 멱등성과 커밋 결과 판정(재실행)을 하나로 |
@@ -187,7 +187,7 @@ soft delete, 감사, 멀티테넌시, 페이지네이션, Pydantic DTO 생성, s
 
 ## 4. 문법
 
-> 아래 코드는 설계안이다. 이름과 시그니처는 프로토타입에서 바뀔 수 있다. 특히 타입 표면(§4.2의 `Col[T]`, 생성자 타입, 임베디드 경로)은 타입 스텁 스파이크(§9)로 확인하기 전까지 가설이다.
+> 아래 코드는 설계안이다. 이름과 시그니처는 프로토타입에서 바뀔 수 있다. §4.2-§4.6의 타입 표면과 §11.8의 오용 목록은 타입 스텁 스파이크([스파이크 0001](../spikes/0001-type-surface.md), ADR-0003, ADR-0004)로 pyright와 mypy에서 확인했다. 나머지 절은 아직 타입 스파이크로 검사하지 않았고, §4.7의 두 줄은 열린 결정에 달려 있다(해당 위치에 표시).
 > 예제 도메인: 쇼핑몰의 `billing` 모듈 (주문, 주문 항목, 지갑).
 
 ### 4.0 개념 한눈에
@@ -236,17 +236,16 @@ app.seal()   # 로드 계획·모듈 경계·불변식·프로젝션 키·DTO �
 from decimal import Decimal
 from datetime import datetime
 from platina import (
-    entity, value, event, Col, Id, Rel, pk, column, embedded, fk,
+    Entity, value, event, Col, Id, Rel, pk, column, embedded, fk,
     many_to_one, one_to_many, version_column, invariant, Check, Index, server_now,
 )
 
 @value
 class Money:
-    amount: Decimal
-    currency: str = "KRW"
+    amount: Col[Decimal]
+    currency: Col[str] = column(default="KRW")
 
-@entity(table="orders", aggregate_root=True)
-class Order:
+class Order(Entity, table="orders", aggregate_root=True):
     id: Col[Id[Order]] = pk(generated="uuid7")          # 기본값: 클라이언트에서 UUIDv7 생성
     number: Col[str] = column(unique=True, length=20)
     status: Col[OrderStatus] = column(default=OrderStatus.PENDING, enum_as="text")
@@ -261,8 +260,8 @@ class Order:
     created_at: Col[datetime] = column(server_default=server_now())
 
     class Meta:
-        indexes = [Index(lambda: (Order.user_id, Order.created_at.desc()))]
-        checks = [Check(lambda: Order.total.amount >= 0)]   # DB CHECK 제약으로 생성
+        indexes = (Index(lambda: (Order.user_id, Order.created_at.desc())),)
+        checks = (Check(lambda: Order.total.path(Money.amount) >= Decimal(0)),)   # DB CHECK 제약으로 생성
 
     @invariant(fields=lambda: (Order.status, Order.total))  # Python에서만 검증하는 불변식
     def paid_requires_total(self) -> bool:
@@ -277,11 +276,13 @@ class OrderPaid:
     # 순서 번호(집계 버전, 트랜잭션 안 순번)는 엔진이 커밋 때 채운다. 손으로 쓰지 않는다.
 ```
 
-- **모든 필드는 `Col[T]`로 선언한다.** 평범한 어노테이션(`status: OrderStatus = column(...)`)으로는 타입 체커가 클래스 접근(`Order.status`)도 `OrderStatus`로 본다. 클래스에서는 `Column[T]`, 인스턴스에서는 `T`로 보이려면 어노테이션 자체가 디스크립터 타입이어야 한다. SQLAlchemy 2.0이 `Mapped[T]`를 쓰는 이유와 같다. 이벤트 필드도 마찬가지다(프로젝션 키 선언 `OrderPaid.user_id`에 쓰임).
+- **엔티티는 `Entity`를 상속하고**, 테이블 옵션은 클래스 키워드로 넘긴다(ADR-0003). 클래스 데코레이터는 타입 체커가 생성자를 합성하게 할 수는 있지만 멤버를 추가하지는 못한다. 그래서 `Order.ref`, `Order.where`, `Order.stub`, `order.set`에는 기반 클래스가 필요하다(스파이크 0001).
+- **모든 필드는 `Col[T]`로 선언한다.** 평범한 어노테이션(`status: OrderStatus = column(...)`)으로는 타입 체커가 클래스 접근(`Order.status`)도 `OrderStatus`로 본다. 클래스에서는 `Column[Order, OrderStatus]`(컬럼이 자신을 선언한 클래스를 안다), 인스턴스에서는 `OrderStatus`로 보이려면 어노테이션 자체가 디스크립터 타입이어야 한다. SQLAlchemy 2.0이 `Mapped[T]`를 쓰는 이유와 같다. 이벤트 필드와 값 객체 필드도 마찬가지다(프로젝션 키의 `OrderPaid.user_id`, 임베디드 경로의 `Money.amount`, ADR-0004).
 - **스냅샷은 불변이다.** `order.status = PAID`는 에러이고, 쓰기는 오직 `.set(...)`으로 한다(§4.4). 컬렉션 필드는 인스턴스에서 읽기 전용 `Sequence[Item]`이다.
-- **생성은 키워드 생성자 하나**: `Order.new(number="A-1", total=..., user_id=...)`. 필수 필드 누락이 가장 흔한 실수라 정적으로 잡혀야 한다. 불변성과 생성자 타입 검사를 동시에 얻는 방법은 스파이크 과제다(§8.2 "생성 문법").
+- **생성은 키워드 생성자다**: `Order(number="A-1", total=..., user_id=...)`. 이벤트, 값과 같다. 필수 필드 누락은 두 체커 모두에서 타입 에러이고, 생성되는 키, `version_column()`, 서버 기본값, 관계는 파라미터가 아니다(§8.2 "생성 문법", ADR-0003).
+- **동등성**: 두 스냅샷은 같은 값(컬럼과 로드된 관계, 무엇이 로드됐는지까지 포함)을 가지면 같고, 해시는 엔티티 타입과 기본 키다. ref에 대한 `==`와 `hash()`는 `UnloadedReference`를 낸다(ADR-0003).
 - **`owned=True`**: 집계에 속한 자식이다. 자식이 바뀌면 루트의 `version`도 함께 오른다(JPA `OPTIMISTIC_FORCE_INCREMENT`). 그래서 편집 화면이 주문과 항목을 같이 다룰 때 항목만 바뀐 경우도 요청 사이 낙관적 락(§4.6)에 걸린다. 일반 FK 자식(예: 게시글의 댓글)은 `owned`가 아니라 루트를 건드리지 않는다.
-- **클라이언트 생성 ID가 기본값이다.** Python 3.14의 `uuid.uuid7()` 덕분에 순수 함수 안에서 새 엔티티의 ID를 안다. `generated="identity"`도 지원하지만, 그 경우 ID는 커밋 결과(`result.created(Order)`)로만 얻는다. 코어는 `uuid7()`을 직접 부르지 않는다. `Order.new()`는 엔진이 호출마다 설치한 소스에서 ID를 받고, 테스트의 직접 호출과 `Order.stub()`은 결정적인 대체 시퀀스를 쓰며, 유스케이스나 step 밖에서 부른 `Order.new()`는 `UsageError`다(ADR-0002).
+- **클라이언트 생성 ID가 기본값이다.** Python 3.14의 `uuid.uuid7()` 덕분에 순수 함수 안에서 새 엔티티의 ID를 안다. `generated="identity"`도 지원하지만, 그 경우 ID는 커밋 결과(`result.created(Order)`)로만 얻는다. 코어는 `uuid7()`을 직접 부르지 않는다. `Order(...)`는 엔진이 호출마다 설치한 소스에서 ID를 받고, 테스트의 직접 호출과 `Order.stub()`은 결정적인 대체 시퀀스를 쓰며, 유스케이스나 step 밖에서 부른 `Order(...)`는 `UsageError`다(ADR-0002).
 - 다른 클래스를 참조하는 곳은 `lambda`로 늦게 평가한다. 문자열 참조는 쓰지 않는다.
 - 테스트용 인스턴스는 `Order.stub(...)`.
 
@@ -315,7 +316,7 @@ class OrderRepo(Repository[Order]):
         return (
             select(OrderSummary,
                    id=Order.id, number=Order.number,
-                   total=Order.total.amount, item_count=count(Item.id))
+                   total=Order.total.path(Money.amount), item_count=count(Item.id))
             .join(Order.items, outer=True)
             .where(Order.user_id == user_id)
             .group_by(Order.id)
@@ -339,7 +340,8 @@ orders, wallets = OrderRepo(), WalletRepo()
 
 - **ref는 자리표시자다.** `Order.ref(id)`와 `orders.by_number("A-1")`는 타입상 `Order`지만, 실제로는 "이 행을 로드해 달라"는 표시다. 호출 측에서 ref의 필드를 읽거나 **ref에 `.set`을 하면** 즉시 `UnloadedReference` 에러다. `.set`을 막는 이유는, 로드와 `@invariant` 검사를 건너뛰는 쓰기가 되기 때문이다. 로드 없이 쓰고 싶으면 `Order.where(Order.id == x).set(...)` 집합 변경으로 명시한다(seal에서 불변식 검사를 받는다).
 - **요청 사이 낙관적 락**: `Order.ref(id, expected_version=v)`로 넘기면, 로드한 버전이 다를 때 `VersionMismatch`다. 편집 화면을 열 때 받은 버전을 저장 요청에 실어 보내는 패턴(HTTP `If-Match`)이다.
-- Finder 인자는 컬럼 타입으로 검사된다. 키워드 문자열이 없다.
+- Finder 인자는 컬럼 타입으로 검사된다. 키워드 문자열이 없다. `Repository[Order]`의 Finder는 `Order`의 컬럼으로 만들어야 하고, 다른 엔티티의 컬럼은 타입 에러다(ADR-0004).
+- **쿼리는 자신이 select하거나 join한 엔티티만 참조할 수 있다.** 그 밖의 엔티티 컬럼은 쿼리 서술을 만들 때 거부된다. 이는 타입으로 검사하지 않는다. 여러 엔티티의 컬럼을 받는 호출에서 pyright와 mypy가 소유자를 다르게 추론하기 때문이다(ADR-0004). seal에서도 잡을 수 있는지는 열린 질문이다(#52).
 - **Repository는 선택이다.** 처음엔 유스케이스 시그니처에 `Load(...)`를 직접 쓰다가, 같은 로드가 반복되면 `Profile`로 옮긴다.
 - **모듈 경계**: Repository는 자기 모듈의 엔티티만 다룬다. `Module("billing", exposes=[orders.summaries])`로 공개한 조회만 다른 모듈에서 쓸 수 있다.
 
@@ -347,8 +349,8 @@ orders, wallets = OrderRepo(), WalletRepo()
 
 | 연산 | 의미 | 생성 SQL |
 |---|---|---|
-| `Order.status.to(v)` | 값 대입 (`v`는 `Column[T]`의 `T`로 검사) | `SET status = $1` |
-| `Wallet.balance.add(n)` | DB 쪽 증감 (현재 값을 읽지 않음) | `SET balance = balance + $1` |
+| `Order.status.to(v)` | 값 대입 (`v`는 `Column[Order, T]`의 `T`로 검사) | `SET status = $1` |
+| `Wallet.balance.path(Money.amount).add(n)` | 임베디드 값 일부의 DB 쪽 증감 (현재 값을 읽지 않음) | `SET balance_amount = balance_amount + $1` |
 | `Order.items.add(item)` | 자식 행 추가 | `INSERT` (+ `owned`면 루트 version 증가) |
 | `Order.items.remove(item)` | 자식 행 삭제 | `DELETE` (+ 루트 version 증가) |
 | `Order.items.update(item, Item.price.to(p))` | 자식 행 갱신 | `UPDATE` (+ 루트 version 증가) |
@@ -358,9 +360,9 @@ order.set(Order.status.to(OrderStatus.PAID), Order.paid_at.to(now))   # 행 하�
 Order.where(...).set(Order.status.to(OrderStatus.EXPIRED))             # 집합 변경, 같은 문법
 ```
 
-- 필드 이름은 속성 참조라 오타가 타입 에러가 되고, 값 타입도 검사된다.
+- 필드 이름은 속성 참조라 오타가 타입 에러가 되고, 값 타입도 검사된다. 연산은 자신이 속한 엔티티도 함께 지닌다. `order.set(Wallet.balance.to(m))`, `Order.where(...)` 안의 다른 엔티티 연산이나 `Order.items.update(item, ...)` 안의 다른 엔티티 연산, 잘못된 타입의 자식은 타입 에러다(ADR-0004).
 - 한 단계 안에서는 `+`로 변경을 모은다: `order.set(...) + wallet.set(...) + emit(...)`. 한 함수는 하나의 스냅샷만 보므로 오래된 값을 읽을 여지가 없다. 같은 필드를 두 번 쓰면 `ConflictingWrites`다.
-- 임베디드 경로(`Order.total.amount`)와 값 객체 증감(`Wallet.balance.add(Decimal)`)의 타입은 스파이크 과제다. 실패하면 경로 헬퍼(`Order.total.path(Money.amount)`)로 대체한다.
+- **임베디드 경로**는 `Order.total.path(Money.amount)`(`Column[Order, Decimal]`)로 쓴다. 다른 클래스의 필드를 넘기면 타입 에러다. 값 객체의 일부는 경로를 통해 증감하고(`Wallet.balance.path(Money.amount).add(n)`), 값 전체는 `Order.total.to(Money(...))`로 쓴다. `Order.total.amount`는 제네릭 컬럼으로 타입을 붙일 수 없고, 값 객체에 두 번째 증감 문법을 두는 안은 기각했다(ADR-0004).
 
 ### 4.5 유스케이스: 시그니처와 호출
 
@@ -380,7 +382,7 @@ def pay(order: PayableOrder, wallet: ChargeableWallet, now: Now = INJECTED) -> C
         raise InsufficientBalance(wallet.id)
     return (
         order.set(Order.status.to(OrderStatus.PAID), Order.paid_at.to(now))
-        + wallet.set(Wallet.balance.add(-order.total.amount))
+        + wallet.set(Wallet.balance.path(Money.amount).add(-order.total.amount))
         + emit(OrderPaid(order_id=order.id, user_id=order.user_id, total=order.total, paid_at=now))
     )
 ```
@@ -399,7 +401,7 @@ result.events           # 커밋된 도메인 이벤트
 result.value            # Changes.returning(v)로 돌려준 값
 ```
 
-- **타입 검사가 ParamSpec만으로 된다.** `Usecase[P]`의 `bind(*args: P.args, **kwargs: P.kwargs)`는 `pay`와 시그니처가 같다. ref가 타입상 엔티티이고, 실행기가 넣어 주는 파라미터(`Now`, `Actor`, `RequestId`)는 기본값 `INJECTED`를 가지므로 생략할 수 있다.
+- **타입 검사가 ParamSpec만으로 된다.** `Usecase[P]`의 `bind(*args: P.args, **kwargs: P.kwargs)`는 `pay`와 시그니처가 같다. ref가 타입상 엔티티이고, 실행기가 넣어 주는 파라미터(`Now`, `Actor`, `RequestId`)는 기본값 `INJECTED`를 가지므로 생략할 수 있다. `INJECTED`는 어떤 파라미터의 기본값으로도 받아들여지므로, 잘못 놓인 `INJECTED` 기본값과 `bind`에 넘긴 주입 파라미터에 대한 규칙은 미결이다(#48).
 - 실행 옵션(`idempotency_key`, `after`, `timeout`)은 `app.run`의 키워드라 `bind`의 시그니처와 섞이지 않는다.
 - 주입값은 시도(attempt)마다 새로 넣는다. 재시도하면 `Now`도 갱신된다.
 - 호출자가 멱등 키를 준 실행에서는 `Changes.returning(v)`의 값이 저장되므로 직렬화 가능해야 한다. 자동 ID 실행은 값을 저장하지 않으므로 이 조건이 없다.
@@ -528,8 +530,9 @@ async with app.read(consistency="snapshot") as r:                    # REPEATABL
 | 루트 ref나 필수 의존 로드의 행이 없음 | `NotFound` |
 | `expected_version` 불일치 | `VersionMismatch`, 재시도 없음 (사용자에게 충돌을 알려야 함) |
 | COMMIT 중 연결 끊김 | 같은 실행 ID로 재실행 (위 참조) |
-| ref의 필드 읽기 / ref에 `.set` | `UnloadedReference` |
-| 이동된 원본(별칭)으로 필드 읽기 | `MovedSnapshotAccess` |
+| ref의 필드 읽기 / ref에 `.set` / ref에 `==`나 `hash()` | `UnloadedReference` |
+| 이동된 원본(별칭)으로 필드 읽기 (`==`, `hash()` 포함) | `MovedSnapshotAccess` |
+| 커밋 전 `identity` 키 새 엔티티의 `hash()` | `UsageError` (ADR-0003) |
 | chain 블록 밖에서 뷰에 `.set` | `ChainClosed` |
 | 한 단계 안에서 같은 필드를 두 번 씀 | `ConflictingWrites` |
 | 같은 유스케이스 안의 집합 변경·행 변경 겹침 | `IntraUsecaseConflict` |
@@ -565,11 +568,13 @@ type OrderWithCount = Annotated[Order, orders.with_item_count]
 def add_item(order: OrderWithCount, sku: str) -> Changes:
     if order.items.count >= 100:
         raise TooManyItems(order.id)
-    return order.set(Order.items.add(Item.new(sku=sku, price=..., position=order.items.count)))
+    # 미결(#49): owned 자식이 부모 키를 얻는 방법(스파이크 0001 F2) - 지금은 `order_id` 없이는 타입 에러
+    return order.set(Order.items.add(Item(sku=sku, price=..., position=order.items.count)))
 
 # 식 형태: 조건과 매칭이 컬럼 식이면 서브쿼리로 접혀 추가 왕복이 없다
 type PointWallet = Annotated[Wallet | None,
     Load.when(Order.paid_with == PaymentMethod.POINT, match=Wallet.user_id == Order.user_id)]
+    # 미결(#51): 컬럼 대 컬럼 비교 피연산자(스파이크 0001 L5) - 지금은 두 컬럼 사이의 `==`가 타입 에러
 
 # 함수 형태(Load.after): 식으로 표현하기 어려울 때. 인자 이름이 유스케이스 파라미터에 바인딩됨
 def point_wallet(order: Order) -> Wallet | None:
@@ -581,7 +586,7 @@ type PointWalletAfter = Annotated[Wallet | None, Load.after(point_wallet)]   # �
 def refund(order: Annotated[Order, Load(Order.items)], wallet: PointWallet) -> Changes:
     changes = order.set(Order.status.to(OrderStatus.REFUNDED))
     if wallet is not None:
-        changes += wallet.set(Wallet.balance.add(order.total.amount))
+        changes += wallet.set(Wallet.balance.path(Money.amount).add(order.total.amount))
     return changes
 
 # 재귀 로드
@@ -598,7 +603,7 @@ type RoleTree = Annotated[list[Role], Load.recursive(start=User.roles, via=Role.
 ```python
 @usecase
 def import_products(rows: list[ProductRow]) -> Changes:
-    return insert_all(Product.new(sku=r.sku, price=r.price) for r in rows)   # COPY, 청크 스트리밍
+    return insert_all(Product(sku=r.sku, price=r.price) for r in rows)   # COPY, 청크 스트리밍
 
 @usecase
 def expire_orders(now: Now = INJECTED) -> Changes:
@@ -606,7 +611,7 @@ def expire_orders(now: Now = INJECTED) -> Changes:
 
 @batch_usecase(chunk=5_000, cursor=Account.id, job="apply-interest-2026-11")
 def apply_interest(accounts: Chunk[Annotated[Account, Load(Account.product)]]) -> Changes:
-    return changes(a.set(Account.balance.add(calc_interest(a))) for a in accounts)
+    return changes(a.set(Account.balance.add(calc_interest(a))) for a in accounts)   # balance: Col[Decimal]
 
 await app.run_batch(apply_interest)   # 청크마다 커밋, 체크포인트는 같은 트랜잭션에 기록, 재시작 시 이어서
 ```
@@ -914,19 +919,22 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
 - 결정: "import 타임이 Python의 컴파일 타임"이라는 초기 구상을 폐기하고, `app.seal()`(앱 기동)과 `platina check`(CI)에서 검증한다.
 - 근거: Python 3.15에 명시적 lazy import(PEP 810)가 들어왔고 전역 lazy 모드 플래그도 있다. 이 플래그가 켜지면 모듈 실행 시점이 늦어져 import 부수효과에 기댄 검증을 믿을 수 없다. PEP 649의 지연 어노테이션도 같은 방향이다.
 
-**필드 타입 표면: `Col[T]` 래퍼**
-- 결정: 엔티티·이벤트의 모든 컬럼 필드는 `Col[T]`로 선언한다(`status: Col[OrderStatus] = column(...)`). 관계는 `Rel[...]`.
-- 근거: 평범한 어노테이션이면 타입 체커가 클래스 접근(`Order.status`)도 `T`로 본다. 클래스에선 `Column[T]`, 인스턴스에선 `T`로 보이려면 어노테이션 자체가 오버로드된 `__get__`을 가진 디스크립터 타입이어야 한다. SQLAlchemy 2.0의 `Mapped[T]`가 같은 이유로 존재한다. `.to()`, Finder, 프로젝션 키가 모두 이 위에 서 있다.
-- 대가: 어노테이션이 길어진다. 임베디드 경로(`Order.total.amount`)의 타입은 제네릭으로 표현하기 어려워 스파이크 과제로 남긴다(실패 시 경로 헬퍼).
+**필드 타입 표면: `Col[T]` 래퍼와 소유자 타입 컬럼**
+- 결정: 엔티티·이벤트·값 객체의 모든 컬럼 필드는 `Col[T]`로 선언한다(`status: Col[OrderStatus] = column(...)`, `Money`의 `amount: Col[Decimal]`). 관계는 `Rel[...]`. 클래스 접근은 `Column[Owner, T]`이고, 소유자는 필드를 선언한 클래스다(`Order.status`: `Column[Order, OrderStatus]`). 인스턴스 접근은 `T`. 임베디드 값 안으로의 경로는 `Order.total.path(Money.amount)`(`Column[Order, Decimal]`)다. `Column`의 소유자 파라미터는 공변, 값 파라미터는 불변이며 타입 테스트로 고정한다(ADR-0004).
+- 근거: 평범한 어노테이션이면 타입 체커가 클래스 접근(`Order.status`)도 `T`로 본다. 클래스에선 컬럼, 인스턴스에선 `T`로 보이려면 어노테이션 자체가 오버로드된 `__get__`을 가진 디스크립터 타입이어야 한다. SQLAlchemy 2.0의 `Mapped[T]`가 같은 이유로 존재한다. `.to()`, Finder, 프로젝션 키가 모두 이 위에 서 있다. 소유자는 `__get__`의 `owner` 인자에서 오므로, 연산(`Op[Owner]`), 술어, 관계가 자신이 속한 엔티티를 지닌다. 스파이크 0001이 이 모두를 pyright와 mypy에서 확인했다.
+- **소유자를 검사하는 곳**: 타입으로는 수신자가 소유자를 고정하는 곳만 검사한다 - `order.set(...)`, `Entity.where(...)`, `SetChange.set(...)`, `SetChange.emit_each(...)`, 관계 연산, `Repository[E]`의 Finder, `path`. 한 호출의 여러 인자에서 소유자를 추론해야 하는 곳은 타입으로 검사하지 않는다: 쿼리(`select`/`join`/`where`)는 서술을 만들 때 검증하고(seal에서도 잡을 수 있는지는 #52), `Profile`, `Load`, `Index`, `Check`, `@invariant(fields=...)`는 seal이 검증한다. 이유(스파이크 0001, P-A): 한 호출에 두 엔티티의 컬럼을 주면 pyright는 소유자를 합집합 `Order | Item`으로, mypy는 공통 기반 `Entity`로 추론해, 같은 오용이 한 체커에서만 에러가 된다.
+- 대가: 어노테이션이 길어지고, `Column`을 쓰는 곳마다 타입 파라미터가 둘이며, 값 객체가 `Col[...]` 필드를 선언하고, 값 객체 일부의 증감은 경로를 거친다(`Wallet.balance.path(Money.amount).add(n)`). `Order.total.amount`는 제네릭 컬럼으로 타입을 붙일 수 없다.
 
 **생성 문법과 생성자 타입**
-- 결정: 생성은 키워드 생성자 하나(`Order.new(number=..., total=...)`), 수정은 `.set` 하나. "방법은 하나"는 연산마다 적용한다. 생성과 수정은 다른 연산이다.
-- 근거: 필수 필드 누락은 엔티티를 만들 때 가장 흔한 실수라, "정확성 우선"에 따라 정적으로 잡혀야 한다. 생성까지 `Order.new(Order.sku.to(...), …)` 연산 문법으로 통일하자는 대안은 이 검사를 런타임으로 내리므로 기각했다.
-- 타입 확보 순서 (스파이크로 결정):
-  1. 디스크립터의 `__set__(self, instance: Never, value: T)`: 타입 체커는 생성자 파라미터 타입을 `__set__`의 value에서 가져가고, 대입은 instance 타입 불일치로 막힐 수 있다. 되면 코드젠 없이 불변성과 생성자 검사를 둘 다 얻는다.
+- 결정: 엔티티는 `Entity` 기반 클래스를 상속하고, 생성은 그 키워드 생성자(`Order(number=..., total=...)`)로 이벤트·값과 같다. `new`는 없다. 수정은 `.set` 하나. "방법은 하나"는 연산마다 적용한다. 생성과 수정은 다른 연산이다(ADR-0003).
+- 근거: 필수 필드 누락은 엔티티를 만들 때 가장 흔한 실수라, "정확성 우선"에 따라 정적으로 잡혀야 한다. 생성까지 `Order(Order.sku.to(...), …)` 연산 문법으로 통일하자는 대안은 이 검사를 런타임으로 내리므로 기각했다. 별도 클래스 메서드 `new`는 생성자 시그니처를 복사해야만 타입을 붙일 수 있어, 그 옆에서 평범한 생성자도 타입 검사를 통과한다. `new`를 없애면 두 번째 방법을 감지하는 대신 제거한다.
+- 타입 확보 순서: 1단계가 성립하므로(스파이크 0001) 2, 3단계는 필요 없다.
+  1. **채택.** 디스크립터의 `__set__(self, instance: Never, value: T)`: `Entity`에 붙인 `dataclass_transform(kw_only_default=True, frozen_default=True, ...)`으로 합성된 생성자가 각 파라미터 타입을 `__set__`의 value에서 가져가고, 대입은 막힌다(pyright `reportAttributeAccessIssue`, mypy `misc`와 `arg-type`). 필드 지정자는 생성되는 키, `version_column()`, 서버 기본값, 관계에 `init: Literal[False]`를 선언하므로 이들은 파라미터가 아니다.
   2. 생성된 **진짜 Python 모듈**의 타입 붙은 생성 함수.
   3. 런타임 검사만 (마지막 수단).
-- `.pyi` 스텁 생성은 기각했다. 스텁은 `new()`만 덧씌우지 못하고 모듈의 타입을 통째로 대신해서, 필드를 추가하고 다시 생성하기 전까지 에디터가 예전 모습을 보여 준다.
+- `.pyi` 스텁 생성은 기각했다. 스텁은 생성자만 덧씌우지 못하고 모듈의 타입을 통째로 대신해서, 필드를 추가하고 다시 생성하기 전까지 에디터가 예전 모습을 보여 준다.
+- 엔티티는 타입 수준에서 해시 가능하다(`frozen_default=True`. 이것이 없으면 `{order}`에 대해 pyright와 mypy의 판단이 갈린다). 런타임 동등성은 스냅샷의 값(컬럼과 로드된 관계, 무엇이 로드됐는지까지 포함)을 비교하고, 해시는 엔티티 타입과 기본 키다. ref는 `UnloadedReference`를 내고, `identity` 키를 가진 새 엔티티는 커밋 전에 해시가 없으며(`UsageError`), chain 뷰는 최신 상태를 비교하고, 이동된 별칭은 `MovedSnapshotAccess`를 낸다(ADR-0003).
+- 미결: `Order.stub(...)`의 키워드는 타입 검사되지 않고(#50), owned 자식이 부모 키를 얻는 방법(§4.7)은 정해지지 않았다(#49).
 
 **의존 로드: 선언형만, 제너레이터 없음**
 - 결정: 추가로 필요한 데이터는 `Load.when`(컬럼 식)이나 `Load.after`(타입 단 순수 함수)로 선언한다. 유스케이스 안에서 `yield`로 데이터를 요청하는 방식은 두지 않는다.
@@ -952,7 +960,7 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
 
 **쓰기 문법: `.set(Column 연산)` 하나**
 - 결정: 쓰기는 `order.set(Order.status.to(PAID), Order.paid_at.to(now))`처럼 필드 연산을 넘기는 방식 하나다. 컬렉션도 `Order.items.add/remove/update` 연산으로 표현한다. 집합 변경(`Order.where(...).set(...)`)과 문법이 같다.
-- 근거: `Col[T]` 디스크립터 덕분에 `Column[T].to(v: T)`로 이름과 타입이 코드젠 없이 검사되고, 스냅샷은 타입 수준에서도 불변으로 남는다.
+- 근거: `Col[T]` 디스크립터 덕분에 `Column[Owner, T].to(v: T)`로 이름과 타입이 코드젠 없이 검사되고, 스냅샷은 타입 수준에서도 불변으로 남는다.
 - 검토 후 기각한 대안:
   - `.set(status=PAID)` 키워드 방식: 필드 이름 오타를 타입 체커가 못 잡는다.
   - `with order.edit() as o:`(Self 반환)로 대입: 대입을 허용하려면 컬렉션 필드 타입이 `list`여야 해서, 스냅샷의 `order.items.append()`까지 타입상 통과한다.
@@ -960,7 +968,7 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
 - 대가: 대입 문법보다 길다. 익숙함보다 "방법은 하나"와 타입 안전을 택했다.
 
 **집계 경계: `aggregate_root`와 `owned`**
-- 결정: `@entity(aggregate_root=True)`와 `one_to_many(..., owned=True)`로 집계 경계를 선언한다. 하나의 선언이 세 곳에 쓰인다: ① `owned` 자식의 변경이 루트 `version`을 올림, ② `@event(aggregate=...)`의 순서 번호, ③ 모듈 경계 검사.
+- 결정: `class Order(Entity, table="orders", aggregate_root=True)`와 `one_to_many(..., owned=True)`로 집계 경계를 선언한다. 하나의 선언이 세 곳에 쓰인다: ① `owned` 자식의 변경이 루트 `version`을 올림, ② `@event(aggregate=...)`의 순서 번호, ③ 모듈 경계 검사.
 - 근거: 편집 화면이 주문과 항목을 같이 다룰 때 항목만 바뀐 경우도 요청 사이 낙관적 락에 걸려야 한다(JPA `OPTIMISTIC_FORCE_INCREMENT`). 하지만 모든 FK 자식에 적용하면 게시글에 댓글만 달아도 게시글 행을 갱신하게 되고, SERIALIZABLE 기본값에서 곧 핫 로우가 된다. 그래서 집계에 속한 자식으로만 한정한다.
 
 **큰 집계의 부분 로드**
@@ -1143,13 +1151,13 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
 다섯 차례의 리뷰를 거치며 지적이 점점 구현 세부로 내려왔다. 남은 질문은 문서로는 답이 나오지 않고 실험으로만 답이 나온다. 특히 SSI 상호작용은 리뷰어와 설계자 모두 문서 위에서 같은 종류의 실수를 반복했다. 그래서 다음 네 실험을 구현보다 먼저 한다.
 
 ### 9.1 타입 스텁 스파이크 (최우선)
-§4 문법 전체가 여기에 달려 있다. 구현 없이 스텁만으로 §11.8의 통과·실패 파일을 pyright와 mypy에 돌린다.
-- [ ] `Col[T]`: 클래스 접근 `Column[T]`, 인스턴스 접근 `T`
-- [ ] 생성자: `__set__(self, instance: Never, value: T)`로 생성자 파라미터 타입은 얻고 대입은 막히는가. 안 되면 생성된 모듈의 타입 붙은 생성 함수로
-- [ ] `with chain(a, b) as (c, a, b)`: TypeVarTuple로 각 이름의 타입이 유지되는가
-- [ ] `bind`: ParamSpec으로 이름·타입 검사, `INJECTED` 기본값 생략
-- [ ] 임베디드 경로(`Order.total.amount`)와 값 객체 연산(`Wallet.balance.add(Decimal)`)
-- [ ] `StepResult`끼리 `+`가 에러인가, Finder 인자 타입
+§4 문법 전체가 여기에 달려 있다. 구현 없이 스텁만으로 §11.8의 통과·실패 파일을 pyright와 mypy에 돌린다. 결과: [스파이크 0001](../spikes/0001-type-surface.md)(독립적으로 재현함, 나중에 돌린 변성 프로브는 제외), ADR-0003, ADR-0004.
+- [x] `Col[T]`: 클래스 접근 `Column[T]`, 인스턴스 접근 `T` - 성립. 클래스 접근은 이제 `Column[Owner, T]`(ADR-0004)
+- [x] 생성자: `__set__(self, instance: Never, value: T)`로 생성자 파라미터 타입은 얻고 대입은 막히는가. 안 되면 생성된 모듈의 타입 붙은 생성 함수로 - `Entity` 기반 클래스 위에서 1단계로 성립. 생성은 `Order(...)`(ADR-0003)
+- [x] `with chain(a, b) as (c, a, b)`: TypeVarTuple로 각 이름의 타입이 유지되는가 - 성립
+- [x] `bind`: ParamSpec으로 이름·타입 검사, `INJECTED` 기본값 생략 - 성립(`INJECTED` 기본값에 대한 seal 규칙은 미결, #48)
+- [x] 임베디드 경로(`Order.total.amount`)와 값 객체 연산(`Wallet.balance.add(Decimal)`) - 쓰인 그대로는 불가. 소유자 타입 컬럼과 `Order.total.path(Money.amount)`는 성립하고, 증감은 경로를 거친다(ADR-0004)
+- [x] `StepResult`끼리 `+`가 에러인가, Finder 인자 타입 - 성립
 
 ### 9.2 SSI 동시성 실험
 실제 PostgreSQL에서 동시 실행으로 거짓 충돌(직렬화 실패) 비율을 잰다.
@@ -1231,9 +1239,9 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
 ```
 platina/
 ├── core/                    # ── IO 없음 (import-linter로 강제) ──
-│   ├── schema/              # @entity·@value 메타데이터, 타입 매핑, 레지스트리, seal 검증
+│   ├── schema/              # Entity·@value 메타데이터, 타입 매핑, 레지스트리, seal 검증
 │   ├── expr/                # 불변 표현식 AST (frozen dataclass + slots), 구조적 해시
-│   ├── snapshot/            # 불변 스냅샷, ref 자리표시자, 이동 표시, 필드 디스크립터(Column[T] / T)
+│   ├── snapshot/            # 불변 스냅샷, ref 자리표시자, 이동 표시, 필드 디스크립터(Column[Owner, T] / T)
 │   ├── changes/             # 필드 연산(.to/.add/items.add…), 단계 내 +, chain, 최종 차이 계산
 │   ├── plan/                # 로드 계획(Load/Profile/when/after/recursive), 로드 단계 DAG
 │   ├── planner/             # 커밋 플래너: 의존성 그래프 → 위상 정렬 → 배치
@@ -1393,10 +1401,10 @@ ChangeSet
 
 ### 10.8 스냅샷, ref, 이동 표시
 
-- 엔티티 스냅샷은 seal 시점에 엔티티마다 생성하는 **slots 클래스**(내부 값은 튜플)다. 필드 접근은 디스크립터를 거치고, 클래스에서 접근하면 `Column[T]`, 인스턴스에서 접근하면 `T`를 돌려준다.
+- 엔티티 스냅샷은 seal 시점에 엔티티마다 생성하는 **slots 클래스**(내부 값은 튜플)다. 엔티티는 `Entity`를 상속하는데(ADR-0003) `__init_subclass__`는 `__slots__`를 추가할 수 없으므로, slots 클래스는 `Entity` 메타클래스가 만들거나 별도 스냅샷 클래스로 만든다. 필드 접근은 디스크립터를 거치고, 클래스에서 접근하면 `Column[Owner, T]`, 인스턴스에서 접근하면 `T`를 돌려준다.
 - **ref**는 같은 클래스의 "로드되지 않은" 인스턴스다. 식별 정보(PK나 Finder 키)만 갖고, 필드를 읽으면 `UnloadedReference`를 낸다. 실행기가 로드 계획을 만들 때 ref를 수집한다.
 - **chain 뷰**: `chain(order, wallet)`이 돌려주는 값은 chain의 최신 상태를 가리키는 뷰 객체다(타입상 원래 엔티티). `c.run`에 넘길 때 그 시점의 불변 스냅샷으로 바뀌고, 블록을 벗어나면 최종 상태로 고정되며 `.set`은 `ChainClosed`를 낸다.
-- **이동 표시**: `chain(order, ...)`은 현재 단계의 `contextvars` 기록에 "이 스냅샷 객체는 이동됨"을 남긴다. 같은 이름 재바인딩으로 대부분의 원본 참조는 구조적으로 사라지고, 이 표시는 chain 전에 만든 별칭을 막는다. 디스크립터가 필드를 읽을 때 이 표시를 확인해 `MovedSnapshotAccess`를 낸다. 표시는 단계 스코프별이라, 같은 스냅샷을 다른 코루틴·스레드가 쓰는 데는 영향이 없다.
+- **이동 표시**: `chain(order, ...)`은 현재 단계의 `contextvars` 기록에 "이 스냅샷 객체는 이동됨"을 남긴다. 같은 이름 재바인딩으로 대부분의 원본 참조는 구조적으로 사라지고, 이 표시는 chain 전에 만든 별칭을 막는다. 디스크립터가 필드를 읽을 때와 `__eq__`·`__hash__`가 실행될 때 이 표시를 확인해 `MovedSnapshotAccess`를 낸다. 표시는 단계 스코프별이라, 같은 스냅샷을 다른 코루틴·스레드가 쓰는 데는 영향이 없다.
 - **읽기 추적**은 정확성 책임에서 빠졌다. "선언했지만 안 쓴 관계" 경고와 `RelationNotLoaded`의 원인 표시용으로 개발·테스트 모드에서만 켠다.
 - 스냅샷은 끝까지 불변이라 스레드 간 공유가 안전하다. 쓰기는 모두 필드 연산 값으로 표현되므로 프록시가 필요 없다.
 
@@ -1432,9 +1440,9 @@ PlatinaError
 ├── SealError                 # 기동 시 검증 실패 (모듈 경계, 불변식, 매핑)
 ├── UsageError                # 프로그래밍 오류, 재시도 안 함
 │   ├── RelationNotLoaded
-│   ├── UnloadedReference     # ref의 필드를 읽거나 ref에 .set
+│   ├── UnloadedReference     # ref의 필드를 읽거나 ref에 .set, ==, hash()
 │   ├── ChainClosed           # chain 블록 밖에서 뷰에 .set
-│   ├── MovedSnapshotAccess   # chain으로 이동된 원본을 읽음
+│   ├── MovedSnapshotAccess   # chain으로 이동된 원본을 읽음 (==, hash() 포함)
 │   ├── ConflictingWrites     # 한 단계 안에서 같은 필드를 두 번 씀
 │   ├── IntraUsecaseConflict
 │   └── CommitCycle
@@ -1628,25 +1636,29 @@ result = await app.run(pay.bind(order=Order.ref(oid), wallet=wallets.by_user(uid
 assert_type(result.token, ConsistencyToken)
 rows = await app.query(orders.summaries(user_id=uid))
 assert_type(rows, list[OrderSummary])
-assert_type(Order.status, Column[OrderStatus])
+assert_type(Order.status, Column[Order, OrderStatus])
 assert_type(order.status, OrderStatus)
 with chain(order, wallet) as (c, o2, w2):
-    assert_type(o2, Order); assert_type(w2, Wallet)
-new = Order.new(number="A-1", total=money, user_id=uid)          # 필수 필드 검사
+    assert_type(o2, Order)
+    assert_type(w2, Wallet)
+new = Order(number="A-1", total=money, user_id=uid)              # 필수 필드 검사
 
 # tests/typing/fail_misuse.py — 각 줄이 지정한 코드 [pyright 규칙, mypy 코드]의 타입 에러여야 함
+# fmt: off
 pay.bind(order=oid, wallet=w)                 # expect-error[reportArgumentType, arg-type]: UUID는 Order가 아님
 pay.bind(ordr=Order.ref(oid), wallet=w)       # expect-error[reportCallIssue, call-arg]: 파라미터 이름 오타
 order.set(Order.status.to(123))               # expect-error[reportArgumentType, arg-type]: int는 OrderStatus가 아님
-order.status = OrderStatus.PAID               # expect-error[reportAttributeAccessIssue, misc]: 스냅샷은 불변
-order.items.append(item)                      # expect-error[reportAttributeAccessIssue, attr-defined]: Sequence에는 append 없음
-apply_coupon(o, c) + pay(o, w)                # expect-error[reportOperatorIssue, operator]: StepResult끼리 + 불가
+order.status = OrderStatus.PAID               # expect-error[reportAttributeAccessIssue, misc, arg-type]: 스냅샷은 불변
+order.items.append(item)                      # expect-error[reportAttributeAccessIssue, reportUnknownMemberType, attr-defined]: Sequence에는 append 없음
+apply_coupon(o, c) + pay(o, w)                # expect-error[reportOperatorIssue, reportUnusedExpression, operator]: StepResult끼리 + 불가
 orders.by_number(42)                          # expect-error[reportArgumentType, arg-type]: Finder[Order, str]
-Order.new(number="A-1")                       # expect-error[reportCallIssue, call-arg]: 필수 필드 total, user_id 누락
+Order(number="A-1")                           # expect-error[reportCallIssue, call-arg]: 필수 필드 total, user_id 누락
+# fmt: on
 ```
 
 - `tools/typetests.py`가 두 체커를 돌려 표시한 줄마다 검사한다: 각 체커가 그 줄에 에러를 내야 하고, 그 줄의 에러는 모두 나열한 코드 중 하나여야 한다(`report`로 시작하면 pyright 규칙, 나머지는 mypy 코드). 코드가 없으면 엉뚱한 이유(이름 오타)로 실패하는 줄도 통과해 버린다.
-- 위 코드는 예상값이다. 실제 코드는 타입 표면 스파이크(§9.1)가 확정한다. 특히 불변성 줄의 에러는 `__set__`을 어떻게 선언하느냐에 달려 있다.
+- 위 코드는 스파이크 0001이 관찰한 코드다(§9.1). 일부 줄은 체커마다 코드를 둘 이상 갖는다. mypy는 불변성 줄에 `misc`(frozen)와 `arg-type`(`__set__`의 `Never` instance)을 둘 다 내고, pyright strict는 `append` 줄에 `reportUnknownMemberType`을, 맨 `+` 식에 `reportUnusedExpression`을 더한다(`_ = ...`로 쓰면 대신 `reportUnknownVariableType`이 된다).
+- 마커가 줄을 길게 만든다. `ruff format`은 문장을 줄바꿈해 에러가 나는 줄에서 마커를 떼어 놓으므로, 실패 파일은 오용 블록을 `# fmt: off` / `# fmt: on`으로 감싼다.
 
 ### 11.9 호환성 스위트
 

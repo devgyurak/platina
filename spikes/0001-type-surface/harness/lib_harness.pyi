@@ -1,0 +1,6 @@
+"""Harness check: a sibling module with signatures only."""
+
+class Box[T]:
+    def get(self) -> T: ...
+
+def make_box() -> Box[int]: ...

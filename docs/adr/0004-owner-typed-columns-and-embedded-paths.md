@@ -1,0 +1,123 @@
+# ADR-0004: Columns carry their owner; embedded paths are `Order.total.path(Money.amount)`
+
+- Status: Accepted (maintainer, 2026-11-25)
+- Date: 2026-11-25
+- Related: design sections 4.2 (`Money`, `Meta.checks`), 4.3 (query, Finder), 4.4, 4.5, 4.7,
+  8.2 ("Field type surface"), 9.1, 11.8; ADR-0003; issue #2; spike 0001
+  (`docs/spikes/0001-type-surface.md`, item 4, F1, F3, P-A, P-C, L6)
+
+The bar for this document: the maintainer reads it and is convinced. Keep it short.
+
+## Context
+- Section 4 used `Order.total.amount` (a column inside the embedded `Money`) and
+  `Wallet.balance.add(-order.total.amount)` (increment a `Money` column by a `Decimal`); section 4.4
+  named a path helper `Order.total.path(Money.amount)` as the fallback.
+- Spike 0001, item 4, identical in pyright and mypy: with `total: Col[Money]` and a one-parameter
+  `Column[T]`, `Order.total.amount` is an error (a generic cannot map the attributes of its type
+  argument), and the fallback `path(Money.amount)` accepts any argument, because `Money.amount` on
+  the class is just `Decimal`.
+- F1 and P-A: a column can carry the class it is declared on. With
+  `Col[T].__get__[O](self, instance: None, owner: type[O]) -> Column[O, T]` and value-class fields
+  declared `Col[...]`, both checkers type `Order.total.path(Money.amount)` as
+  `Column[Order, Decimal]` and reject `path(Rate.amount)` and `path(Wallet.balance)`. The owner then
+  flows into operations (`Op[O]`), predicates (`Pred[O]`), relations (`Relation[O, E]`) and set
+  changes (`SetChange[O]`), and both checkers reject an operation, predicate or relation operation
+  of another entity in `order.set`, `Entity.where`, `SetChange.set` and a child `update`, a wrong
+  child type, and a Finder column of another entity (`reportArgumentType` / `arg-type`).
+- P-A, queries: where the owner has to be inferred from several arguments of one call, the
+  checkers disagree. `select_from(OrderSummary, id=Order.id, item_count=Item.id)` solves the owner
+  to `Order | Item` in pyright and to the common base `Entity` in mypy, so a predicate over `Wallet`
+  is rejected by pyright and accepted by mypy. An explicit root entity does not pin the owner
+  either. The design's query shape (`where(*preds: Pred[object])`) is not broken by owner types,
+  but its predicates are not owner-checked.
+- Variance: on the same PEP 695 stub, pyright inferred `Column`'s value parameter invariant and
+  mypy contravariant, so assigning `Column[Order, object]` to `Column[Order, int]` was an error in
+  pyright only. With the variance fixed (owner covariant, value invariant) both checkers agree and
+  every round-2 line keeps its verdict. Two ways fix it: old-style type variables with declared
+  variance (which the project's ruff configuration flags as `UP046`), or PEP 695 syntax with a
+  member that returns the value type; the split comes from `path`'s reference to `Column[T, U]`
+  (spike L6).
+
+## Decision
+1. A field's class access is `Column[O, T]`, where `O` is the class that declares it
+   (`Order.status`: `Column[Order, OrderStatus]`). Value-class fields are declared `Col[...]` too:
+
+   ```python
+   @value
+   class Money:
+       amount: Col[Decimal]
+       currency: Col[str] = column(default="KRW")
+   ```
+
+2. A path into an embedded value is `Order.total.path(Money.amount)`, typed
+   `Column[Order, Decimal]`. Increments of a part of a value object go through the path:
+   `wallet.set(Wallet.balance.path(Money.amount).add(-order.total.amount))`. Whole-value writes are
+   unchanged (`Order.total.to(Money(...))`). There is no other syntax for the same increment.
+3. **Variance.** `Column`'s owner parameter is covariant and its value parameter invariant, and
+   type tests pin both under pyright and mypy. How the variance is fixed (old-style type variables
+   with a ruff exception, or PEP 695 syntax with a member returning the value type) is chosen when
+   `Column` is implemented.
+4. **Where the owner is checked.** Owner types are checked only where the receiver fixes the owner:
+   `order.set(...)`, `Entity.where(...)`, `SetChange.set(...)`, `SetChange.emit_each(...)`,
+   relation operations (`Order.items.add/remove/update`), the Finders of `Repository[E]`, and
+   `path`. Where the owner would have to be inferred from several arguments of one call it is not
+   checked by types: queries (`select`/`join`/`where`) are validated when their description is
+   built (whether seal can also catch them is #52), and `Profile`, `Load`, `Index`, `Check` and
+   `@invariant(fields=...)` are validated by seal. Reason: at those places pyright solves the owner
+   to a union and mypy to the common base `Entity`, so the same misuse would be an error under one
+   checker only (spike 0001, P-A, S2).
+5. A query that references a column of an entity it has not joined is rejected when the query
+   description is built. Whether seal can also catch it, and the exact moment, are open (#52).
+
+## Consequences
+- The design's own fallback syntax holds and rejects misuse in both checkers; no lambda and no
+  runtime rule for paths.
+- Operations of the wrong entity are type errors at every receiver-fixed place (the item 3 gap of
+  spike 0001 is closed), and `Finder(Order.number)` is `Finder[Order, str]`, as 4.3 already wrote.
+- `Column` has two type parameters wherever users name it (`assert_type(Order.status,
+  Column[Order, OrderStatus])`, 11.8).
+- Value classes declare their fields as `Col[...]`; their instances still read as plain values
+  (`m.amount` is `Decimal`), and `Money(Decimal("1000"))` still constructs positionally.
+- Query predicates are checked when the query description is built; profiles, load declarations,
+  indexes, checks and invariant field lists rely on seal for owner checks. Type-checking query
+  predicates is open (#52; a shape that adds the columns of joined entities after the join was not
+  tested).
+- Left to inference, `Column`'s variance differs between the checkers and changes whenever a
+  member is added or removed (spike L4, L6); Decision 3 fixes it and a type test guards it.
+- mypy's message for a wrong `path` argument names the instance type (`incompatible type
+  "Decimal"; expected "Column[Money, Never]"`); the code is still `arg-type`.
+- Comparisons on a column take exactly `T` in the spike's stubs, so 4.2's check is written
+  `>= Decimal(0)` and 4.7's column-to-column `Load.when(match=Wallet.user_id == Order.user_id)` is
+  rejected by both checkers; which operand types are accepted is open (spike L5, #51).
+
+## Alternatives considered
+- A getter, `Order.total.path(lambda m: m.amount)` (spike item 4 b2; this ADR's first draft): holds
+  in both checkers without `Col[...]` value fields, but needs a runtime rule that the lambda is an
+  attribute chain, does not check the owner of operations, and adds a lambda to every path.
+- `class Money(Additive[Decimal])` so that `Wallet.balance.add(Decimal)` types directly (F3): holds
+  in both, but gives the same increment two syntaxes (`Wallet.balance.add(...)` and
+  `Wallet.balance.path(Money.amount).add(...)`) and hides which column is incremented.
+- An embedded descriptor whose class access is the value class, `Emb[Money]` (item 4 c/c'): types
+  the literal `Order.total.amount`, but needs a `Value` base for `.to` and the class leaks
+  (`Order.total(amount=...)` type-checks as constructing a `Money`).
+- A one-parameter `Column[T]` with `path(Money.amount)`: accepts any argument (item 4 b1).
+- Queries that track their entity set (`SelectFrom[R, O]`, an explicit root): the checkers disagree
+  or the root does not pin the owner (P-A S2, S3).
+
+## History
+- 2026-11-25 - created (Proposed) from spike 0001 as "embedded paths through a getter".
+- 2026-11-25 - on hold after the architect review and the reproduction (owner-typed columns, F1;
+  `Additive`, F3).
+- 2026-11-25 - rewritten in the direction the maintainer chose: owner-typed columns and
+  `path(Money.amount)`, the boundary of owner checks (including `Check`), the query rule and fixed
+  variance; the getter, `Additive` and `Emb` are alternatives. Renamed from
+  `0004-embedded-paths-through-a-getter.md`.
+- 2026-11-25 - accepted by the maintainer.
+- 2026-11-25 - open items linked to their issues (#51, #52).
+- 2026-11-25 - after acceptance, Decision 4 corrected without changing its direction: two entries
+  of the list checked "by seal" were placed by when they can actually be checked. Queries
+  (`select`/`join`/`where`) are validated when their description is built, as Decision 5 already
+  said (seal: #52). `emit_each` moved to the receiver-fixed places: a set change is built when its
+  factory is called, so seal cannot see it, and `emit_each` is a method of `SetChange[O]`, whose
+  owner is fixed (`**fields: OwnedExpr[O]`; spike 0001 P-A follow-up, both checkers reject another
+  entity's column).
