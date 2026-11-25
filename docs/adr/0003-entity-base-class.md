@@ -43,17 +43,22 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
 2. **The creation syntax is the plain keyword constructor `Order(...)`; there is no `new`.** This
    matches events (`OrderPaid(...)`) and values (`Money(...)`), needs no runtime rule against a
    second creation path, and ADR-0002's ID-source rule applies to `Order(...)` unchanged.
-3. **Equality and hashing.**
-   - Type level: `frozen_default=True`, so both checkers treat entities as hashable.
-   - Runtime: two snapshots are equal when they hold the same values - columns and loaded
-     relations, including what is loaded and what is not. The hash is the entity type plus the
-     primary key (equal snapshots have the same key, so the contract holds).
+3. **Equality and hashing - type level (decided).** `frozen_default=True`, so both checkers treat
+   entities as hashable (spike 0001 P-B: without it pyright and mypy disagree on `{order}`).
+4. **Equality and hashing - runtime (provisional working rule).** Set without an implementation or
+   use cases; spike 9.4 (#5) confirms or changes it, tracked in #54. Until then:
+   - Two snapshots are equal when they hold the same values - columns and loaded relations,
+     including what is loaded and what is not. The hash is the entity type plus the primary key
+     (equal snapshots have the same key, so the contract holds).
    - Boundaries: `==` and `hash()` on a ref raise `UnloadedReference` (a ref holds no values). The
      hash of a new entity with an `identity` primary key, whose ID exists only after commit,
      raises `UsageError`. A chain view compares its latest state with `==`; its hash is the
      primary key, so it does not change while the chain runs. `==` and `hash()` through a moved
      alias raise `MovedSnapshotAccess`, like every other read through it.
-4. `@value`, `@event` and `@dto` stay decorators (constructors, ordering and class access work
+   - Known concerns: because the load state is compared, `Order.stub(...)` and a snapshot with
+     loaded relations can be unequal although they hold the same values; and a new entity with an
+     `identity` primary key cannot be a set member or dict key before commit.
+5. `@value`, `@event` and `@dto` stay decorators (constructors, ordering and class access work
    through `dataclass_transform` on a decorator).
 
 ## Consequences
@@ -91,3 +96,6 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
   equality/hashing rules of Decision 3, including chain views and moved aliases; facts from spike
   0001 round 2 (P-B, P-C).
 - 2026-11-25 - open items linked to their issues (#49, #50).
+- 2026-11-25 - at the maintainer's request the runtime equality/hashing rule became a provisional
+  working rule (Decision 3 split into the decided type level, Decision 3, and the provisional
+  runtime rule, Decision 4, with its known concerns; #5, #54). The direction is unchanged.

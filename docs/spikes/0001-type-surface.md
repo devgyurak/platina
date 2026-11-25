@@ -192,7 +192,7 @@ Code under `spikes/0001-type-surface/` (round 1 in `round1/`, step H in `harness
 | `lib_design.pyi` | Library stub: `Col`/`Rel` descriptors, `Column`/`Relation`, field specifiers, `entity` (decorator, design form) and `Entity` (base class variant), `Changes`/`StepResult`, `Usecase`/`Step`/`usecase`/`step`, `chain`, `Finder`/`Repository`, `App` |
 | `lib_ctor_variants.pyi` | Item 2 alternatives: `__set__` absent / `instance: Never` / `instance: object`; frozen and non-frozen bases |
 | `lib_embedded_variants.pyi` | Item 4 alternatives: `PCol` with `path`/`at`, `Emb` (class access is the value class), `Value` base, `ACol` with a declared delta type |
-| `lib_owner.pyi`, `lib_delta.pyi` | Follow-ups F1 (owner-typed column) and F3 (delta type through a Protocol) |
+| `lib_owner.pyi`, `lib_delta.pyi` | Follow-ups F1 (owner-typed column) and F3 (delta type through a Protocol); F3 pinned in `pass_f3_delta.py` / `fail_f3_delta.py` |
 | `domain.py` | Sections 4.2-4.6 transcribed (Money, User, Order, Item, Wallet, Coupon, OrderPaid, OrderExpired, OrderSummary, OrderRepo, WalletRepo, `pay`, `apply_coupon`, `checkout`) |
 | `probe_<item>_*.py` | `reveal_type` and positive/negative lines per item, run directly through both checkers |
 | `pass_items.py` / `fail_items.py` | Items 0-3, 5-7 pinned |
@@ -558,12 +558,16 @@ children need a rule for the parent key.
 
 **F3 - `Wallet.balance.add(Decimal)` through a structural self-type** (`round1/lib_delta.pyi`,
 `round1/probe_f3_delta.py`: the round-1 reproducer's `rp_delta.pyi` / `rp_probe_delta.py`, copied
-into the spike unchanged apart from the module name and rerun with the same output). `Column[T]`
+into the spike with only the module name, the header comment and the docstring changed (attribution
+text), and rerun with the same output; pinned in `round1/pass_f3_delta.py` / `fail_f3_delta.py`). `Column[T]`
 exposes a property `_of -> T` and overloads `add[D](self: _HasDelta[D], n: D)` / `add(self, n: T)`,
 where `_HasDelta[D]` is a Protocol with a property `_of -> Additive[D]` and the value class declares
 `class Money(Additive[Decimal])`. Both checkers: `Wallet.balance.add(Decimal("-1"))` is `Op`,
 `Wallet.count.add(1)` is `Op`, `Wallet.balance.add("1")` is rejected (pyright `reportCallIssue` +
-`reportArgumentType`, mypy `call-overload`). `Wallet.balance.add(m)` with a whole `Money` is also
+`reportArgumentType`, mypy `call-overload`), `Wallet.count.add("1")` is rejected (pyright
+`reportArgumentType`, mypy `arg-type` - not `call-overload`: the first overload's self-type does
+not match an `int` column), and `Wallet.balance.to(Decimal("1"))` is rejected
+(`reportArgumentType` / `arg-type`). `Wallet.balance.add(m)` with a whole `Money` is also
 accepted (the second overload). The cost is a declared base on the value class; the Protocol route
 avoids the variance problem of item 4 (d).
 
@@ -577,12 +581,14 @@ New files under `spikes/0001-type-surface/round2/`:
 
 | File | What it is |
 |---|---|
-| `lib_final.pyi` | Library stub of the decided surface: `Col[T].__get__[O]` -> `Column[O, T]`; `Op[O]`, `Pred[O]` (comparisons on a column), `Relation[O, E]` (`add`/`remove` -> `Op[O]`, `update(item: E, *ops: Op[E])` -> `Op[O]`), `RelColumn[O, T]`; `Entity` with `dataclass_transform(kw_only_default=True, frozen_default=True, ...)`, `ref`, `where(*preds: Pred[Self]) -> SetChange[Self]`, `stub`, `set(*ops: Op[Self])` and no `new`; `SetChange[O].set(*ops: Op[O])` and `emit_each(event, **fields: OwnedExpr[O])` (`**fields: Expr` in the runs before the `emit_each` follow-up); `Column.path[U](field: Column[T, U]) -> Column[O, U]`; `Finder[E, T](column: Column[E, T])`. Queries in two shapes: `Select[R]` with `where(*preds: Pred[object])` (S1, the design's 4.3 shape) and `SelectFrom[R, O]` / `select_from(dto, **columns: OwnedExpr[O])` with `join(Relation[O, E]) -> SelectFrom[R, O \| E]` and `where(*preds: Pred[O])` (S2) |
+| `lib_final.pyi` | Library stub of the decided surface: `Col[T].__get__[O]` -> `Column[O, T]`; `Op[O]`, `Pred[O]` (comparisons on a column), `Relation[O, E]` (`add`/`remove` -> `Op[O]`, `update(item: E, *ops: Op[E])` -> `Op[O]`), `RelColumn[O, T]`; `Entity` with `dataclass_transform(kw_only_default=True, frozen_default=True, ...)`, `ref`, `where(*preds: Pred[Self]) -> SetChange[Self]`, `stub`, `set(*ops: Op[Self])` and no `new`; `SetChange[O].set(*ops: Op[O])` and `emit_each(event, /, **fields: OwnedExpr[O])` (`**fields: Expr` in the runs before the `emit_each` follow-up); `Column.path[U](field: Column[T, U]) -> Column[O, U]`; `Finder[E, T](column: Column[E, T])`. Queries in two shapes: `Select[R]` with `where(*preds: Pred[object])` (S1, the design's 4.3 shape) and `SelectFrom[R, O]` / `select_from(dto, **columns: OwnedExpr[O])` with `join(Relation[O, E]) -> SelectFrom[R, O \| E]` and `where(*preds: Pred[O])` (S2) |
 | `lib_query_root.pyi` | S3: `select_root(dto, root: type[O], **columns: OwnedExpr[O]) -> Query[R, O]`, same `join`/`where` as S2 |
 | `domain_final.py` | Sections 4.2-4.6 transcribed onto `lib_final.pyi`. Deviations: the `Entity` base, `Money` fields `amount: Col[Decimal]`, `currency: Col[str] = column(default="KRW")`, `Order.total.path(Money.amount)` in `Meta.checks` and the 4.3 query, `Wallet.balance.path(Money.amount).add(-order.total.amount)` in 4.5, and `>= Decimal(0)` in the check (L5 open) |
 | `probe_pa_owner.py`, `probe_pa_query_root.py` | P-A |
 | `lib_eq_hash.pyi`, `probe_pb_eq_hash.py` | P-B |
 | `pass_final.py`, `fail_final.py` | P-C: 11.8 and the round-2 lines pinned |
+| `lib_final_declared.pyi`, `domain_final_declared.py`, `pass_final_declared.py`, `fail_final_declared.py`, `probe_variance_declared.py`, `lib_variance.pyi`, `probe_variance_pep695.py`, `pass_variance.py`, `fail_variance.py` | Variance after the round-2 reproduction (declared copy, L6, pinned variance) |
+| `probe_pa_emit_each.py`, `lib_instance_overload.pyi`, `probe_pa_column_as_value.py` | Follow-ups after the reproductions: `emit_each`, column-as-value |
 
 Commands: as for the probes (`uv run pyright <file>`, `uv run mypy --strict --show-error-codes
 --no-incremental <file>`), raw output in `results/pa-*.txt`, `results/pa-s3-*.txt`,
@@ -593,6 +599,16 @@ D=spikes/0001-type-surface
 uv run python -m tools.typetests \
   $D/round2/lib_final.pyi $D/round2/domain_final.py $D/round2/pass_final.py $D/round2/fail_final.py
 # -> typetests: 0 problem(s) in 4 file(s)
+uv run python -m tools.typetests $D/round2/lib_final_declared.pyi $D/round2/domain_final_declared.py \
+  $D/round2/pass_final_declared.py $D/round2/fail_final_declared.py
+# -> typetests: 0 problem(s) in 4 file(s)
+uv run python -m tools.typetests $D/round2/lib_final.pyi $D/round2/lib_final_declared.pyi \
+  $D/round2/domain_final.py $D/round2/domain_final_declared.py \
+  $D/round2/pass_variance.py $D/round2/fail_variance.py
+# -> typetests: 0 problem(s) in 6 file(s)
+uv run python -m tools.typetests $D/round1/lib_delta.pyi $D/round1/pass_f3_delta.py \
+  $D/round1/fail_f3_delta.py
+# -> typetests: 0 problem(s) in 3 file(s)
 ```
 
 **P-A - owner types propagated** (`probe_pa_owner.py`). Revealed types, identical in both
@@ -627,7 +643,31 @@ rejected: pyright `"Column[Wallet, Id[Wallet]]" is not assignable to "OwnedExpr[
 type "Id[Wallet]"; expected "OwnedExpr[Order]"` (`arg-type`; mypy names the instance type, as in
 F1). The owner is fixed by the receiver, so `emit_each` is a receiver-fixed place; the lines are
 pinned in `pass_final*.py` / `fail_final*.py`, and both round-2 pinning commands still end with `0
-problem(s) in 4 file(s)`.
+problem(s) in 4 file(s)`. Not checked by `emit_each` (accepted by both checkers, found by the
+round-3 reproduction): the event class (`event: type[object]`), the field names (`typo=Order.id`)
+and the field value types (`order_id=Order.number`, a `str` column for an `Id[Order]` field).
+
+**Column-as-value follow-up - why mypy rejects at `path` and `emit_each`**
+(`round2/lib_instance_overload.pyi`, `round2/probe_pa_column_as_value.py`,
+`results/pa-column-as-value-*.txt`; added after the round-3 reproduction, which found the
+mechanism, and not independently reproduced). Where a column is passed by class access
+(`Wallet.id`) and the parameter type is not a column of the receiver's owner, mypy falls back to
+`Col.__get__`'s instance overload (`instance: object` also matches `None`) and reads the column as
+its value (`Id[Wallet]`). With a parameter that takes only an owned column (`path`, `emit_each`)
+the verdict is the same as pyright's, but the reason differs: mypy rejects a value, pyright an
+owner. F1's mypy messages naming the instance type (`incompatible type "Decimal"; expected
+"Column[Money, Never]"`) have the same cause. With a parameter that also takes the value, the
+checkers split:
+
+| Line (`lib_instance_overload.pyi`) | pyright | mypy |
+|---|---|---|
+| `OrderW.number.to(OrderW.user_id)`, `OrderW.user_id.to(WalletW.user_id)` (a column where a value is expected) | rejected (`reportArgumentType`) | rejected (`arg-type`) |
+| `OrderW.user_id.ge_value_or_column(WalletW.user_id)` with `other: T \| Column[O, T]` | rejected (`Type parameter "O@Column" is invariant, but "WalletW" is not the same as "OrderW"`) | **accepted** |
+| The same with the instance overload narrowed to `instance: Entity` (`ColEntity`) | rejected | rejected: `Argument 2 to "__get__" of "ColEntity" has incompatible type "type[WalletE]"; expected "type[OrderE]"` (`arg-type`) - an owner mismatch |
+| `m.amount` on a `@value` class without a base, with `ColEntity` fields | error: `Cannot access attribute "amount" for class "MoneyE"` (`reportAttributeAccessIssue`) | error: `No overload variant of "__get__" of "ColEntity" matches argument types "MoneyE", "type[MoneyE]"` (`call-overload`) |
+
+Narrowing the instance overload removes mypy's fallback but breaks instance access on classes
+without the base (`@value`, `@event`). Operands that take a column or a value are open (#51).
 
 **P-A - queries: a checker disagreement** (`probe_pa_owner.py::queries`, `probe_pa_query_root.py`). The
 4.3 query `summaries` (`select(...).join(Order.items, outer=True).where(Order.user_id ==
@@ -754,16 +794,23 @@ Consequences for the design (proposals; the maintainer decides):
 | Owner checks where the owner must be solved from columns of several entities in one call (query shapes S2, S3; a one-entity query widened by `.join` is agreed) | union `Order \| Item` | common base `Entity` | **Does not hold** - the checkers disagree; the maintainer decided these places are not checked by types: queries (`select`/`join`/`where`) are validated when their description is built (seal: #52), `Profile`, `Load`, `Index`, `Check` and `@invariant(fields=...)` by seal; the 4.3 query shape (S1) stays |
 | Entity hashability with `frozen_default=True` (P-B) | hashable | hashable | **Holds** - both checkers agree only for frozen or `eq_default=False` |
 
-**After the round-2 reproduction - declared variance** (`lib_final_declared.pyi` with
-`domain_final_declared.py`, `pass_final_declared.py`, `fail_final_declared.py`, copies of the round-2
-files with only the import changed; `probe_variance_declared.py`; `results/declared-*.txt`).
+**After the round-2 reproduction - declared variance** (`lib_final_declared.pyi`, a copy of
+`lib_final.pyi` whose `Column` declaration changes, with `domain_final_declared.py`,
+`pass_final_declared.py`, `fail_final_declared.py`, copies of the round-2 files with only the import
+changed; `probe_variance_declared.py`; `results/declared-*.txt`, full pyright output in
+`results/probe_variance_*-full-pyright.txt`).
 `Column` declared with old-style type variables, owner covariant and value invariant
 (`class Column(OwnedExpr[_O_co], Generic[_O_co, _T])`): the round-2 pinning set ends with `0
 problem(s) in 4 file(s)` on it, and `x: Column[Order, int] = c` with `c: Column[Order, object]` is
 rejected by both checkers (pyright `reportAssignmentType`, mypy `assignment`), where the inferred
 `lib_final.Column` is rejected by pyright only. **L6**: PEP 695 syntax cannot declare variance, and
 the project's ruff configuration flags the old-style declaration (`UP046`); the copy carries `# noqa:
-UP046` with the reason, and the real library needs a per-file decision.
+UP046` with the reason, and the real library needs a per-file decision. The narrow-value direction
+(`Column[Order, bool]` to `Column[Order, int]`, rejected by both on both copies) and owner
+covariance (`Column[Order, int]` to `Column[Entity, int]` and `Op[Order]` to `Op[Entity]`, accepted
+by both on both copies) were confirmed by the round-3 reproducer; they and the declared copy's
+wide-value line are pinned in `round2/pass_variance.py` / `fail_variance.py`. The wide-value line on
+the inferred `lib_final.Column` cannot be pinned (only pyright rejects it); it stays in the probe.
 A second way keeps PEP 695 syntax (`lib_variance.pyi`, `probe_variance_pep695.py`,
 `results/variance-pep695-*.txt`; checked by assigning `C[Order, object]` and `C[Order, bool]` to
 `C[Order, int]`):
@@ -781,12 +828,13 @@ type test has to pin it.
 **The final surface** is `lib_final.pyi` with `Column`'s variance fixed (owner covariant, value
 invariant), as in `lib_final_declared.pyi`; the method of fixing it is left to the implementation
 (ADR-0004). The declared-variance and PEP 695 variance probes were run after the round-2
-reproduction and are not independently reproduced; the reproducer's own round-2 stub declared the
-same variance and reached the same verdicts.
+reproduction and reproduced in round 3.
 
 Checker disagreements found in the whole spike: entity hashability without `frozen` (F2, P-B),
-the owner solved from several entities' columns in one call (P-A S2, S3), and the variance of
-`Column`'s `T` when it is left to inference (P-A, `lib_final.pyi`).
+the owner solved from several entities' columns in one call (P-A S2, S3), the variance of
+`Column`'s `T` when it is left to inference (P-A, `lib_final.pyi`), and another entity's column
+passed where a value or a column of the receiver's owner is accepted (`T | Column[O, T]`: mypy reads
+the column as its value and accepts it; column-as-value follow-up).
 
 Not covered by the claims above (from the round-2 reproduction): `Check(...)` takes
 `Callable[[], Pred[object]]`, so a check over another entity's column in `Order.Meta` is accepted
@@ -971,14 +1019,81 @@ round-2 verdict row. Discrepancy 3 is a second checker disagreement, on the publ
 goes to the maintainer under the spikes rule along with S2/S3. The two points it raised (5 and 3)
 were rerun with the spike's stubs (`probe_pa_followup.py`, `results/pa-s3b-*.txt`) and confirmed.
 
+### Round 3
+
+- **Who:** type-reviewer (independent; worked from this write-up, the in-scope files under
+  `spikes/0001-type-surface/`, design sections 4, 8.2, 11.8 and ADR-0004; did not run the spike).
+  Scope: the probes added after the round-2 reproduction - the declared-variance copy, L6, the
+  `emit_each` follow-up and F3 as committed.
+- **Date:** 2026-11-25
+- **Tools observed:** Python 3.14.7, pyright 1.1.414, mypy 2.4.1 (compiled: yes), ruff 0.17.6;
+  branch at `c769df9` (spike files committed and unmodified); configuration from `pyproject.toml`.
+
+**What was run**
+1. Both round-2 pinning commands, unchanged: each `typetests: 0 problem(s) in 4 file(s)`.
+2. Both checkers on `lib_final_declared.pyi`, `domain_final_declared.py`, `pass_final_declared.py`,
+   `fail_final_declared.py`, `probe_variance_declared.py`, `lib_variance.pyi`,
+   `probe_variance_pep695.py`, `probe_pa_emit_each.py`, `lib_final.pyi`, `pass_final.py`,
+   `fail_final.py`, `round1/lib_delta.pyi`, `round1/probe_f3_delta.py` (output in
+   `results/repro3/rerun/`), compared line by line; the round-1 reproducer's original
+   `rp_probe_delta.py` rerun and compared with `probe_f3_delta.py`.
+3. `uv run ruff check --no-cache --ignore-noqa round2/lib_final_declared.pyi` (the `UP046` claim).
+4. An `Any` audit (mypy `--disallow-any-expr --disallow-any-explicit --disallow-any-decorated` over
+   the in-scope probes and pass files; grep for `Any`, `cast`, suppressions).
+5. Its own files in `results/repro3/` (git-ignored): an independent stub and domain with declared
+   variance on `Op`, `Pred`, an owned-expression base and `Column`, a `Bulk[O]` set change and an
+   F3 delta Protocol over `Column[O, T]` (`r3_lib.pyi`, `r3_domain.py`, `pass_r3.py`, `fail_r3.py`:
+   `0 problem(s) in 4 file(s)`); L6 controls (`r3_pep695.pyi`, `probe_r3_pep695.py`); probes on the
+   spike's stubs for narrow-value and owner variance and for `emit_each` edge cases; and
+   `r3_ctx*.pyi` / `probe_r3_ctx*.py` on why mypy's message names the instance type.
+
+**Observations.** Every revealed type, message and code quoted in the declared-variance paragraph,
+the L6 table, the `emit_each` follow-up and F3 reproduced word for word. No `Any` reaches a checked
+line; the only suppressions are the L1 pragma, the two L2 ignores and the documented `# noqa:
+UP046` (removing it makes ruff report `UP046`). Beyond the claims: owner covariance and the
+narrow-value direction hold on both copies; a `path` that takes another class, or a self-reference
+only in a return, is contravariant in both checkers - only a self-reference in a parameter splits
+them, and which side is sound depends on the slot; F3 composes with owner-typed columns on its own
+stub.
+
+| Part | Reproducer | Reason |
+|---|---|---|
+| 1 Declared variance | agree | Both pinning sets give 0 problems; the wide-value line is rejected by both on the declared copy and by pyright only on `lib_final`; `UP046` and the noqa reproduce. |
+| 2 L6 | agree | All three rows reproduce with the same messages; the attribution to `path`'s self-reference is confirmed by controls. |
+| 3 `emit_each` | **partly agree** | Every quoted outcome reproduces in both checkers, but mypy's rejection is not an owner comparison: it reads the column as a value through `Col.__get__`'s instance overload, and accepts another entity's column once the parameter also takes the value type. The event class and the fields are not checked. |
+| 4 F3 | agree | All stated lines reproduce; the output equals the original reproducer's; an independent Protocol stub over `Column[O, T]` agrees. |
+
+**Discrepancies it reported** (each addressed above): (1) the mechanism behind "mypy names the
+instance type" and the latent split at value-or-column parameters - now the column-as-value
+follow-up and a constraint in ADR-0004; (2) `emit_each` does not check the event, field names or
+field types - now an observation; (3) the missing `/` in the `emit_each` signature of the file
+table; (4) `lib_final_declared.pyi` is not a copy with only the import changed; (5) narrow-value
+and owner variance were unprobed - now attributed to this round and pinned; (6) variance and F3
+results were not pinned - now `pass_variance.py` / `fail_variance.py` and `pass_f3_delta.py` /
+`fail_f3_delta.py`; (7) two `results/` files kept only the first line of each pyright diagnostic -
+regenerated in full; (8) the F3 header comment and docstring changes were unmentioned; (9) two F3
+negative lines were omitted.
+
+**Summary (reproducer):** agrees with the declared-variance copy, L6 and F3; partly agrees with the
+`emit_each` follow-up. Nothing changes a round-2 verdict row. Discrepancy 1 went to the maintainer
+as an input to #51 and to the `Col.__get__` overloads of the implementation.
+
 ### Maintainer decisions after the reproductions
 2026-11-25 - the maintainer decided the points the reproductions sent back: the S2/S3 checker
 disagreement (owners inferred from several arguments are not checked by types; ADR-0004 Decisions
 4-5) and the variance disagreement (variance fixed and pinned by type tests; ADR-0004 Decision 3).
 ADR-0003 and ADR-0004 were accepted and design 9.1 ticked. The declared-variance and PEP 695
 variance probes (`round2/lib_final_declared.pyi`, `round2/probe_variance_*.py`) were run after the
-round-2 reproduction and are not independently reproduced.
+round-2 reproduction; round 3 reproduced them.
 Afterwards the maintainer placed two entries of ADR-0004's "checked by seal" list by when they can
 actually be checked: queries are validated when their description is built (seal: #52), and
 `emit_each` is a receiver-fixed place (the P-A follow-up on `emit_each`, run after the round-2
-reproduction and not independently reproduced).
+reproduction; round 3 partly agreed - same verdicts, but mypy rejects a value, not an owner).
+The maintainer then lowered ADR-0003's runtime equality/hashing rule to a provisional working rule
+(ADR-0003 Decision 4, #54): the spike confirmed only the type level (`frozen_default=True`, P-B);
+the runtime rule had neither an implementation nor use cases, and spike 9.4 (#5) confirms or
+changes it.
+After round 3 the maintainer kept the receiver-fixed list, including `path` and `emit_each`, with
+the column-as-value finding recorded (ADR-0004 Consequences) and a constraint: no parameter takes
+both a column and a value until both checkers have been probed (#51). The column-as-value probe and
+the pinned variance and F3 files were added after round 3 and are not independently reproduced.

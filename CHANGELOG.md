@@ -31,8 +31,9 @@ All notable changes are documented here. Format: [Keep a Changelog](https://keep
 ### Changed
 - Entity syntax (ADR-0003, accepted): entities inherit `Entity` with table options as class
   keywords instead of an `@entity` decorator, are created with the keyword constructor
-  `Order(...)` instead of `Entity.new(...)`, are frozen at the type level, and compare by value
-  with a type-plus-primary-key hash.
+  `Order(...)` instead of `Entity.new(...)`, are frozen at the type level (hashable in both
+  checkers). The runtime rule - value equality with a type-plus-primary-key hash - is a
+  provisional working rule until spike 9.4 (#5) settles it (#54).
 - Field surface (ADR-0004, accepted): class access is `Column[Owner, T]` with fixed variance;
   value-object fields are declared `Col[...]`; embedded paths are `Order.total.path(Money.amount)`
   and value-object increments go through them; owner checks apply by type where the receiver

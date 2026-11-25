@@ -1,4 +1,4 @@
-<!-- i18n: source=docs/design/design.md source-sha256=6d2441aaba56 translation-sha256=a47ac8a85c28 -->
+<!-- i18n: source=docs/design/design.md source-sha256=c0f0285f3b19 translation-sha256=1a406c47306f -->
 # Platina 설계 문서
 
 > **Platina**: 백금(platinum)의 옛 스페인어 이름. 백금이 산에도 녹지 않고 반응하지 않듯, 도메인 코드는 DB와 반응하지 않는다.
@@ -280,7 +280,7 @@ class OrderPaid:
 - **모든 필드는 `Col[T]`로 선언한다.** 평범한 어노테이션(`status: OrderStatus = column(...)`)으로는 타입 체커가 클래스 접근(`Order.status`)도 `OrderStatus`로 본다. 클래스에서는 `Column[Order, OrderStatus]`(컬럼이 자신을 선언한 클래스를 안다), 인스턴스에서는 `OrderStatus`로 보이려면 어노테이션 자체가 디스크립터 타입이어야 한다. SQLAlchemy 2.0이 `Mapped[T]`를 쓰는 이유와 같다. 이벤트 필드와 값 객체 필드도 마찬가지다(프로젝션 키의 `OrderPaid.user_id`, 임베디드 경로의 `Money.amount`, ADR-0004).
 - **스냅샷은 불변이다.** `order.status = PAID`는 에러이고, 쓰기는 오직 `.set(...)`으로 한다(§4.4). 컬렉션 필드는 인스턴스에서 읽기 전용 `Sequence[Item]`이다.
 - **생성은 키워드 생성자다**: `Order(number="A-1", total=..., user_id=...)`. 이벤트, 값과 같다. 필수 필드 누락은 두 체커 모두에서 타입 에러이고, 생성되는 키, `version_column()`, 서버 기본값, 관계는 파라미터가 아니다(§8.2 "생성 문법", ADR-0003).
-- **동등성**: 두 스냅샷은 같은 값(컬럼과 로드된 관계, 무엇이 로드됐는지까지 포함)을 가지면 같고, 해시는 엔티티 타입과 기본 키다. ref에 대한 `==`와 `hash()`는 `UnloadedReference`를 낸다(ADR-0003).
+- **동등성**(잠정 작업 규칙, #54): 두 스냅샷은 같은 값(컬럼과 로드된 관계, 무엇이 로드됐는지까지 포함)을 가지면 같고, 해시는 엔티티 타입과 기본 키다. ref에 대한 `==`와 `hash()`는 `UnloadedReference`를 낸다(ADR-0003 Decision 4. 스파이크 9.4가 확정하거나 고친다).
 - **`owned=True`**: 집계에 속한 자식이다. 자식이 바뀌면 루트의 `version`도 함께 오른다(JPA `OPTIMISTIC_FORCE_INCREMENT`). 그래서 편집 화면이 주문과 항목을 같이 다룰 때 항목만 바뀐 경우도 요청 사이 낙관적 락(§4.6)에 걸린다. 일반 FK 자식(예: 게시글의 댓글)은 `owned`가 아니라 루트를 건드리지 않는다.
 - **클라이언트 생성 ID가 기본값이다.** Python 3.14의 `uuid.uuid7()` 덕분에 순수 함수 안에서 새 엔티티의 ID를 안다. `generated="identity"`도 지원하지만, 그 경우 ID는 커밋 결과(`result.created(Order)`)로만 얻는다. 코어는 `uuid7()`을 직접 부르지 않는다. `Order(...)`는 엔진이 호출마다 설치한 소스에서 ID를 받고, 테스트의 직접 호출과 `Order.stub()`은 결정적인 대체 시퀀스를 쓰며, 유스케이스나 step 밖에서 부른 `Order(...)`는 `UsageError`다(ADR-0002).
 - 다른 클래스를 참조하는 곳은 `lambda`로 늦게 평가한다. 문자열 참조는 쓰지 않는다.
@@ -530,9 +530,9 @@ async with app.read(consistency="snapshot") as r:                    # REPEATABL
 | 루트 ref나 필수 의존 로드의 행이 없음 | `NotFound` |
 | `expected_version` 불일치 | `VersionMismatch`, 재시도 없음 (사용자에게 충돌을 알려야 함) |
 | COMMIT 중 연결 끊김 | 같은 실행 ID로 재실행 (위 참조) |
-| ref의 필드 읽기 / ref에 `.set` / ref에 `==`나 `hash()` | `UnloadedReference` |
-| 이동된 원본(별칭)으로 필드 읽기 (`==`, `hash()` 포함) | `MovedSnapshotAccess` |
-| 커밋 전 `identity` 키 새 엔티티의 `hash()` | `UsageError` (ADR-0003) |
+| ref의 필드 읽기 / ref에 `.set` / ref에 `==`나 `hash()` (`==`·`hash()`는 잠정, #54) | `UnloadedReference` |
+| 이동된 원본(별칭)으로 필드 읽기 (`==`, `hash()` 포함. `==`·`hash()`는 잠정, #54) | `MovedSnapshotAccess` |
+| 커밋 전 `identity` 키 새 엔티티의 `hash()` (잠정, #54) | `UsageError` (ADR-0003) |
 | chain 블록 밖에서 뷰에 `.set` | `ChainClosed` |
 | 한 단계 안에서 같은 필드를 두 번 씀 | `ConflictingWrites` |
 | 같은 유스케이스 안의 집합 변경·행 변경 겹침 | `IntraUsecaseConflict` |
@@ -933,7 +933,7 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
   2. 생성된 **진짜 Python 모듈**의 타입 붙은 생성 함수.
   3. 런타임 검사만 (마지막 수단).
 - `.pyi` 스텁 생성은 기각했다. 스텁은 생성자만 덧씌우지 못하고 모듈의 타입을 통째로 대신해서, 필드를 추가하고 다시 생성하기 전까지 에디터가 예전 모습을 보여 준다.
-- 엔티티는 타입 수준에서 해시 가능하다(`frozen_default=True`. 이것이 없으면 `{order}`에 대해 pyright와 mypy의 판단이 갈린다). 런타임 동등성은 스냅샷의 값(컬럼과 로드된 관계, 무엇이 로드됐는지까지 포함)을 비교하고, 해시는 엔티티 타입과 기본 키다. ref는 `UnloadedReference`를 내고, `identity` 키를 가진 새 엔티티는 커밋 전에 해시가 없으며(`UsageError`), chain 뷰는 최신 상태를 비교하고, 이동된 별칭은 `MovedSnapshotAccess`를 낸다(ADR-0003).
+- 엔티티는 타입 수준에서 해시 가능하다(`frozen_default=True`. 이것이 없으면 `{order}`에 대해 pyright와 mypy의 판단이 갈린다). 런타임 규칙은 스파이크 9.4(#5)가 확정하거나 고칠 때까지 잠정 작업 규칙이다(#54): 동등성은 스냅샷의 값(컬럼과 로드된 관계, 무엇이 로드됐는지까지 포함)을 비교하고, 해시는 엔티티 타입과 기본 키다. ref는 `UnloadedReference`를 내고, `identity` 키를 가진 새 엔티티는 커밋 전에 해시가 없으며(`UsageError`), chain 뷰는 최신 상태를 비교하고, 이동된 별칭은 `MovedSnapshotAccess`를 낸다(ADR-0003 Decision 4). 알려진 우려: stub과 관계를 로드한 스냅샷은 같은 값이어도 같지 않을 수 있고, `identity` 키 새 엔티티는 커밋 전에 set 원소나 dict 키가 될 수 없다.
 - 미결: `Order.stub(...)`의 키워드는 타입 검사되지 않고(#50), owned 자식이 부모 키를 얻는 방법(§4.7)은 정해지지 않았다(#49).
 
 **의존 로드: 선언형만, 제너레이터 없음**
@@ -1151,7 +1151,7 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
 다섯 차례의 리뷰를 거치며 지적이 점점 구현 세부로 내려왔다. 남은 질문은 문서로는 답이 나오지 않고 실험으로만 답이 나온다. 특히 SSI 상호작용은 리뷰어와 설계자 모두 문서 위에서 같은 종류의 실수를 반복했다. 그래서 다음 네 실험을 구현보다 먼저 한다.
 
 ### 9.1 타입 스텁 스파이크 (최우선)
-§4 문법 전체가 여기에 달려 있다. 구현 없이 스텁만으로 §11.8의 통과·실패 파일을 pyright와 mypy에 돌린다. 결과: [스파이크 0001](../spikes/0001-type-surface.md)(독립적으로 재현함, 나중에 돌린 변성 프로브는 제외), ADR-0003, ADR-0004.
+§4 문법 전체가 여기에 달려 있다. 구현 없이 스텁만으로 §11.8의 통과·실패 파일을 pyright와 mypy에 돌린다. 결과: [스파이크 0001](../spikes/0001-type-surface.md)(세 차례 독립적으로 재현함. round 3 이후에 추가한 프로브는 재현되지 않았다고 기록함), ADR-0003, ADR-0004.
 - [x] `Col[T]`: 클래스 접근 `Column[T]`, 인스턴스 접근 `T` - 성립. 클래스 접근은 이제 `Column[Owner, T]`(ADR-0004)
 - [x] 생성자: `__set__(self, instance: Never, value: T)`로 생성자 파라미터 타입은 얻고 대입은 막히는가. 안 되면 생성된 모듈의 타입 붙은 생성 함수로 - `Entity` 기반 클래스 위에서 1단계로 성립. 생성은 `Order(...)`(ADR-0003)
 - [x] `with chain(a, b) as (c, a, b)`: TypeVarTuple로 각 이름의 타입이 유지되는가 - 성립
@@ -1404,7 +1404,7 @@ ChangeSet
 - 엔티티 스냅샷은 seal 시점에 엔티티마다 생성하는 **slots 클래스**(내부 값은 튜플)다. 엔티티는 `Entity`를 상속하는데(ADR-0003) `__init_subclass__`는 `__slots__`를 추가할 수 없으므로, slots 클래스는 `Entity` 메타클래스가 만들거나 별도 스냅샷 클래스로 만든다. 필드 접근은 디스크립터를 거치고, 클래스에서 접근하면 `Column[Owner, T]`, 인스턴스에서 접근하면 `T`를 돌려준다.
 - **ref**는 같은 클래스의 "로드되지 않은" 인스턴스다. 식별 정보(PK나 Finder 키)만 갖고, 필드를 읽으면 `UnloadedReference`를 낸다. 실행기가 로드 계획을 만들 때 ref를 수집한다.
 - **chain 뷰**: `chain(order, wallet)`이 돌려주는 값은 chain의 최신 상태를 가리키는 뷰 객체다(타입상 원래 엔티티). `c.run`에 넘길 때 그 시점의 불변 스냅샷으로 바뀌고, 블록을 벗어나면 최종 상태로 고정되며 `.set`은 `ChainClosed`를 낸다.
-- **이동 표시**: `chain(order, ...)`은 현재 단계의 `contextvars` 기록에 "이 스냅샷 객체는 이동됨"을 남긴다. 같은 이름 재바인딩으로 대부분의 원본 참조는 구조적으로 사라지고, 이 표시는 chain 전에 만든 별칭을 막는다. 디스크립터가 필드를 읽을 때와 `__eq__`·`__hash__`가 실행될 때 이 표시를 확인해 `MovedSnapshotAccess`를 낸다. 표시는 단계 스코프별이라, 같은 스냅샷을 다른 코루틴·스레드가 쓰는 데는 영향이 없다.
+- **이동 표시**: `chain(order, ...)`은 현재 단계의 `contextvars` 기록에 "이 스냅샷 객체는 이동됨"을 남긴다. 같은 이름 재바인딩으로 대부분의 원본 참조는 구조적으로 사라지고, 이 표시는 chain 전에 만든 별칭을 막는다. 디스크립터가 필드를 읽을 때와 `__eq__`·`__hash__`가 실행될 때(잠정, #54) 이 표시를 확인해 `MovedSnapshotAccess`를 낸다. 표시는 단계 스코프별이라, 같은 스냅샷을 다른 코루틴·스레드가 쓰는 데는 영향이 없다.
 - **읽기 추적**은 정확성 책임에서 빠졌다. "선언했지만 안 쓴 관계" 경고와 `RelationNotLoaded`의 원인 표시용으로 개발·테스트 모드에서만 켠다.
 - 스냅샷은 끝까지 불변이라 스레드 간 공유가 안전하다. 쓰기는 모두 필드 연산 값으로 표현되므로 프록시가 필요 없다.
 
@@ -1440,9 +1440,9 @@ PlatinaError
 ├── SealError                 # 기동 시 검증 실패 (모듈 경계, 불변식, 매핑)
 ├── UsageError                # 프로그래밍 오류, 재시도 안 함
 │   ├── RelationNotLoaded
-│   ├── UnloadedReference     # ref의 필드를 읽거나 ref에 .set, ==, hash()
+│   ├── UnloadedReference     # ref의 필드를 읽거나 ref에 .set, ==, hash()(잠정)
 │   ├── ChainClosed           # chain 블록 밖에서 뷰에 .set
-│   ├── MovedSnapshotAccess   # chain으로 이동된 원본을 읽음 (==, hash() 포함)
+│   ├── MovedSnapshotAccess   # chain으로 이동된 원본을 읽음 (==, hash() 포함, 잠정)
 │   ├── ConflictingWrites     # 한 단계 안에서 같은 필드를 두 번 씀
 │   ├── IntraUsecaseConflict
 │   └── CommitCycle

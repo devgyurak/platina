@@ -280,7 +280,7 @@ class OrderPaid:
 - **Every field is declared as `Col[T]`.** With a plain annotation (`status: OrderStatus = column(...)`), the type checker also sees class access (`Order.status`) as `OrderStatus`. For it to appear as `Column[Order, OrderStatus]` on the class (the column knows the class that declares it) and `OrderStatus` on the instance, the annotation itself must be a descriptor type. This is the same reason SQLAlchemy 2.0 uses `Mapped[T]`. Event fields and value-object fields are the same (`OrderPaid.user_id` in projection keys, `Money.amount` in embedded paths, ADR-0004).
 - **Snapshots are immutable.** `order.status = PAID` is an error; writes happen only through `.set(...)` (§4.4). Collection fields are a read-only `Sequence[Item]` on the instance.
 - **Creation is the keyword constructor**: `Order(number="A-1", total=..., user_id=...)`, the same as events and values. A missing required field is a type error in both checkers; generated keys, `version_column()`, server defaults and relations are not parameters (§8.2 "Creation syntax", ADR-0003).
-- **Equality**: two snapshots are equal when they hold the same values (columns and loaded relations, including what is loaded); the hash is the entity type plus the primary key. `==` and `hash()` on a ref raise `UnloadedReference` (ADR-0003).
+- **Equality** (provisional working rule, #54): two snapshots are equal when they hold the same values (columns and loaded relations, including what is loaded); the hash is the entity type plus the primary key. `==` and `hash()` on a ref raise `UnloadedReference` (ADR-0003 Decision 4; spike 9.4 confirms or changes it).
 - **`owned=True`**: a child that belongs to the aggregate. When a child changes, the root's `version` is bumped as well (JPA `OPTIMISTIC_FORCE_INCREMENT`). So when an edit screen handles an order and its items together, a change to only the items is still caught by the optimistic lock across requests (§4.6). Ordinary FK children (e.g. comments on a post) are not `owned` and do not touch the root.
 - **Client-generated IDs are the default.** Thanks to Python 3.14's `uuid.uuid7()`, the ID of a new entity is known inside the pure function. `generated="identity"` is also supported, but in that case the ID is only available from the commit result (`result.created(Order)`). The core never calls `uuid7()` itself: `Order(...)` takes the ID from the source the engine installs for the invocation; direct calls in tests and `Order.stub()` use a deterministic fallback sequence, and `Order(...)` outside any use case or step is a `UsageError` (ADR-0002).
 - Places that refer to other classes are evaluated late with a `lambda`. String references are not used.
@@ -530,9 +530,9 @@ async with app.read(consistency="snapshot") as r:                    # REPEATABL
 | Row of the root ref or of a required dependent load is missing | `NotFound` |
 | `expected_version` mismatch | `VersionMismatch`, no retry (the user must be told about the conflict) |
 | Connection lost during COMMIT | Rerun with the same run ID (see above) |
-| Reading a field of a ref / `.set` on a ref / `==` or `hash()` on a ref | `UnloadedReference` |
-| Reading a field through a moved original (alias), including `==` and `hash()` | `MovedSnapshotAccess` |
-| `hash()` of a new entity with an `identity` key before commit | `UsageError` (ADR-0003) |
+| Reading a field of a ref / `.set` on a ref / `==` or `hash()` on a ref (`==` / `hash()`: provisional, #54) | `UnloadedReference` |
+| Reading a field through a moved original (alias), including `==` and `hash()` (`==` / `hash()`: provisional, #54) | `MovedSnapshotAccess` |
+| `hash()` of a new entity with an `identity` key before commit (provisional, #54) | `UsageError` (ADR-0003) |
 | `.set` on a view outside the chain block | `ChainClosed` |
 | Writing the same field twice within a single step | `ConflictingWrites` |
 | Overlap between a set change and a row change in the same use case | `IntraUsecaseConflict` |
@@ -933,7 +933,7 @@ On highly contended tables, serialization failures and retries increase. For hot
   2. Typed creation functions in a generated **real Python module**.
   3. Runtime checks only (last resort).
 - Generating `.pyi` stubs was rejected. A stub cannot overlay just the constructor; it replaces the types of the whole module, so until you add a field and regenerate, the editor shows the old shape.
-- Entities are hashable at the type level (`frozen_default=True`; without it pyright and mypy disagree on `{order}`). Runtime equality compares the snapshot's values (columns and loaded relations, including what is loaded), the hash is the entity type plus the primary key; refs raise `UnloadedReference`, a new entity with an `identity` key has no hash before commit (`UsageError`), a chain view compares its latest state, and a moved alias raises `MovedSnapshotAccess` (ADR-0003).
+- Entities are hashable at the type level (`frozen_default=True`; without it pyright and mypy disagree on `{order}`). The runtime rule is a provisional working rule until spike 9.4 (#5) confirms or changes it (#54): equality compares the snapshot's values (columns and loaded relations, including what is loaded), the hash is the entity type plus the primary key; refs raise `UnloadedReference`, a new entity with an `identity` key has no hash before commit (`UsageError`), a chain view compares its latest state, and a moved alias raises `MovedSnapshotAccess` (ADR-0003 Decision 4). Known concerns: a stub and a snapshot with loaded relations can be unequal although they hold the same values, and a new `identity` entity cannot be a set member or dict key before commit.
 - Open: `Order.stub(...)` keywords are not type-checked (#50), and how an owned child gets its parent key (§4.7) is not decided (#49).
 
 **Dependent loads: declarative only, no generators**
@@ -1151,7 +1151,7 @@ On highly contended tables, serialization failures and retries increase. For hot
 Over five rounds of review, the comments moved steadily down into implementation details. The remaining questions cannot be answered by documents; only experiments can answer them. In particular, with SSI interactions, both reviewers and the designer repeated the same kind of mistake on paper. So the following four experiments come before implementation.
 
 ### 9.1 Type stub spike (top priority)
-The whole syntax of §4 depends on this. Without an implementation, run the pass and fail files of §11.8 through pyright and mypy with stubs alone. Result: [spike 0001](../spikes/0001-type-surface.md) (independently reproduced, except the variance probes run afterwards), ADR-0003, ADR-0004.
+The whole syntax of §4 depends on this. Without an implementation, run the pass and fail files of §11.8 through pyright and mypy with stubs alone. Result: [spike 0001](../spikes/0001-type-surface.md) (independently reproduced in three rounds; the probes added after round 3 are recorded as not reproduced), ADR-0003, ADR-0004.
 - [x] `Col[T]`: class access `Column[T]`, instance access `T` - holds; class access is now `Column[Owner, T]` (ADR-0004)
 - [x] Constructor: does `__set__(self, instance: Never, value: T)` give constructor parameter types while blocking assignment? If not, typed creation functions in a generated module - holds at step 1, on an `Entity` base class; creation is `Order(...)` (ADR-0003)
 - [x] `with chain(a, b) as (c, a, b)`: does TypeVarTuple preserve the type of each name? - holds
@@ -1404,7 +1404,7 @@ ChangeSet
 - An entity snapshot is a **slots class** generated per entity at seal time (internal values are a tuple). Entities inherit `Entity` (ADR-0003), and `__init_subclass__` cannot add `__slots__`, so the slots class is made by the `Entity` metaclass or as a separate snapshot class. Field access goes through a descriptor, which returns `Column[Owner, T]` when accessed on the class and `T` when accessed on an instance.
 - A **ref** is an "unloaded" instance of the same class. It holds only identifying information (PK or Finder key), and reading a field raises `UnloadedReference`. The runner collects refs when building the load plan.
 - **chain views**: the values returned by `chain(order, wallet)` are view objects pointing to the latest state of the chain (the original entity at the type level). When passed to `c.run` they become the immutable snapshot of that moment; after leaving the block they are frozen at the final state, and `.set` raises `ChainClosed`.
-- **Move marks**: `chain(order, ...)` leaves "this snapshot object has been moved" in the current step's `contextvars` record. Rebinding the same names structurally removes most references to originals, and this mark blocks aliases created before the chain. When the descriptor reads a field, and when `__eq__` / `__hash__` run, they check this mark and raise `MovedSnapshotAccess`. The mark is per step scope, so it does not affect other coroutines or threads using the same snapshot.
+- **Move marks**: `chain(order, ...)` leaves "this snapshot object has been moved" in the current step's `contextvars` record. Rebinding the same names structurally removes most references to originals, and this mark blocks aliases created before the chain. When the descriptor reads a field, and when `__eq__` / `__hash__` run (provisional, #54), they check this mark and raise `MovedSnapshotAccess`. The mark is per step scope, so it does not affect other coroutines or threads using the same snapshot.
 - **Read tracking** has been removed from correctness responsibilities. It is turned on only in development and test modes, for the "declared but unused relation" warning and for showing the cause in `RelationNotLoaded`.
 - Snapshots stay immutable to the end, so sharing them across threads is safe. Every write is expressed as a field operation value, so no proxies are needed.
 
@@ -1440,9 +1440,9 @@ PlatinaError
 ├── SealError                 # validation failure at startup (module boundaries, invariants, mappings)
 ├── UsageError                # programming error, not retried
 │   ├── RelationNotLoaded
-│   ├── UnloadedReference     # reading a field of a ref, .set, == or hash() on a ref
+│   ├── UnloadedReference     # reading a field of a ref, .set, == or hash() (provisional) on a ref
 │   ├── ChainClosed           # .set on a view outside the chain block
-│   ├── MovedSnapshotAccess   # reading (also == / hash()) an original moved by chain
+│   ├── MovedSnapshotAccess   # reading (also == / hash(), provisional) an original moved by chain
 │   ├── ConflictingWrites     # writing the same field twice within a single step
 │   ├── IntraUsecaseConflict
 │   └── CommitCycle

@@ -84,8 +84,17 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
   tested).
 - Left to inference, `Column`'s variance differs between the checkers and changes whenever a
   member is added or removed (spike L4, L6); Decision 3 fixes it and a type test guards it.
-- mypy's message for a wrong `path` argument names the instance type (`incompatible type
-  "Decimal"; expected "Column[Money, Never]"`); the code is still `arg-type`.
+- Among the receiver-fixed places, those that take operation or predicate objects (`order.set`,
+  `Entity.where`, `SetChange.set`, a child `update`) are rejected by both checkers for the same
+  reason (an `Op[Wallet]` or `Pred[Wallet]` is not an `Op[Order]` / `Pred[Order]`). Those that take
+  a column by class access (`path`, `emit_each`) get the same verdict, but mypy's reason differs:
+  it falls back to `Col.__get__`'s instance overload, reads the column as its value and rejects the
+  value, not the owner (which is why its message names the instance type, `incompatible type
+  "Decimal"; expected "Column[Money, Never]"`; spike 0001, column-as-value follow-up and round 3).
+- **Constraint:** no parameter takes both a column and a value (`T | Column[O, T]`) until both
+  checkers have been probed on it (#51). With such a parameter mypy accepts another entity's
+  column and pyright rejects it; narrowing the instance overload to `instance: Entity` makes mypy
+  reject it too, but breaks instance access on `@value` / `@event` classes, which have no base.
 - Comparisons on a column take exactly `T` in the spike's stubs, so 4.2's check is written
   `>= Decimal(0)` and 4.7's column-to-column `Load.when(match=Wallet.user_id == Order.user_id)` is
   rejected by both checkers; which operand types are accepted is open (spike L5, #51).
@@ -121,3 +130,9 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
   factory is called, so seal cannot see it, and `emit_each` is a method of `SetChange[O]`, whose
   owner is fixed (`**fields: OwnedExpr[O]`; spike 0001 P-A follow-up, both checkers reject another
   entity's column).
+- 2026-11-25 - after acceptance, Consequences extended without changing the direction: the
+  receiver-fixed places split into those taking operation/predicate objects (same reason in both
+  checkers) and those taking a column by class access (`path`, `emit_each`: same verdict, mypy
+  rejects the column read as a value), and the constraint that no parameter takes both a column and
+  a value before both checkers are probed (#51). Source: spike 0001 round 3 and the column-as-value
+  follow-up.

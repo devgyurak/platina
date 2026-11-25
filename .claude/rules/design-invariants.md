@@ -29,8 +29,8 @@ these off, pick by this order and say so in the commit body or ADR.
 
 ## Rules that shape every API
 - **No implicit I/O.** Attribute access never hits the database; an unloaded relation raises at
-  once (`RelationNotLoaded`). A ref placeholder raises on field reads, on `.set` and on
-  `==` / `hash()` (`UnloadedReference`).
+  once (`RelationNotLoaded`). A ref placeholder raises on field reads and on `.set`
+  (`UnloadedReference`).
 - **Safe defaults, danger is opt-in.** `lazy="raise"`, no expiry, no autoflush, SERIALIZABLE for
   commands. READ COMMITTED is never allowed for commands (the escape hatch is REPEATABLE READ +
   `version`).
