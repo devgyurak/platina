@@ -1,4 +1,4 @@
-<!-- i18n: source=docs/design/design.md source-sha256=1d9929bbc105 translation-sha256=171149f9b614 -->
+<!-- i18n: source=docs/design/design.md source-sha256=32f6fbc70527 translation-sha256=c4052e067330 -->
 # Platina 설계 문서
 
 > **Platina**: 백금(platinum)의 옛 스페인어 이름. 백금이 산에도 녹지 않고 반응하지 않듯, 도메인 코드는 DB와 반응하지 않는다.
@@ -756,8 +756,9 @@ async def test_pay_roundtrips(app_with_db):
 
 ```
 RelationNotLoaded: Order.items는 로드되지 않았습니다.
-  유스케이스: shop/billing/usecases.py:12  (pay)
-  실제 로드 선언: Load()  ·  필요한 선언 예: orders.payable = Profile(Order.items, Order.user)
+  위치: shop/billing/usecases.py:12  (pay)
+  실제 로드 선언: Load()
+  필요한 선언 예: orders.payable = Profile(Order.items, Order.user)
   해결: Annotated[Order, orders.payable] 사용 또는 Load(Order.items) 추가
 
 MovedSnapshotAccess: alias는 chain으로 이동된 order의 별칭입니다. Order.total을 읽었습니다.
@@ -781,6 +782,8 @@ SealError: Load.when 식이 모호합니다. refund_merge에는 Order 타입 파
 ModuleBoundaryError: shop.catalog.usecases.restock 이 billing 모듈의 엔티티 Order 를 로드합니다.
   해결: billing 이 공개한 조회(orders.summaries)를 사용하거나 이벤트로 통신
 ```
+
+모든 메시지는 같은 형식을 따른다([ADR-0006](../adr/0006-exception-fields-and-rendering.md)). 헤드라인 다음에 있는 항목마다 두 칸 들여쓴 줄이 하나씩 붙는다. 순서는 `Location: <file>:<line>  (<function>)`, `details`의 줄들(순서대로), 마지막으로 `Fix: <hint>`다. 위 예시의 줄 라벨은 번역했지만 실제 메시지의 라벨은 영어다. 위에 보이는 `ClassName:` 접두는 트레이스백이 붙이는 것이며(트레이스백에서는 `platina.core.errors.RelationNotLoaded:`처럼 모듈 경로가 붙는다) `str(exc)`에는 포함되지 않는다.
 
 ---
 
@@ -1438,6 +1441,7 @@ ChangeSet
 ```
 PlatinaError
 ├── SealError                 # 기동 시 검증 실패 (모듈 경계, 불변식, 매핑)
+│   └── ModuleBoundaryError   # 다른 모듈이 소유한 엔티티를 사용함
 ├── UsageError                # 프로그래밍 오류, 재시도 안 함
 │   ├── RelationNotLoaded
 │   ├── UnloadedReference     # ref의 필드를 읽거나 ref에 .set, ==, hash()(잠정)
@@ -1455,7 +1459,11 @@ PlatinaError
 (사용자 도메인 예외는 감싸지 않고 그대로 전파)
 ```
 
-모든 예외는 메시지 외에 구조화된 필드(`usecase`, `entity`, `field`, `location`, `hint`)를 가진다. CLI·IDE 연동이나 테스트 단언에서 문자열 파싱이 필요 없다.
+모든 예외는 메시지 외에 구조화된 필드(`usecase`, `entity`, `field`, `location`, `hint`, 그리고 추가 줄을 담는 `details`)를 가진다. CLI·IDE 연동이나 테스트 단언에서 문자열 파싱이 필요 없다. 필드의 타입, 생성자, 렌더링은 [ADR-0006](../adr/0006-exception-fields-and-rendering.md)이 정한다.
+
+- 메시지만 위치 인자이고, 필드는 키워드 전용이며 읽기 전용이다. `usecase: str | None`(유스케이스의 레지스트리 이름), `entity: type[object] | None`(엔티티 클래스), `field: str | None`(`entity` 기준 속성 경로, `"address.city"`), `location: SourceLocation | None`(`file`, `line`, `function`. `file`은 최상위 패키지 기준 경로이며 절대 경로가 아니다), `hint: str | None`(`Fix:`로 렌더링), 그리고 다섯 필드로 담을 수 없는 줄을 순서대로 담는 `details: tuple[tuple[str, str], ...]`.
+- `DatabaseError`는 필수 `sqlstate: str | None`을 더 가진다. 원본 드라이버 예외는 필드가 아니라 `__cause__`다.
+- 모든 예외는 `pickle`, `copy`, `deepcopy`를 거쳐도 모든 필드를 유지한다(`PlatinaError`의 `__reduce__` 하나로).
 
 ---
 

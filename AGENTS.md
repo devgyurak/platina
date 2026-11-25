@@ -8,8 +8,9 @@ Platina (`platina`) is an ORM for Python 3.14+ and PostgreSQL whose domain code 
 database: use cases declare what they load, run as pure functions over immutable snapshots and
 return changes as data; one place (`app.run` / `app.query`) does all I/O, SERIALIZABLE with
 automatic retry by default. Internally a sans-I/O engine yields commands that thin sync/async
-runners execute on psycopg 3.3+. Status: design settled, nothing implemented - the experiments of
-design section 9 come before the prototype.
+runners execute on psycopg 3.3+. Status: design settled; implementation has started with the core
+exception hierarchy (`platina.core.errors`) - the remaining experiments of design section 9 come
+before the rest of the prototype.
 
 Read before non-trivial work: `docs/design/design.md` (philosophy, syntax, decision record,
 experiments, internal architecture, test strategy), `docs/architecture.md` (what exists now),
