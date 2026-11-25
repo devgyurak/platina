@@ -8,6 +8,7 @@ Raw per-run records go to results/bench.jsonl; a line per run is printed.
 from __future__ import annotations
 
 import argparse
+import json
 import random
 import time
 from datetime import UTC, datetime
@@ -362,12 +363,22 @@ def main() -> None:
     ap.add_argument("--dists", nargs="*", default=["uniform", "zipf"])
     ap.add_argument("--duration", type=float, default=20)
     ap.add_argument("--warmup", type=float, default=3)
+    ap.add_argument("--resume", action="store_true", help="skip blocks already recorded")
     a = ap.parse_args()
     print(f"# bench.py {datetime.now(UTC).isoformat()} {vars(a)}", flush=True)
+    done: set[tuple[int, int, str]] = set()
+    path = common.RESULTS / "bench.jsonl"
+    if a.resume and path.exists():
+        for line in path.read_text().splitlines():
+            r = json.loads(line)
+            done.add((r["rep"], r["workers"], r["dist"]))
     block = 0
     for rep in range(1, a.reps + 1):
         for workers in a.workers:
             for dist in a.dists:
+                if (rep, workers, dist) in done:  # both levels of a kept pair are written together
+                    block += 1
+                    continue
                 # ABBA: consecutive blocks alternate which level runs first
                 order = LEVELS if block % 2 == 0 else LEVELS[::-1]
                 for pair_try in range(1, 6):

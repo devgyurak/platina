@@ -9,6 +9,7 @@ Raw per-run records go to results/load_<mode>.jsonl; a summary table is printed.
 from __future__ import annotations
 
 import argparse
+import json
 import random
 import threading
 import time
@@ -408,10 +409,39 @@ def label(v: dict[str, Any]) -> str:
     return " ".join(f"{k}={val}" for k, val in v.items() if k != "wait_s")
 
 
-def rates(port: int, workers: int, duration: float, warmup: float, reps: int, only: str) -> None:
+def done_rates() -> set[tuple[int, str]]:
+    path = common.RESULTS / "load_rates.jsonl"
+    if not path.exists():
+        return set()
+    done = set()
+    for line in path.read_text().splitlines():
+        r = json.loads(line)
+        v = {
+            k: r[k]
+            for k in ("kind", "form", "dist", "variant", "wait_s", "key", "read", "mode", "workers")
+            if k in r and k in VARIANT_KEYS.get(r["kind"], ())
+        }
+        done.add((r["rep"], label(v)))
+    return done
+
+
+VARIANT_KEYS = {
+    "proj": ("kind", "form", "dist"),
+    "aging": ("kind", "variant", "wait_s"),
+    "locality": ("kind", "key", "read"),
+    "hot": ("kind", "mode", "workers"),
+}
+
+
+def rates(
+    port: int, workers: int, duration: float, warmup: float, reps: int, only: str, resume: bool
+) -> None:
+    done = done_rates() if resume else set()
     for rep in range(1, reps + 1):
         for v in RATE_VARIANTS:
             if only and v["kind"] != only:
+                continue
+            if (rep, label(v)) in done:
                 continue
             for run_try in range(1, 6):
                 before = harness.wait_quiet()
@@ -484,13 +514,14 @@ def main() -> None:
     ap.add_argument("--reps", type=int)
     ap.add_argument("--duration", type=float, help="seconds measured (exist 10, rates 15)")
     ap.add_argument("--warmup", type=float, default=2)
-    ap.add_argument("--only", default="", help="rates: run only one kind (proj/aging/locality)")
+    ap.add_argument("--only", default="", help="rates: run only one kind (proj/aging/locality/hot)")
+    ap.add_argument("--resume", action="store_true", help="rates: skip runs already recorded")
     a = ap.parse_args()
     print(f"# load.py {a.mode} {datetime.now(UTC).isoformat()} {vars(a)}", flush=True)
     if a.mode == "exist":
         exist(a.port, a.workers or 16, a.duration or 10, a.warmup, a.reps or 5)
     else:
-        rates(a.port, a.workers or 32, a.duration or 15, a.warmup, a.reps or 5, a.only)
+        rates(a.port, a.workers or 32, a.duration or 15, a.warmup, a.reps or 5, a.only, a.resume)
 
 
 if __name__ == "__main__":

@@ -440,6 +440,12 @@ were seen, and are recorded here instead of being folded silently into the secti
     maximum 1-minute load average), so a stricter cut can be applied afterwards.
   - `harness.QUIET_EXTERNAL_PCT` can be overridden by `SPIKE_QUIET_EXTERNAL_PCT` for smoke tests
     only; measured runs use the default.
+- **2026-11-25 22:40, overnight run.** The maintainer allowed the reruns to wait through the
+  night (report at 07:00). `load.py rates` and `bench.py` gained `--resume` (skip a C run - rep
+  and variant - or a D block - rep, workers, distribution - already in `results/load_rates.jsonl`
+  / `results/bench.jsonl`), and the 30-minute limit can be raised with `SPIKE_QUIET_MAX_WAIT_S`,
+  so a run stopped by the limit continues where it stopped instead of repeating kept runs. Neither
+  changes what a kept run measures.
 
 ## Observations
 

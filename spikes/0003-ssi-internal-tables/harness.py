@@ -266,7 +266,9 @@ def run_workers(
 # SPIKE_QUIET_EXTERNAL_PCT overrides it for smoke tests only; measured runs use the default.
 QUIET_EXTERNAL_PCT = float(os.environ.get("SPIKE_QUIET_EXTERNAL_PCT", "500"))
 MONITOR_PERIOD_S = 5.0
-QUIET_MAX_WAIT_S = 30 * 60  # then stop and report to the maintainer instead of waiting on
+# then stop and report instead of waiting on; SPIKE_QUIET_MAX_WAIT_S raises it (the maintainer
+# allowed waiting through the night on 2026-11-25)
+QUIET_MAX_WAIT_S = int(os.environ.get("SPIKE_QUIET_MAX_WAIT_S", str(30 * 60)))
 
 
 def _own_tree() -> set[int]:
