@@ -662,23 +662,63 @@ All C4 failures are `could not serialize access due to concurrent update`, excep
 read/write-dependency failures at COMMIT (at most 32 per cell over 5 runs). No lock wait reached
 the 2 s `statement_timeout`.
 
-(D rerun on a quiet host: pending.)
+### D. SERIALIZABLE vs REPEATABLE READ, rerun on a quiet host (durable)
+`uv run python spikes/0003-ssi-internal-tables/bench.py --port 26433` (2026-11-25, finished
+23:34 local; resumed once with `--resume` after the gate itself crashed on a container that
+`docker stats` reported as `--` - fixed, no kept record affected). 30 blocks (rep x workers x
+distribution) kept, none discarded; each level ran first in 15 blocks (ABBA); mean external CPU
+during the kept pairs 138-368 %. Every worker reported the level asked for. No error other than
+40001 (no 40P01, no 57014, no 53200); `version_mismatch_committed` 0. Tables: `uv run python
+spikes/0003-ssi-internal-tables/summarize.py bench`. Median (range) over 5 runs.
+
+| Workers | Dist | Level | TPS | Attempts / commit | 40001 / attempt | Exhausted, % of commands | p50 / p99 ms |
+|---|---|---|---|---|---|---|---|
+| 8 | uniform | RR | 4,337 (3,610-4,587) | 1.000 | 0.02 % | 0 | 1.7 / 3.4 |
+| 8 | uniform | SER | 4,137 (4,004-4,626) | 1.001 | 0.07 % | 0 | 1.8 / 3.7 |
+| 32 | uniform | RR | 6,226 (5,928-7,142) | 1.001 | 0.07 % | 0 | 4.8 / 10.7 |
+| 32 | uniform | SER | 6,061 (5,183-6,447) | 1.003 | 0.31 % | 0 | 4.8 / 12.8 |
+| 64 | uniform | RR | 6,620 (5,946-7,478) | 1.002 | 0.14 % | 0 | 9.0 / 20.8 |
+| 64 | uniform | SER | 6,804 (6,028-6,984) | 1.007 | 0.64 % | 0.001 | 8.8 / 21.4 |
+| 8 | Zipf | RR | 3,371 (3,095-3,552) | 1.086 | 4.97 % | 0.047 | 1.8 / 13.9 |
+| 8 | Zipf | SER | 3,327 (3,175-3,592) | 1.096 | 5.77 % | 0.039 | 1.7 / 14.5 |
+| 32 | Zipf | RR | 3,637 (3,203-4,853) | 1.284 | 19.6 % | 2.26 | 4.5 / 52.8 |
+| 32 | Zipf | SER | 3,894 (3,538-4,633) | 1.325 | 21.9 % | 2.22 | 4.1 / 52.4 |
+| 64 | Zipf | RR | 3,842 (3,718-4,069) | 1.502 | 31.1 % | 5.97 | 8.0 / 74.2 |
+| 64 | Zipf | SER | 3,677 (3,473-3,778) | 1.594 | 35.0 % | 6.42 | 7.7 / 77.0 |
+
+SER/RR TPS, ratio of medians (paired ratios per block): uniform 0.954 (0.89-1.14) / 0.973
+(0.83-1.09) / 1.028 (0.90-1.14) at 8 / 32 / 64 workers; Zipf 0.987 (0.93-1.08) / 1.071
+(0.80-1.25) / 0.957 (0.91-0.98).
+
+- Invariants: the transfer total held in all 60 runs. Users with a negative pocket sum: **0 in
+  all 30 SERIALIZABLE runs**; under REPEATABLE READ 1 user in 4 of 30 runs (8/Zipf, 32/Zipf,
+  64/uniform, 64/Zipf; minimum sums -7, -3, -20, -3) - the write skew the escape hatch allows.
+- Where the extra SERIALIZABLE failures come from (per command type, 40001 per attempt, 64
+  workers Zipf, SER vs RR): pay 42.5 % vs 44.3 %, transfer 50.8 % vs 53.1 % (same-row
+  `concurrent update` under both), **create 27.2 % vs 0 %**, pocket 12.2 % vs 5.5 %, reprice
+  11.5 % vs 6.8 %. Under SERIALIZABLE 50,444 failures were `INSERT INTO orders` pivots ("during
+  write") and 4,021 the range read of the user's last orders - the create command's range read
+  and uuid7 INSERT (the C3 pattern) - and 8,433 `UPDATE pockets` pivots, the write skew being
+  prevented; REPEATABLE READ raised only `concurrent update`.
+
+(Independent reproduction of C and D: round 2, below.)
 
 ## Verdict
 
-**Provisional.** Items 1-4 rest on load-independent observations (A, B) and are final once the
-independent reproduction agrees. The rate parts of item 3, item 5 and the rate halves of the
-off-checklist observations wait for the C and D reruns on a quiet host (change record).
+Items 1, 2, 3 (fencing), 4a and 4b rest on load-independent observations (A, B) and were
+independently reproduced in round 1. The rate verdicts (item 3's projection rates, item 5 and
+the rate halves of the off-checklist observations) come from the C and D reruns on a quiet host
+and are **provisional until reproduction round 2** agrees.
 
 | Item | Verdict | Deciding observations |
 |---|---|---|
 | 1. `run_claim` INSERT alone | **Holds** | (1a) 0 SIReadLock rows on `run_claim`, `run_result`, `outbox_log` and their indexes in every A1 variant (fresh ID, reused ID after rollback, full set), empty and 1M rows, and after the fenced INSERTs of A2; (1b) every A1 session committed; (1c) 0 x 40001 in 5/5 runs of `claim`, `claim_retry`, `full` without business statements (45,799-93,788 attempts per run); (1d) 0 x 40001 with disjoint business statements, as in the padded baselines (also 0) |
 | 2. Controls conflict | **Partly** | "read then INSERT": SIReadLock on the rightmost `run_claim_pkey` leaf (or the heap relation when empty), 40001 in both A1 orders, 72-78 % of attempts in B. "INSERT then UPDATE": the same lock and a pivot 40001 in the three-session sequential order, but only 0.04-0.12 % of attempts without business statements and 0-0.012 % with them - **one of five disjoint runs had none**, so the pre-fixed "above the baseline in every run" fails for it. The mechanism the design names is real for both; the claim that the UPDATE form "recreates the same false conflict" overstates its frequency by about three orders of magnitude in this harness. |
 | 3. Fencing | **Holds** | A2: the second INSERT waits on the first transaction's xid (`Lock/transactionid`, ShareLock); commit -> **23505** `duplicate key value violates unique constraint "run_claim_pkey"`; rollback -> proceeds and commits; rerun after commit -> 23505, also when the rerun's snapshot predates the commit (F4); never 40001; identical with the first transaction at READ COMMITTED. **Condition:** this holds because `run_claim` is not read; when both claimants read the ID before inserting it, the waiting one gets 40001 instead of 23505 (reproducer's probe 2(b)) - one more reason for the internal-table rule |
-| 3. Inline projection retry rate | **Pending rerun** | First (discarded) run: disjoint keys 0 % in every write form = baseline; Zipf ~26 %, global ~80 %. A4 (load-independent): `ON CONFLICT DO UPDATE` takes no SIRead lock |
+| 3. Inline projection retry rate | **Holds** (provisional, round 2) | C1: disjoint keys 0 % 40001 per attempt in 5/5 runs for `update`, `upsert_existing` and `upsert_new`, equal to the baseline (0 %); Zipf `store_id` 26.8 % / 27.1 % (1.37 attempts per commit, ~300 exhausted commands per run); one global key 82.1 % / 81.2 % (5.3-5.6 attempts per commit, ~7,000 exhausted per run) - almost all the same-row `concurrent update`. The key rule's assumption (entity-ID keys that are disjoint add no retries) holds; a popular entity ID is as hot as its traffic (Zipf), which is what the per-projection retry metric is for. A4: `ON CONFLICT DO UPDATE` takes no SIRead lock |
 | 4a. Internal tables empty / 1M | **Holds** | as 1a, in both states |
 | 4b. "Table-level lock when small" | **Partly** | The relation-level SIRead lock is real and causes pivot 40001 between transactions on different rows, but its cause is the **plan**, not the size: an analyzed 30-row table is read by Seq Scan -> `relation small_orders` (heap) -> 40001; the same table never analyzed is read by Index Scan -> page lock -> no conflict; empty analyzed tables were seq-scanned too (A1 controls: `relation run_claim`) |
-| 5. SERIALIZABLE vs REPEATABLE READ | **Pending rerun** | The first run was contaminated by other workloads (change record) |
+| 5. SERIALIZABLE vs REPEATABLE READ | **Holds** (provisional, round 2) | D, uniform: SER/RR median TPS 0.954 / 0.973 / 1.028 at 8 / 32 / 64 workers (>= 0.90) and SER attempts per commit 1.001 / 1.003 / 1.007 (<= 1.05); transfer total and pocket invariant held in every SERIALIZABLE run. Zipf: SER retry exhaustion 2.2 % / 6.4 % of commands at 32 / 64 workers, but REPEATABLE READ 2.3 % / 6.0 % - not a SERIALIZABLE-only exhaustion, so the "partly" clause does not apply; the extra SERIALIZABLE failures are SSI pivots in `create` (range read + uuid7 INSERT, 27 % vs 0 %) and in `pocket` (write skew prevented). REPEATABLE READ broke the pocket invariant in 4 of 30 runs. Absolute TPS is not concluded (client and server on one laptop) |
 
 **Off-checklist observations**
 - **Upsert projections:** `INSERT ... ON CONFLICT DO UPDATE` took no SIReadLock at all - neither
@@ -688,14 +728,26 @@ off-checklist observations wait for the C and D reruns on a quiet host (change r
 - **uuid7 locality of user tables:** confirmed without load (A6): two unrelated transactions
   that each read their own recent row by primary key and then INSERT a new row lock the same
   rightmost leaf page and one gets 40001; with uuid4 keys or old rows they lock different leaves
-  and both commit. The rate (64.5 % per attempt in the discarded C3 run, vs ~0.1 % for uuid4)
-  waits for the rerun.
+  and both commit. Rate (C3, provisional until round 2): 69.2 % (65.1-72.3) of attempts failed
+  with uuid7 keys and recent reads, 3.24 attempts per commit and ~4,900 exhausted commands per
+  15 s run; 0 % with uuid7 and old reads; 0.10-0.11 % with uuid4 keys. In the mixed workload of D
+  the same pattern (create: a range read of the user's last orders + a uuid7 INSERT) made
+  `create` fail 27 % of attempts under SERIALIZABLE at 64 workers / Zipf, against 0 % under
+  REPEATABLE READ.
 - **Snapshot aging while waiting on a claim:** the claim INSERT takes the snapshot and an xid
   **before** it waits (A3: `backend_xmin`/`backend_xid` set while waiting, none after `BEGIN` or
   `SET LOCAL`); after the wait the transaction reads pre-wait values and its UPDATE of a row
-  changed meanwhile fails with `40001 ... due to concurrent update`. The rate effect (discarded
-  run: about +10 points of 40001 for a 50 ms wait, identical for a 50 ms sleep on an open
-  snapshot - the cost is the snapshot's age, not the wait) waits for the rerun.
+  changed meanwhile fails with `40001 ... due to concurrent update`. Rate (C2, provisional until
+  round 2): probes that waited 50 ms on a held claim failed 46.6 % of attempts, probes that slept
+  50 ms on an open snapshot 46.2 %, probes without either 26.9 % - while the background workers
+  of the same runs saw less, not more (27.0 % / 18.6 % / 18.8 %). The cost is the snapshot's age,
+  not the wait.
+- **One hot row (C4, carried over from spike 0002 / ADR-0005; reported, not judged; provisional
+  until round 2):** 40001 per attempt about 40 % / 78 % / 90 % at 8 / 32 / 64 workers, the same
+  for a blind increment, read-then-update and `SELECT ... FOR UPDATE` (the last moves the failure
+  to the load statement); `RetryExhausted` (4 attempts) 9 % / 40 % / 66-69 % of commands; no
+  `57014` at a 2 s `statement_timeout`. `for_update` neither reduced the failures nor produced
+  timeouts in this harness.
 - Also seen: (i) a transaction waiting on a claim already holds an xid, so it holds back the
   outbox log's xid watermark (design 4.10, 7.7) for as long as it waits; (ii) `COMMIT` of a
   transaction already aborted by an error returns without an error (the server rolls back) -
@@ -722,8 +774,8 @@ off-checklist observations wait for the C and D reruns on a quiet host (change r
   no read) and comparing it on the 23505 replay path, which already reads `run_result` in a
   separate READ COMMITTED transaction, stays within the rule; no observation here covers a
   fingerprint column itself.
-- Carried-over rates (C4: retry, `RetryExhausted` and `57014` on one hot row with and without
-  `for_update`) are pending the rerun; ADR-0005 Decision 4's candidates are not in this spike
+- Carried-over rates: C4 above (retry, `RetryExhausted` and `57014` on one hot row with and
+  without `for_update`); ADR-0005 Decision 4's candidates are not in this spike
   (change record).
 
 **Consequence for the design - draft, not yet applied** (applied only after an agreeing
@@ -736,11 +788,12 @@ after the clean rerun):
    that table conflicts with it. 4.6 is unchanged (it does not make the small-table claim).
 2. 8.3 "Why the result is INSERTed into a separate table": keep the decision; note that the
    UPDATE form conflicts far less often than look-up-then-INSERT, but does conflict.
-3. 9.2: tick items 1, 3 (fencing part), 4 after the reproduction; item 2 ticked as "partly"
-   with the link; items 3 (rate) and 5 after the rerun.
+3. 9.2: tick items 1, 3, 4, 5 and the hot-row item, and item 2 as "partly" (4 as "partly" for
+   the small-table cause), each with the link, once reproduction round 2 agrees with the rates.
 4. **Candidate decision change (ADR candidate):** the default `pk(generated="uuid7")` for user
    entities (4.2) makes "read a recent row by PK + INSERT into the same table" a false-conflict
-   pattern under SERIALIZABLE (A6). Options to weigh in the ADR after the rerun: keep uuid7 and
+   pattern under SERIALIZABLE (A6; 69 % of attempts in C3 against ~0.1 % for uuid4; 27 % of the
+   `create` command's attempts in D at 64 workers / Zipf). Options to weigh in the ADR: keep uuid7 and
    document the cost in 7.3 (and in error messages / metrics); change the default to a
    non-monotonic key (uuid4 - loses insert locality and time order); or a per-entity choice.
    `generated="identity"` is ever-increasing too, so it shares the pattern.
@@ -749,7 +802,11 @@ after the clean rerun):
    (`max_connections` / `max_pred_locks_per_transaction`); not settled by this spike.
 6. 7.3 (cost of the SERIALIZABLE default): add the two concrete false-conflict sources found
    here - plan-dependent relation locks on small tables, and right-edge locality of
-   ever-increasing primary keys - with the item 5 numbers once rerun.
+   ever-increasing primary keys - with the item 5 numbers (uniform: SERIALIZABLE within 5 % of
+   REPEATABLE READ's throughput, at most 1.007 attempts per commit; Zipf: retries dominated by
+   same-row conflicts that REPEATABLE READ has too).
+7. ADR-0005 / hot rows: the C4 numbers go to the follow-up issue as its baseline and to 7.3 if
+   the maintainer wants the cost stated there; no design change follows from this spike.
 
 ## Reproduction
 
