@@ -1,4 +1,4 @@
-<!-- i18n: source=docs/design/design.md source-sha256=6c86a444acee translation-sha256=61bcc465e992 -->
+<!-- i18n: source=docs/design/design.md source-sha256=1d9929bbc105 translation-sha256=171149f9b614 -->
 # Platina 설계 문서
 
 > **Platina**: 백금(platinum)의 옛 스페인어 이름. 백금이 산에도 녹지 않고 반응하지 않듯, 도메인 코드는 DB와 반응하지 않는다.
@@ -20,7 +20,7 @@
 | 드라이버 | **psycopg 3.3 이상** 단일 (sync·async·파이프라인·COPY·t-string) |
 | 로드 선언 | `Annotated[Order, Load(...)]` + `type` 별칭. 의존 로드도 선언(`Load.when` 식 / `Load.after` 함수). 제너레이터 없음 → 왕복 단계 수는 seal에서 확정 |
 | 검증 시점 | import 시점이 아니라 **seal 시점**(앱 기동 시 `app.seal()`) + CLI `platina check` |
-| 기본 격리 수준 | Command는 **SERIALIZABLE + 자동 재시도**(탈출구는 REPEATABLE READ + version), Query는 READ COMMITTED |
+| 기본 격리 수준 | Command는 **SERIALIZABLE + 자동 재시도**(SSI의 읽기/쓰기 의존성 실패에서의 탈출구는 REPEATABLE READ + version), Query는 READ COMMITTED |
 | 외부 IO | 유스케이스 안에서는 금지. 외부 IO는 **process 핸들러**에서만 |
 | 합성 | 단계는 **`with chain(a, b) as (c, a, b)`**로만. 최신 상태 뷰로 같은 이름 재바인딩, 별칭은 이동 표시로 차단. `+`는 한 단계 안에서만 |
 | 호출·쓰기 | `app.run(uc.bind(...), 옵션)`. ref는 타입상 엔티티인 자리표시자(JPA `getReference`, `.set` 불가). 엔티티는 `Entity`를 상속하고, 필드는 `Col[T]`이며 클래스에서는 `Column[Owner, T]`로 읽힌다. 생성은 키워드 생성자 `Order(...)`, 수정은 `.set(Order.status.to(...))`, 임베디드 경로는 `Order.total.path(Money.amount)` |
@@ -421,7 +421,7 @@ result.value            # Changes.returning(v)로 돌려준 값
 def pay(order: PayableOrder, wallet: ChargeableWallet, now: Now = INJECTED) -> Changes: ...
 ```
 
-- **탈출구는 READ COMMITTED가 아니라 REPEATABLE READ + `version`이다.** READ COMMITTED에서는 로드 계획의 문장마다 스냅샷이 달라 "로드한 스냅샷은 한 시점의 모습"이라는 전제가 깨진다. REPEATABLE READ는 한 스냅샷을 보장하지만 **write skew는 막지 못한다.**
+- **탈출구는 READ COMMITTED가 아니라 REPEATABLE READ + `version`이다.** 이는 SSI의 읽기/쓰기 의존성 실패에서의 탈출구일 뿐, 핫 로우에서 생기는 같은 행의 40001에서의 탈출구는 아니다([ADR-0005](../adr/0005-hot-rows-under-serializable.md)). READ COMMITTED에서는 로드 계획의 문장마다 스냅샷이 달라 "로드한 스냅샷은 한 시점의 모습"이라는 전제가 깨진다. REPEATABLE READ는 한 스냅샷을 보장하지만 **write skew는 막지 못한다.**
 
 #### 실행 순서: 왕복 2회
 

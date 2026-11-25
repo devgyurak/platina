@@ -20,7 +20,7 @@ Translations: [Korean](design-KO.md)
 | Driver | **psycopg 3.3 or later**, the only driver (sync, async, pipeline, COPY, t-string) |
 | Load declaration | `Annotated[Order, Load(...)]` + `type` aliases. Dependent loads are also declared (`Load.when` expression / `Load.after` function). No generators → the number of round-trip stages is fixed at seal |
 | Validation time | Not at import time but at **seal time** (`app.seal()` at app startup) + CLI `platina check` |
-| Default isolation level | Command: **SERIALIZABLE + automatic retry** (escape hatch is REPEATABLE READ + version). Query: READ COMMITTED |
+| Default isolation level | Command: **SERIALIZABLE + automatic retry** (escape hatch from SSI's read/write-dependency failures is REPEATABLE READ + version). Query: READ COMMITTED |
 | External IO | Forbidden inside use cases. External IO happens only in **process handlers** |
 | Composition | Steps only via **`with chain(a, b) as (c, a, b)`**. Rebinding the same names to latest-state views; aliases blocked by move marks. `+` only within a single step |
 | Call and write | `app.run(uc.bind(...), options)`. A ref is a placeholder that is an entity at the type level (JPA `getReference`, `.set` not allowed). Entities inherit `Entity`; fields are `Col[T]`, read on the class as `Column[Owner, T]`. Creation via the keyword constructor `Order(...)`, modification via `.set(Order.status.to(...))`, embedded paths `Order.total.path(Money.amount)` |
@@ -421,7 +421,7 @@ result.value            # value returned via Changes.returning(v)
 def pay(order: PayableOrder, wallet: ChargeableWallet, now: Now = INJECTED) -> Changes: ...
 ```
 
-- **The escape hatch is REPEATABLE READ + `version`, not READ COMMITTED.** Under READ COMMITTED each statement of the load plan has a different snapshot, which breaks the premise that "the loaded snapshots show a single point in time". REPEATABLE READ guarantees a single snapshot but **does not prevent write skew.**
+- **The escape hatch is REPEATABLE READ + `version`, not READ COMMITTED** - an escape from SSI's read/write-dependency failures only, not from the same-row 40001 on a hot row ([ADR-0005](../adr/0005-hot-rows-under-serializable.md)). Under READ COMMITTED each statement of the load plan has a different snapshot, which breaks the premise that "the loaded snapshots show a single point in time". REPEATABLE READ guarantees a single snapshot but **does not prevent write skew.**
 
 #### Execution order: 2 round trips
 
