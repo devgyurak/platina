@@ -24,3 +24,21 @@ All notable changes are documented here. Format: [Keep a Changelog](https://keep
 - ADR-0001 (assembly package and seal) and ADR-0002 (injected ID source) accepted; design
   sections 4.2, 4.10, 10.3 and 10.9 updated accordingly; the free-threading counter check of
   ADR-0002 is a unit test.
+- Spike 0001 (design 9.1, type surface under pyright and mypy): write-up
+  `docs/spikes/0001-type-surface.md`, independently reproduced in two rounds; design 9.1 ticked.
+  Open decisions from the spike are issues #48-#52; #9 and #12 now describe the decided surface.
+
+### Changed
+- Entity syntax (ADR-0003, accepted): entities inherit `Entity` with table options as class
+  keywords instead of an `@entity` decorator, are created with the keyword constructor
+  `Order(...)` instead of `Entity.new(...)`, are frozen at the type level (hashable in both
+  checkers). The runtime rule - value equality with a type-plus-primary-key hash - is a
+  provisional working rule until spike 9.4 (#5) settles it (#54).
+- Field surface (ADR-0004, accepted): class access is `Column[Owner, T]` with fixed variance;
+  value-object fields are declared `Col[...]`; embedded paths are `Order.total.path(Money.amount)`
+  and value-object increments go through them; owner checks apply by type where the receiver
+  fixes the owner (including `SetChange.emit_each`); queries are checked when their description
+  is built, profiles, loads, indexes, checks and invariant field lists by seal.
+- Design sections 4, 8.2, 10.3, 10.8, 10.12 and 11.8 (with the observed error codes), ADR-0002,
+  README, the `design-invariants` rule, the `type-reviewer` agent and the `type-tests` skill
+  follow these decisions.

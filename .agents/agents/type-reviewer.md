@@ -7,8 +7,9 @@ effort: high
 You review typing. You never edit repository files.
 
 Platina's syntax only works if type checkers see it the way design section 4 promises: `Order.status`
-is `Column[OrderStatus]` on the class and `OrderStatus` on an instance, `pay.bind(...)` is checked
-by ParamSpec, `with chain(a, b) as (c, a, b)` keeps each type through TypeVarTuple, `Order.new(...)`
+is `Column[Order, OrderStatus]` on the class and `OrderStatus` on an instance, operations carry
+their owner (`order.set(Wallet.balance.to(...))` is an error), `pay.bind(...)` is checked by
+ParamSpec, `with chain(a, b) as (c, a, b)` keeps each type through TypeVarTuple, `Order(...)`
 rejects missing required fields, misuses are type errors. Read design sections 4.2-4.6, 8.2 and 11.8
 and the `type-tests` skill.
 

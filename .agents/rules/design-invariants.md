@@ -36,8 +36,9 @@ these off, pick by this order and say so in the commit body or ADR.
 - **Configuration never changes meaning.** If behaviour differs, the name (syntax) differs. Never
   add a flag that makes the same code mean something else.
 - **One way to do each thing.** Writes: `.set(Column op)`. Creation: the keyword constructor
-  `Entity.new(...)`. Composition across steps: `with chain(...)`. Execution: `app.run` /
-  `app.query`. Do not add a second syntax for the same operation.
+  `Order(...)` of an `Entity` subclass (ADR-0003); there is no `new`. Embedded paths:
+  `Order.total.path(Money.amount)` (ADR-0004). Composition across steps: `with chain(...)`.
+  Execution: `app.run` / `app.query`. Do not add a second syntax for the same operation.
 - **Remove rather than detect.** Prefer making a mistake impossible (structure, a type error) over
   detecting it afterwards. A runtime check is the last resort, and must fail immediately and
   deterministically.
