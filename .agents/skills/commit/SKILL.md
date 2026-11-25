@@ -100,16 +100,13 @@ develop   integration branch. All work PRs target develop (squash merge).
 v<X.Y.Z>  tags on main mark releases
 ```
 
-These rules are meant to be enforced by GitHub rulesets. **Status: not configured yet** - `main`
-and `develop` (the default branch) exist, but there are no rulesets, milestones or issues so far
-(setup checklist: `docs/workflow.md` section 8). Until they exist, the only mechanical protection is the local
-pre-push hook (`make hooks-install`; it refuses pushes to `main` / `develop`), so follow the
-table as if it were enforced:
+These rules are enforced by GitHub rulesets - agents cannot work around them. The local pre-push
+hook (`make hooks-install`) refuses pushes to `main` / `develop` before they leave the machine:
 
 | Branch | Rule |
 |---|---|
 | `develop` | Changes only through PRs. Merging needs an approval from the code owner (@devgyurak, `.github/CODEOWNERS`). The maintainer may bypass-merge their own PR. Squash for work PRs, merge commit allowed for back-merges. No force pushes, no deletion. |
-| `main` | **No direct pushes for anyone, no bypass.** Only PRs whose head is `develop` (required check "main accepts PRs from develop only", `.github/workflows/branch-policy.yml`), merged with a merge commit. No force pushes, no deletion. |
+| `main` | **No direct pushes for anyone, no bypass.** Only PRs whose head is `develop` (required check "main accepts PRs from develop only", `.github/workflows/branch-policy.yml`) with the CI `check` jobs green (py3.14, py3.15), merged with a merge commit. No force pushes, no deletion. Renaming a required CI job means updating the ruleset. |
 
 Consequences for agents: never push to `main` or `develop`; push a work branch and open a PR
 (`gh pr create --base develop`) - and only when the user asks. Never approve or merge PRs - that

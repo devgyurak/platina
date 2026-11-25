@@ -67,25 +67,25 @@ listed by the `docs-sync` rule updated, the GitHub issue closed by the PR.
 ADRs are lightweight: one is needed only for an expensive-to-reverse decision the design document
 does not settle, and it is accepted when the maintainer reads it and is convinced (`write-adr`).
 
-Tracking (target): every roadmap item is a GitHub issue in a milestone (`Phase 0 - Experiments`
-for design section 9, then the phases of section 9.6 once they are fixed), labelled by type
-(`feature`, `spike`, `test`, `ci`, `documentation`, ...) and area (`area:*`). `needs-decision`
-marks issues waiting on the maintainer. Reference the issue in the PR (`Closes #N`).
+Tracking: every roadmap item is a GitHub issue (#1-#46 so far) in a milestone (`Phase 0 - Experiments`, `Phase 1 - Core execution path`, `Phase 2 - Event pipeline`, `Later`;
+the Phase 1/2 split follows design section 9.6 until #6 decides it), with its design sections,
+scope checklist and dependencies, labelled by type (`feature`, `spike`, `test`, `ci`,
+`documentation`) and area (`area:*`). `needs-decision` marks issues waiting on the maintainer,
+`blocked` issues whose dependencies are open. Reference the issue in the PR (`Closes #N`).
 
 Commits and branches: one prefix per change - `ADD:` `FIX:` `REF:` `DEL:` `DOCS:` `UPT:` - with an
 English summary and a body explaining why. Work branches `<prefix>/<kebab-summary>` are cut from
 `develop` and PR'd into `develop`; `main` only receives release merges from `develop`. Details:
 the `commit` skill. Do not commit or push unless asked.
 
-Branch protection (target, GitHub rulesets): `develop` changes only via PR with the code owner's
+Branch protection (GitHub rulesets): `develop` changes only via PR with the code owner's
 (@devgyurak) approval - the maintainer may bypass-merge; `main` accepts no direct pushes from
 anyone, only PRs from `develop`. Releases are `vX.Y.Z` git tags on `main`. Agents never push to
 `main`/`develop`, approve, merge or tag.
 
-**Current GitHub state:** `main` (first commit) and `develop` (default branch) exist; there are no
-rulesets, milestones or issues yet, and labels are GitHub's defaults. The only mechanical guard today is the local pre-push hook
-(`make hooks-install`). Do not create branches, milestones, labels or issues on GitHub unless the
-maintainer asks; the setup checklist is `docs/workflow.md` section 8.
+`develop` is the default branch and both rulesets are active (`docs/workflow.md` section 8); the
+local pre-push hook (`make hooks-install`) is a second line. Do not change GitHub settings,
+milestones or labels unless the maintainer asks.
 
 ## Agent-specific notes
 - **Claude Code**: rules auto-load from `.claude/rules/` by path; sub-agents in `.claude/agents/`;

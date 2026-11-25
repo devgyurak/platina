@@ -8,11 +8,11 @@ One iteration = one roadmap item (or one bug). Keep iterations small enough to r
 sitting. Each step names its gate; do not move on until the gate passes.
 
 ## 0. Frame
-- Pick the GitHub issue from the current milestone (`gh issue list --milestone "<milestone>"`)
-  and read it with its dependencies; skip issues labelled `blocked` or `needs-decision`.
-  While the repository has no milestones or issues yet (`docs/workflow.md` section 8), work from
-  the maintainer's request or the design section 9 checklist and say which item you took; do not
-  create GitHub issues or milestones unless asked.
+- Pick the GitHub issue from the current milestone
+  (`gh issue list --milestone "Phase 0 - Experiments"`, later the next phase) and read it with
+  the issues under "Depends on"; skip issues labelled `blocked` or `needs-decision` and those
+  whose dependencies are still open. A new piece of work without an issue gets one first (ask the
+  maintainer if it changes a milestone's scope).
 - Locate the item in `docs/design/design.md` (the syntax in section 4, the decision in section 8,
   the architecture in section 10, the experiment in section 9). Write a 3-5 line spec: public API,
   behaviour, error cases, out of scope.
