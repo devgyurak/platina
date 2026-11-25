@@ -1,0 +1,13 @@
+--- a/lib.pyi
++++ b/lib.pyi
+@@ -216,7 +216,9 @@
+         /,  # [0002]
+         *,  # [0002]
+         missing: Literal["error", "none"] = ...,  # [0002]
+-    ) -> Load: ...  # [0002]
++    ) -> LoadAfter[R]: ...  # [repro] carries R
++
++class LoadAfter[R](Load): ...  # [repro]
+ 
+ class BoundFinder[E, T]:
+     def __call__(self, value: T, /) -> E: ...

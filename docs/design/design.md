@@ -20,7 +20,7 @@ Translations: [Korean](design-KO.md)
 | Driver | **psycopg 3.3 or later**, the only driver (sync, async, pipeline, COPY, t-string) |
 | Load declaration | `Annotated[Order, Load(...)]` + `type` aliases. Dependent loads are also declared (`Load.when` expression / `Load.after` function). No generators → the number of round-trip stages is fixed at seal |
 | Validation time | Not at import time but at **seal time** (`app.seal()` at app startup) + CLI `platina check` |
-| Default isolation level | Command: **SERIALIZABLE + automatic retry** (escape hatch is REPEATABLE READ + version). Query: READ COMMITTED |
+| Default isolation level | Command: **SERIALIZABLE + automatic retry** (escape hatch from SSI's read/write-dependency failures is REPEATABLE READ + version). Query: READ COMMITTED |
 | External IO | Forbidden inside use cases. External IO happens only in **process handlers** |
 | Composition | Steps only via **`with chain(a, b) as (c, a, b)`**. Rebinding the same names to latest-state views; aliases blocked by move marks. `+` only within a single step |
 | Call and write | `app.run(uc.bind(...), options)`. A ref is a placeholder that is an entity at the type level (JPA `getReference`, `.set` not allowed). Entities inherit `Entity`; fields are `Col[T]`, read on the class as `Column[Owner, T]`. Creation via the keyword constructor `Order(...)`, modification via `.set(Order.status.to(...))`, embedded paths `Order.total.path(Money.amount)` |
@@ -134,7 +134,7 @@ These priorities are used in real decisions. Example: making SERIALIZABLE the de
 - **Concurrency control**: SERIALIZABLE by default + automatic retry. `version` is used for optimistic locking across requests (`expected_version`), event ordering, overlap detection within a use case, and coexistence with other ORMs. Changes to `owned` children bump the root version
 - **Run ID**: every run gets an ID, claimed by INSERT without a lookup. A repeated request with the same key gets the stored result; connection loss or failover during COMMIT is handled by rerunning with the same ID
 - **2 round trips**: 1 load batch + 1 commit batch (an extra load stage only when there is a `Load.after`)
-- **Pessimistic locking**: `Load(..., lock=FOR_UPDATE)` for hot rows
+- **Pessimistic locking**: `Load(..., lock=FOR_UPDATE)` takes the row lock at the load stage. On a hot row it does not avoid the same-row 40001 under SERIALIZABLE; it makes the conflict surface early ("fail early"). Whether `lock=` stays is decided after 9.2 ([ADR-0005](../adr/0005-hot-rows-under-serializable.md))
 - **outbox**: domain events passed to `emit()` are INSERTed in the same transaction. An event only declares `@event(aggregate=...)`; the engine fills in the sequence numbers
 - **Retry**: because it is a pure function, rerunning everything is safe. Events are recorded only at commit, so there is no duplicate publishing
 
@@ -308,7 +308,7 @@ class OrderRepo(Repository[Order]):
     # 2) Load profiles: named EntityGraphs
     payable = Profile(Order.items, Order.user)
     with_item_count = Profile(Order.items.count())
-    for_update = Profile(Order.items, lock="for_update")   # pessimistic lock for hot rows
+    for_update = Profile(Order.items, lock="for_update")   # row lock at the load stage: fails early, does not avoid 40001 (ADR-0005)
 
     # 3) Queries: Query path only, results are DTOs (read-only)
     @query
@@ -350,7 +350,7 @@ orders, wallets = OrderRepo(), WalletRepo()
 | Operation | Meaning | Generated SQL |
 |---|---|---|
 | `Order.status.to(v)` | Assign a value (`v` checked against `T` of `Column[Order, T]`) | `SET status = $1` |
-| `Wallet.balance.path(Money.amount).add(n)` | DB-side increment/decrement of a part of an embedded value (does not read the current value) | `SET balance_amount = balance_amount + $1` |
+| `Wallet.balance.path(Money.amount).add(n)` | DB-side increment/decrement of a part of an embedded value (does not read the current value; concurrent writers of the same row still conflict with 40001, ADR-0005) | `SET balance_amount = balance_amount + $1` |
 | `Order.items.add(item)` | Add a child row | `INSERT` (+ root version increment if `owned`) |
 | `Order.items.remove(item)` | Delete a child row | `DELETE` (+ root version increment) |
 | `Order.items.update(item, Item.price.to(p))` | Update a child row | `UPDATE` (+ root version increment) |
@@ -421,7 +421,7 @@ result.value            # value returned via Changes.returning(v)
 def pay(order: PayableOrder, wallet: ChargeableWallet, now: Now = INJECTED) -> Changes: ...
 ```
 
-- **The escape hatch is REPEATABLE READ + `version`, not READ COMMITTED.** Under READ COMMITTED each statement of the load plan has a different snapshot, which breaks the premise that "the loaded snapshots show a single point in time". REPEATABLE READ guarantees a single snapshot but **does not prevent write skew.**
+- **The escape hatch is REPEATABLE READ + `version`, not READ COMMITTED** - an escape from SSI's read/write-dependency failures only, not from the same-row 40001 on a hot row ([ADR-0005](../adr/0005-hot-rows-under-serializable.md)). Under READ COMMITTED each statement of the load plan has a different snapshot, which breaks the premise that "the loaded snapshots show a single point in time". REPEATABLE READ guarantees a single snapshot but **does not prevent write skew.**
 
 #### Execution order: 2 round trips
 
@@ -552,7 +552,7 @@ async with app.read(consistency="snapshot") as r:                    # REPEATABL
 | `@Retryable` | Built in (40001/40P01) |
 | `@Version` + merging detached entities | `Order.ref(id, expected_version=v)` |
 | `LockModeType.OPTIMISTIC_FORCE_INCREMENT` | `one_to_many(..., owned=True)` |
-| `@Lock(PESSIMISTIC_WRITE)` | `Profile(..., lock="for_update")` |
+| `@Lock(PESSIMISTIC_WRITE)` | `Profile(..., lock="for_update")`: under SERIALIZABLE a waiter still fails with 40001 once the holder has updated and committed the row, and is retried - not an escape hatch (ADR-0005) |
 | `EntityManager.getReference()` | `Order.ref(id)`, `orders.by_number(n)` |
 | Persistence context flush | None. The ChangeSet is applied at once in the commit batch |
 
@@ -860,7 +860,7 @@ Splitting the use case in two here is not just an inconvenience; **it loses atom
 Flows where an external result decides the write are split into a process handler and several use cases. The cost of a single JPA method becoming an event flow remains.
 
 ### 7.3 The cost of the SERIALIZABLE default
-On highly contended tables, serialization failures and retries increase. For hot rows you have to step down to `lock="for_update"` or `isolation=REPEATABLE_READ` + `version`, and the latter does not prevent write skew. Hot rows created by inline projections are mostly prevented by the key rule (§4.10), but entity ID keys can be hot too. How large this cost actually is must be confirmed by benchmarks (§9).
+On highly contended tables, serialization failures and retries increase. Two kinds of 40001 differ here. SSI's read/write-dependency failures (the write-skew case) can be escaped with `isolation=REPEATABLE_READ` + `version`, which then does not prevent write skew. The same-row write conflict ("could not serialize access due to concurrent update") on a hot row cannot be escaped: under REPEATABLE READ and SERIALIZABLE, neither `lock="for_update"` nor a blind increment (`.add(n)`) avoids it once a concurrent command has updated and committed the row after the transaction's snapshot; each such writer waits, fails once and is retried (spike 0002, reproduced; [ADR-0005](../adr/0005-hot-rows-under-serializable.md)). Until 9.2 measures it, `lock="for_update"` counts as "fail early", not as an escape hatch. Whether `lock=` stays, and which approach the design takes for genuinely hot rows (the candidates are listed in ADR-0005), are decided after 9.2. Hot rows created by inline projections are mostly prevented by the key rule (§4.10), but entity ID keys can be hot too. How large this cost actually is must be confirmed by benchmarks (§9).
 
 ### 7.4 Remaining problems with bulk writes
 - Set-based updates are allowed only on fields without an `@invariant`
@@ -988,7 +988,7 @@ On highly contended tables, serialization failures and retries increase. For hot
 - Decision: use cases run under SERIALIZABLE by default and are retried automatically on serialization failure. The Query path is READ COMMITTED.
 - Rationale: PostgreSQL states that applications using SERIALIZABLE must be ready to retry serialization failures (SQLSTATE 40001), and also states that the DB does not provide automatic retry because it cannot guarantee correctness. In most ORMs this retry is dangerous (side effects inside the transaction are repeated), but Platina's use cases are pure functions, so rerunning everything is safe.
 - Effect: no separate feature such as "read-set version validation" is needed. SSI prevents write skew.
-- Escape hatch: `@usecase(isolation=REPEATABLE_READ)` + `version`, or a `lock="for_update"` profile. **READ COMMITTED is not allowed for Commands.** Each statement of the load plan would have a different snapshot, breaking the premise that "the loaded snapshots show a single point in time". REPEATABLE READ does not prevent write skew, so if there are rules based on the read set, the use case must stay on SERIALIZABLE.
+- Escape hatch: `@usecase(isolation=REPEATABLE_READ)` + `version` escapes SSI's read/write-dependency failures (write skew). There is no escape hatch from the same-row 40001 ("concurrent update") on a row that concurrent commands update: neither REPEATABLE READ nor a `lock="for_update"` profile avoids it; the profile only makes the conflict surface at the load stage ([ADR-0005](../adr/0005-hot-rows-under-serializable.md), from spike 0002; whether `lock=` stays is decided after 9.2). **READ COMMITTED is not allowed for Commands.** Each statement of the load plan would have a different snapshot, breaking the premise that "the loaded snapshots show a single point in time". REPEATABLE READ does not prevent write skew, so if there are rules based on the read set, the use case must stay on SERIALIZABLE.
 
 **Retry policy**
 - Decision: 40001 and 40P01 are always retried. 23505 only for use cases that explicitly set `on_unique=True` (23505 on the run ID tables is handled separately as the idempotent path). At most 4 attempts, exponential backoff + full jitter (base 10ms, cap 200ms), each retry starting again from the load.
@@ -1176,20 +1176,20 @@ Convert the entity registry to SQLAlchemy `MetaData` and see whether Alembic aut
 - [ ] Framework internal tables (especially partitions)
 
 ### 9.4 Port 10 real use cases to this syntax
-Each was chosen to test a different part of the design. If something does not translate onto paper, fix the syntax.
+Each was chosen to test a different part of the design. If something does not translate onto paper, fix the syntax. Result: [spike 0002](../spikes/0002-use-cases-on-paper.md) - partly; no syntax is changed by it. Three use cases need a decision (delete of a root, reuse of an idempotency key with other arguments), the others carry workarounds (set loads, loads on `Load.after` results, nested load paths, the `bind` rule for dependent loads, `insert_all` in the commit batch), and the hot-row escape hatch does not hold on PostgreSQL (ADR-0005, accepted). Verdicts are the spike's, reviewed by the architect sub-agent (agreed after two rounds); its type checks were reproduced by type-reviewer and its database observations by pg-researcher, which changed no verdict (one type finding was corrected, and the database facts gained conditions; see the write-up's Reproduction).
 
-| # | Use case | What it tests |
-|---|---|---|
-| 1 | Payment | Idempotency key, run ID |
-| 2 | Refund | Dependent loads (`Load.when`/`after`) |
-| 3 | Payment after applying a coupon | `chain` |
-| 4 | Stock reservation | Hot rows, pessimistic lock profile |
-| 5 | Seat reservation | write skew, SERIALIZABLE |
-| 6 | Order merge | Two parameters of the same type, `Load.after` |
-| 7 | Bulk expiry of unpaid orders | Set change, `emit_each` sequence numbers |
-| 8 | Account transfer | Ledger, commutative increments |
-| 9 | Profile edit | `expected_version`, `owned` children |
-| 10 | Payment approval notification | `@process`, job pipeline, external idempotency key |
+| # | Use case | What it tests | Result (spike 0002) |
+|---|---|---|---|
+| 1 | Payment | Idempotency key, run ID | Not expressible: a key reused with other arguments gets the stored result |
+| 2 | Refund | Dependent loads (`Load.when`/`after`) | Expressed, awkward: `Load.when` with a column-to-column `match` is a type error (#51); dependent-load parameters must be passed to `bind` unless given a default |
+| 3 | Payment after applying a coupon | `chain` | Expressed, awkward: `chain` as written; "used by this customer?" over-reads a relation |
+| 4 | Stock reservation | Hot rows, pessimistic lock profile | Expressed, awkward: the stock rows cannot be declared (the caller pre-reads); `lock="for_update"` still ends in 40001 (ADR-0005) |
+| 5 | Seat reservation | write skew, SERIALIZABLE | Expressed, awkward: SERIALIZABLE covers the write skew; availability reads over-read whole relations |
+| 6 | Order merge | Two parameters of the same type, `Load.after` | Not expressible: no delete for a root row |
+| 7 | Bulk expiry of unpaid orders | Set change, `emit_each` sequence numbers | Expressed, awkward as one use case per order; a set change does not express it |
+| 8 | Account transfer | Ledger, commutative increments | Not expressible: key reuse as in 1; increments into one row still conflict (ADR-0005) |
+| 9 | Profile edit | `expected_version`, `owned` children | Expressed |
+| 10 | Payment approval notification | `@process`, job pipeline, external idempotency key | Expressed, awkward: the notice is a second `@process`, not `then`; the transient-error rule is unstated |
 
 ### 9.5 Other measurements
 - [ ] Pipeline effect: latency of sending load stages in one round trip compared with sequential execution (local / cross-region)

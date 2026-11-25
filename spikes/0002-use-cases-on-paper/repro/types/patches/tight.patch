@@ -1,0 +1,26 @@
+--- a/lib.pyi
++++ b/lib.pyi
+@@ -21,7 +21,7 @@
+     Sequence,
+ )
+ from datetime import datetime
+-from typing import Annotated, Generic, Literal, Never, Self, TypeVar, dataclass_transform, overload
++from typing import Annotated, Concatenate, Generic, Literal, Never, Self, TypeVar, dataclass_transform, overload
+ from uuid import UUID
+ 
+ # Variance declared explicitly (reproduction round 2, discrepancy 3): owner covariant, value invariant.
+@@ -323,7 +323,10 @@
+ class DomainError(Exception):  # [0002]
+     def __init_subclass__(cls, *, retry_later: RetryLater | None = ...) -> None: ...  # [0002]
+ 
+-def process[F: Callable[..., Awaitable[Bound | None]]](  # [0002] 4.10 `@process(on=Event)`
+-    *,  # [0002]
+-    on: type[object],  # [0002]
+-) -> Callable[[F], F]: ...  # [0002]
++def process[E, **P](  # [repro] tightened: the handler's first parameter is tied to `on`
++    *,
++    on: type[E],
++) -> Callable[
++    [Callable[Concatenate[E, ProcessContext, P], Awaitable[Bound | None]]],
++    Callable[Concatenate[E, ProcessContext, P], Awaitable[Bound | None]],
++]: ...

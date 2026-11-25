@@ -1,4 +1,4 @@
-<!-- i18n: source=docs/workflow.md source-sha256=b9103016b646 translation-sha256=9a0ae1c97417 -->
+<!-- i18n: source=docs/workflow.md source-sha256=522ce5f74964 translation-sha256=9a5009846fdf -->
 # 에이전트 개발 워크플로
 
 원문(영어): [workflow.md](workflow.md)
@@ -143,7 +143,7 @@ uv run python -m tools.guards --changed
 ## 8. GitHub 설정 (메인테이너, 한 번)
 
 **현재 상태(2026-11-25):** 완료. `develop`이 기본 브랜치이고, 룰셋 두 개가 활성 상태이며,
-마일스톤·라벨·로드맵 이슈(#1-#55, #47과 #53은 풀 리퀘스트)가 있다. 로컬 pre-push 훅(`make hooks-install`)은 두 번째
+마일스톤·라벨·로드맵 이슈(#1-#61, #47·#53·#56은 풀 리퀘스트)가 있다. 로컬 pre-push 훅(`make hooks-install`)은 두 번째
 방어선으로 남는다. 에이전트는 메인테이너가 요청할 때만 GitHub 설정·마일스톤·라벨을 바꾼다.
 
 - [x] `main`에 첫 커밋, 그다음 거기서 `develop` 생성, `develop`을 기본 브랜치로.
@@ -158,8 +158,9 @@ uv run python -m tools.guards --changed
       `area:core`, `area:sql`, `area:app`, `area:runners`, `area:drivers`, `area:outbox`,
       `area:migrate`, `area:codegen`, `area:testing`, `area:integrations`, `area:cli`,
       `area:tooling`.
-- [x] 로드맵 이슈 #1-#55: 설계 §9 실험, 그리고 설계 §3-11의 모든 패키지·기능을 의존 관계와 함께
-      (#1은 이 설정 작업, #48-#52와 #54, #55는 스파이크 0001에서 나옴, #47과 #53은 풀 리퀘스트).
+- [x] 로드맵 이슈 #1-#61: 설계 §9 실험, 그리고 설계 §3-11의 모든 패키지·기능을 의존 관계와 함께
+      (#1은 이 설정 작업, #48-#52와 #54, #55는 스파이크 0001에서, #57-#61은 스파이크 0002에서 나옴,
+      #47·#53·#56은 풀 리퀘스트).
 - [x] 첫 구현 전에 ADR-0001(조립 패키지와 seal)과 ADR-0002(새 ID를 주입된 소스에서 받기) 결정 - 둘 다 수락.
 
 항목을 마치면 같은 변경에서 이 절(과 영어 원문)을 고친다.

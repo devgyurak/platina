@@ -1,0 +1,11 @@
+--- a/lib.pyi
++++ b/lib.pyi
+@@ -177,7 +177,7 @@
+ class Entity:
+     def __init_subclass__(cls, *, table: str, aggregate_root: bool = ...) -> None: ...
+     @classmethod
+-    def ref(cls, id: UUID, /, *, expected_version: int | None = ...) -> Self: ...
++    def ref(cls, id: Id[Self], /, *, expected_version: int | None = ...) -> Self: ...  # [repro]
+     @classmethod
+     def where(cls, *preds: Pred[Self]) -> SetChange[Self]: ...
+     @classmethod
