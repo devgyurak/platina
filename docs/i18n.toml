@@ -1,0 +1,18 @@
+# Documentation i18n policy (enforced by tools/guards/langlint.py).
+#
+# English is the source of truth. A translation sits next to its source as
+# `<stem>-<LANG><suffix>` (e.g. README-KO.md) and starts with a header that pins the English
+# revision it was translated from and its own body (so direct edits are detected too):
+#   <!-- i18n: source=README.md source-sha256=<12 hex> translation-sha256=<12 hex> -->
+# Refresh the header with: uv run python -m tools.guards i18n-stamp README-KO.md
+
+# Language codes (ISO 639-1, upper case) accepted as translation suffixes.
+languages = ["KO"]
+
+# Human-facing documents that must ship with translations.
+# Agent-facing files (AGENTS.md, CLAUDE.md, .agents/**), ADRs and spike write-ups are
+# English-only on purpose.
+[required]
+"README.md" = ["KO"]
+"docs/workflow.md" = ["KO"]
+"docs/design/design.md" = ["KO"]

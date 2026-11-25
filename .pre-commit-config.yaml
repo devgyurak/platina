@@ -1,0 +1,40 @@
+# Install with `make hooks-install`. Every hook runs through uv so versions match uv.lock.
+# Hooks without `stages` run at commit time only; the pre-push stage runs just the push guard.
+default_stages: [pre-commit]
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format
+        language: system
+        types: [python]
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check --fix
+        language: system
+        types: [python]
+      - id: guards
+        name: project guards (architecture, tests, language)
+        entry: uv run python -m tools.guards
+        language: system
+        pass_filenames: true
+      - id: import-linter
+        name: import-linter
+        entry: uv run lint-imports
+        language: system
+        pass_filenames: false
+        files: ^src/
+      - id: agentsync
+        name: agent config in sync with .agents/
+        entry: uv run python -m tools.agentsync --check
+        language: system
+        pass_filenames: false
+        files: ^(\.agents/|\.claude/|\.codex/|\.pi/|AGENTS\.md)
+      - id: no-push-to-protected
+        name: refuse pushes to main / develop
+        entry: uv run python tools/hooks/pre_push.py
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]

@@ -1,0 +1,56 @@
+# Architecture (current state)
+
+This document describes what exists **now**. The target architecture is
+[`design/design.md`](design/design.md) section 10; this file catches up with it package by
+package as code lands. Decisions taken after the design document: [`adr/`](adr/).
+
+## Status
+
+No runtime code yet. The package skeleton below exists with one docstring per package that states
+its contract, so the layer contracts and guards are enforced from the first line of code.
+
+## Zones and layers
+
+```
+cli | integrations | testing          shell   entry points, FastAPI glue, user test kit
+app                                   shell   App, seal() orchestration, run/query (ADR-0001)
+runners | outbox | migrate | codegen  shell   drive the engine; event log consumers; schema tooling (extra); TypedSQL
+drivers                               shell   psycopg 3.3+ (pool, pipeline, COPY, SQLSTATE mapping)
+sql                                   sans-I/O  compiler, dialects (PostgreSQL)
+core                                  sans-I/O  schema, expr, snapshot, changes, plan, planner, engine
+```
+
+Imports point downwards only (`|` separates independent siblings). The contract is exhaustive:
+every direct child of `platina` must appear in it. Public re-exports will live in
+`platina/__init__.py`, which belongs to no layer and re-exports only from `core`, `sql` and
+`app` (ADR-0001).
+
+| Package | Zone | Contract |
+|---|---|---|
+| `platina.core.*` | sans-I/O | Pure and immutable: imports only the standard-library allowlist; no I/O, event loop, clock, randomness or `async`. The engine yields Commands. Time arrives as the `Now` parameter, the jitter's randomness as an engine argument, new IDs from an injected ID source (ADR-0002). |
+| `platina.sql.*` | sans-I/O | Renders SQL from the immutable AST; never connects. |
+| `platina.app` | shell | App (configuration, registry), seal orchestration (core checks, then load-plan compilation via `sql`), `run` / `query` (ADR-0001). |
+| `platina.drivers` | shell | The only importer of psycopg / psycopg_pool. |
+| `platina.runners` | shell | Executes engine Commands. Async runner (anyio) is the source; the sync runner is generated from it. |
+| `platina.outbox` | shell | Event log readers, job workers and dispatchers, projection consumers. |
+| `platina.migrate` | shell, extra | The only importer of SQLAlchemy / Alembic (`platina[migrate]`). |
+| `platina.codegen` | shell | TypedSQL inference, `platina pull`, contract generation. |
+| `platina.testing` | shell | User test kit and the dialect compliance suite. |
+| `platina.integrations` | shell | Web framework integrations. |
+| `platina.cli` | shell | The `platina` command. |
+
+## Enforcement
+
+| What | Where |
+|---|---|
+| Layer order between packages | import-linter, `[tool.importlinter]` in `pyproject.toml` |
+| External modules and calls per zone (A101-A106; the core imports only `CORE_ALLOWED`) | `tools/guards/archlint.py` |
+| Public type surface under pyright and mypy | `tools/typetests.py` over `tests/typing/` |
+| Everything else in the design invariants | review (`arch-guardian`, `code-reviewer`, `type-reviewer`) |
+
+## ADRs
+
+| ADR | Status | Shapes |
+|---|---|---|
+| [0001](adr/0001-assembly-package-and-seal.md) assembly package and seal | Accepted | `platina.app`, the layer contract, where seal's steps live, the executor `outbox` receives, root re-exports (`core`, `sql`, `app` only) |
+| [0002](adr/0002-injected-id-source.md) new IDs from an injected source | Accepted | the ID source of `Entity.new` (installed by the engine, never replaced by a nested direct call), the version-8 fallback sequence for direct calls and stubs, guard A106 |

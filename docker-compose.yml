@@ -1,0 +1,47 @@
+# PostgreSQL for integration tests and spikes.
+#
+#   postgres          make db-up          port 26432  fast: tmpfs, fsync=off, full_page_writes=off.
+#                                                     For correctness tests and for spikes that ask
+#                                                     "does X happen at all" (e.g. false conflicts).
+#   postgres-durable  make db-up-durable  port 26433  default durability on a real volume. For
+#                                                     anything that measures throughput, latency or
+#                                                     retry *rates* (design sections 9.2 last item,
+#                                                     9.5): faster commits shorten the window in which
+#                                                     transactions overlap, so the fast profile would
+#                                                     understate conflicts.
+#
+# Isolation, SSI and synchronous_commit keep PostgreSQL's defaults in both profiles.
+# Host ports avoid the default 5432 (local installs) and asyncopation's 25432, and stay below
+# 32768, outside the OS ephemeral port ranges where random collisions happen.
+name: platina
+
+x-postgres: &postgres
+  image: postgres:18
+  environment:
+    POSTGRES_USER: platina
+    POSTGRES_PASSWORD: platina
+    POSTGRES_DB: platina
+  healthcheck:
+    interval: 2s
+    timeout: 3s
+    retries: 30
+    test: ["CMD-SHELL", "pg_isready -U platina -d platina"]
+
+services:
+  postgres:
+    <<: *postgres
+    command: >
+      postgres -c fsync=off -c full_page_writes=off
+               -c max_connections=300 -c shared_buffers=256MB
+    ports: ["26432:5432"]
+    tmpfs: [/var/lib/postgresql]
+
+  postgres-durable:
+    <<: *postgres
+    profiles: [durable]
+    command: postgres -c max_connections=300 -c shared_buffers=256MB
+    ports: ["26433:5432"]
+    volumes: [platina-durable:/var/lib/postgresql]
+
+volumes:
+  platina-durable:

@@ -1,0 +1,23 @@
+__pycache__/
+*.py[cod]
+.venv/
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.hypothesis/
+.import_linter_cache/
+.coverage
+htmlcov/
+.env
+
+# Spike output (raw measurements); the write-up in docs/spikes/ is what gets committed
+spikes/**/results/
+
+# Agent configuration is part of the repo; re-include it even if a global gitignore
+# excludes .claude/. Only personal settings stay ignored.
+!.claude/
+.claude/settings.local.json
+.pi/sessions/

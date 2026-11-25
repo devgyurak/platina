@@ -1,0 +1,22 @@
+name: Branch policy
+
+# main only accepts pull requests from develop. Rulesets cannot restrict the source branch,
+# so this check is required by the main ruleset.
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  source-branch:
+    name: main accepts PRs from develop only
+    runs-on: ubuntu-latest
+    steps:
+      - name: check head branch
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          if [ "$HEAD_REF" != "develop" ]; then
+            echo "::error::Pull requests into main must come from develop (got '$HEAD_REF')."
+            exit 1
+          fi
+          echo "head branch is develop"

@@ -1,0 +1,116 @@
+[project]
+name = "platina"
+version = "0.0.0"
+description = "An ORM whose domain code never touches the database: declared loads, pure use cases, changes as data."
+readme = "README.md"
+requires-python = ">=3.14"
+license = "Apache-2.0"
+classifiers = [
+    "Development Status :: 1 - Planning",
+    "Framework :: AnyIO",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Database",
+    "Typing :: Typed",
+]
+# Runtime dependencies (psycopg>=3.3, anyio) are added with the first runner/driver code that
+# needs them (design doc section 8.6), not before.
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0",
+    "hypothesis>=6.170",
+    "ruff>=0.17",
+    "pyright>=1.1.400",
+    "mypy>=1.18",
+    "import-linter>=2.17",
+    "pyyaml>=6.0",
+]
+# Experiments of design doc section 9 (`uv sync --group spike`): the SSI spikes need a driver,
+# the Alembic round trip needs the schema tooling. Not a runtime dependency of platina.
+spike = [
+    "psycopg[binary]>=3.3",
+    "sqlalchemy>=2.0",
+    "alembic>=1.16",
+]
+
+[tool.uv]
+default-groups = ["dev"]
+
+[build-system]
+requires = ["uv_build>=0.12,<0.13"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "platina"
+
+# --------------------------------------------------------------------------- ruff
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+# Markdown is excluded: ruff would reformat the code samples in the docs (design sketches).
+extend-exclude = [".claude", ".codex", ".pi", "*.md"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "ASYNC", "RUF", "PT", "TID", "T20"]
+ignore = [
+    "RUF001", # test data intentionally contains non-ASCII strings
+    "E501",   # ruff format owns line length; what remains is unbreakable strings
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tools/**" = ["T20"]
+"spikes/**" = ["T20"]
+
+# --------------------------------------------------------------------------- types
+# `make typecheck`: pyright (strict on src) + mypy --strict on src. `make test-types`:
+# tools/typetests.py runs tests/typing/pass_*/fail_* through both checkers.
+# tests/typing is deliberately NOT in `include` (its fail_* lines are meant to error) and must
+# NOT be in `exclude` either: pyright ignores excluded files even when they are passed on the
+# command line, which would silently disable the type tests. Files outside `include` are still
+# checked when passed explicitly, with the `strict` setting of their path.
+[tool.pyright]
+pythonVersion = "3.14"
+include = ["src", "tools", "tests/unit", "tests/support", "tests/integration"]
+strict = ["src", "tests/typing", "spikes"]
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+mypy_path = "src"
+packages = ["platina"]
+
+# --------------------------------------------------------------------------- pytest
+[tool.pytest.ini_options]
+minversion = "9.0"
+pythonpath = ["."]
+testpaths = ["tests"]
+norecursedirs = ["tests/typing", "tests/support"]
+addopts = ["--strict-markers", "--strict-config", "-ra"]
+markers = [
+    "integration: needs a real PostgreSQL (the first tests/integration conftest applies it)",
+]
+filterwarnings = ["error"]
+
+# --------------------------------------------------------------------------- import-linter
+# Internal layering (design doc section 10.4): imports point from the shell down to the core.
+# `|` separates independent siblings. External modules per zone are tools/guards/archlint.py.
+[tool.importlinter]
+root_package = "platina"
+
+# `exhaustive`: every direct child of `platina` must be listed, so a new package cannot slip in
+# without a placement decision. `app` (App, seal orchestration): ADR-0001.
+[[tool.importlinter.contracts]]
+name = "platina layers: shell -> core only"
+type = "layers"
+containers = ["platina"]
+exhaustive = true
+layers = [
+    "cli | integrations | testing",
+    "app",
+    "runners | outbox | migrate | codegen",
+    "drivers",
+    "sql",
+    "core",
+]
