@@ -365,7 +365,7 @@ From the maintainer's brief; each is checked in Observations.
   `@overload`s because an overload was added. The type reproduction found ten continuation and
   decorator lines of added declarations still unmarked (now marked) and confirmed that spike 0001's
   pinned `round2/*_final_declared` files still give `0 problem(s) in 4 file(s)` against this stub
-  (`results/repro-types/09-regress0001.txt`).
+  (`repro/types/run.sh`, output `regress0001.txt`).
 
 ## Method
 1. The requirements above were written first, from the sources, before any code.
@@ -403,8 +403,24 @@ From the maintainer's brief; each is checked in Observations.
    `uv run python spikes/0002-use-cases-on-paper/db_increment_conflicts.py` (two sessions, pinned
    interleaving; output in `results/db-increment-conflicts.txt`). One run per case: it answers
    "does it happen", not "how often".
-6. The independent reproductions (see Reproduction) left their scripts and raw output under
-   `results/repro-types/` and `results/repro-db/` (git-ignored, like all of `results/`).
+6. The independent reproductions (see Reproduction): their sources are in
+   `spikes/0002-use-cases-on-paper/repro/` (`types/`: the reproducer's probes and the four stub
+   variants as patches against `lib.pyi`; `db/`: the reproducer's scripts, unchanged; `README.md`
+   describes both). Rerun from the repository root:
+
+   ```bash
+   bash spikes/0002-use-cases-on-paper/repro/types/run.sh
+   bash spikes/0002-use-cases-on-paper/repro/db/run.sh   # needs `make db-up`
+   ```
+
+   The output is regenerated into the git-ignored `results/repro-types/` and `results/repro-db/`.
+   The two `run.sh` files are glue written when the sources were moved, not the reproducers'
+   code; the first run's output files had the reproducer's own names (`08-...` to `12-...`), the
+   glue writes `<variant>-pyright-16.txt` and the like. A rerun is not a new reproduction. The
+   reproducers' files carry a temporary header that suppresses ruff lint and format for them
+   (their code below it is byte-identical; `repro/README.md`). The
+   type commands must run inside the repository: pyright's configuration (`strict` for `spikes/`)
+   applies only there.
 
 ## Observations
 
@@ -425,7 +441,7 @@ These came up in several use cases; the per-use-case sections refer to them by n
   comparisons: inside `Annotated[...]` metadata mypy reports nothing at all - wrong argument types
   (`Load(1, 2, 3)`), an unknown attribute (`Load.no_such_method()`), an undefined name, even
   `1 + "a"` - while pyright reports all of them (seven errors against mypy's `Success`;
-  `results/repro-types/base/x1_extra.py`, `10-x1_extra-*.txt`). A typo in an inline `Load(...)` is
+  `repro/types/x1_extra.py`). A typo in an inline `Load(...)` is
   invisible to mypy; under mypy, seal is the only check of a load declaration written inline.
 - **X2 - 4.12's assertion `r.updated(order) == {Order.status: PAID, ...}` is rejected by pyright,
   accepted by mypy** (`probe_column_key.py`, lines 22 and 25): `Dictionary key must be hashable /
@@ -435,8 +451,8 @@ These came up in several use cases; the per-use-case sections refer to them by n
   instead (`r.updated(wallet)[Wallet.balance] == Add(...)`), which both accept. Candidate fix:
   `Column` declares `__hash__` (identity hash, as SQLAlchemy's column elements do). This spike did
   not probe it; the type reproducer did, as a new probe of its own (a copy of the stub with one
-  line, `def __hash__(self) -> int: ...`; `results/repro-types/hash/`, `08-hash-*.txt`,
-  `09-regress0001-hash.txt`): pyright then accepts lines 22 and 25, mypy is unchanged, the 14-file
+  line, `def __hash__(self) -> int: ...`; `repro/types/patches/hash.patch`): pyright then accepts
+  lines 22 and 25, mypy is unchanged, the 14-file
   set still gives `0 problem(s)` and spike 0001's pinned files too. That probe has run once and is
   not reproduced, and the runtime side (a dict lookup on a class whose `__eq__` returns a predicate
   rests on identity hashing) has no implementation to run.
@@ -502,9 +518,9 @@ These came up in several use cases; the per-use-case sections refer to them by n
   assumed from a `time.sleep(0.5)`, not observed. The database reproduction observed the wait in
   `pg_locks` / `pg_blocking_pids` and got the same six results; it also got them when T2 issued its
   write only after T1 had committed (no wait at all): what decides is that T2's snapshot predates
-  T1's commit, not the wait (`results/repro-db/partA-verified.txt`). Under 4.6's statement order
+  T1's commit, not the wait (`repro/db/part_a.py`). Under 4.6's statement order
   (`BEGIN`, `SET LOCAL statement_timeout`, `INSERT INTO run_claim`, `SELECT ... FOR UPDATE`,
-  `UPDATE`, `COMMIT`), identical under SERIALIZABLE and REPEATABLE READ (`partB*.txt`):
+  `UPDATE`, `COMMIT`), identical under SERIALIZABLE and REPEATABLE READ (`repro/db/part_b*.py`):
   - the waiter fails (`40001`, at its `SELECT ... FOR UPDATE`) only when the holder **commits an
     actual update** of the row; a holder that only locked the row, or rolled back, lets the waiter
     proceed and commit;
@@ -552,13 +568,14 @@ These came up in several use cases; the per-use-case sections refer to them by n
   child added to one parent with another parent's key (item 6, #49); `Coupon.ref(order.id)`, a ref
   built from another entity's key (item 8; `ref` takes any `UUID`, not `Id[E]` - with `id: Id[Self]`
   both checkers reject it, and also the 15 `ref(...)` arguments on 11 lines of the use cases that pass
-  a raw `UUID`; `results/repro-types/11-tight-ref-*.txt`). Item 2,
+  a raw `UUID`; `repro/types/patches/tight-ref.patch`). Item 2,
   `@process(on=E)` not tied to the handler's event parameter, is **not** such a case: the type
   reproduction showed it is accepted only because this spike's `process` signature is loose (`on:
   type[object]`, a handler bound of `Callable[..., ...]`). With `process[E, **P](*, on: type[E])`
   taking `Callable[Concatenate[E, ProcessContext, P], Awaitable[Bound | None]]`, both checkers
   reject the mismatch (pyright `reportArgumentType`, mypy `arg-type`) and the four real handlers
-  still pass (`results/repro-types/tight/`, `11-tight-*.txt`, `11-tight-after-*.txt`). The types
+  still pass (`repro/types/patches/tight.patch`: the variant adds exactly that one rejection in each
+  checker and nothing else). The types
   can carry that rule; it is a signature choice and a candidate for the 11.8 misuse list.
 - **X14 - an idempotency key reused with different arguments is answered with the stored
   result.** 4.6's run-ID table has no rule for it; rocket-rides rejects it (409) and TigerBeetle
@@ -638,7 +655,7 @@ Each block: what was written, where it did not fit, the verdict, and the four it
   redemption of the user - and a check in Python.
 - R3.7: the coupon row is read and written, so SERIALIZABLE serialises the last use. Which
   SQLSTATE the loser of a race gets was not checked by this spike; the database reproduction
-  checked it (SERIALIZABLE, one run per scenario; `results/repro-db/partC-*.txt`):
+  checked it (SERIALIZABLE, one run per scenario; `repro/db/part_c.py`):
   - when the coupon `UPDATE` precedes the redemption `INSERT`, the loser always fails with
     `40001` at the `UPDATE` - 64 scenarios, one user or two users racing for the last use,
     sequential or index reads, either transaction first; no `23505`;
@@ -885,15 +902,18 @@ statement about hot rows does not hold on PostgreSQL (X8, ADR-0005).
 | Column comparison operands | Needed column-to-column twice (4.7 `Load.when` `match`; a table check `allocated <= quantity`), both rejected by both checkers (also between two columns of the same type, type reproduction `12-x51-same-type.txt`); a third time if use case 3's lookup is written with `Load.when`. Never needed numeric literal widening (comparisons ran in Python on loaded values). Also needed column arithmetic (`expires_at + delay`), outside #51's scope. Inside `Annotated`, mypy does not check the comparison at all (X1) | 2, 3, 4, 7 | #51 |
 | Entity equality and hashing | No use case needed entity `==` or an entity as a set member or dict key: every "same row" question (merge, transfer, seat in show) compared IDs, and every diff was keyed by IDs. But the test API does look rows up by entity: `r.updated(entity)` / `r.removed(entity)` on snapshots that were nested (a stock inside a variant, a line inside an order) or passed through a chain, which needs key-based identity (type + primary key) for the lookup. Tests compared inserted rows by fields, because an expected entity cannot be constructed in a test body and a stub has another ID. The provisional rule's concern showed once: one row loaded through two paths gives two snapshots that would be unequal (use case 5). 4.12's dict-literal assertion is a pyright error (X2) - a `Column` hashing question, not an entity one | 1, 3, 4, 5, 6, 8 | #54 |
 | `path(...).add(...)` length | 3 of 10 use cases, 4 lines: 60-70 characters for one increment of a part of an embedded value (`wallet.set(Wallet.balance.path(Money.amount).add(-order.total.amount))`); every other increment is a plain column (`Coupon.used.add(1)`, `Stock.allocated.add(qty)`, 30-46 characters). The length is concentrated in money; the increment brings no concurrency benefit on the same row (X8) | 1, 2, 8 | design 9.5 |
-| Commit planner | Use case 9 needs edges for updates of FK columns (insert an address, then point the user at it; clear the user's default, then delete the address). The tables form an FK cycle but the row-level order is acyclic; 10.7 names edge kinds for inserts and deletes only | 9 | Phase 1 planner (#6) |
+| Commit planner | Use case 9 needs edges for updates of FK columns (insert an address, then point the user at it; clear the user's default, then delete the address). The tables form an FK cycle but the row-level order is acyclic; 10.7 names edge kinds for inserts and deletes only | 9 | #15 (comment), #6 |
 | Phase 1 scope | Phase 1 needs: a delete for a root (X4) and a rule for `insert_all` in the commit batch (X3) - basic writes, not features; a decision on loads for `Load.after` results and set loads (X7), or a documented caller-side pattern; the `bind` rule for dependent loads (X5, with #48); nested load paths (X6); the commit planner row above; the key-reuse rule (X14). `@batch_usecase` (Phase 2) does not cover recurring "expire what is due" jobs as shown. The `@process` handlers of 1, 2, 7, 10 are Phase 2 (9.6), so in Phase 1 no use case can send a receipt or execute a refund. The hot-row text needs ADR-0005 before it is documented | all | #6 |
 
 Consequence for the design: X8 changes a statement of a section 8 decision, so it is ADR-0005
 (Proposed), linked from 7.3 and 8.3 with a note; the decision itself is not changed until the
 maintainer accepts it. The other findings are open questions for the maintainer, each with
-alternatives above: X3 (`insert_all` in the commit batch, inserting through parent relations),
-X4 (delete a root), X7 (set loads, loads on `Load.after` results), X14 (key reuse). Smaller text
-fixes once decided: X2 (4.12), X5 (4.7 / #48), X12 (3.1 vs 4.3 / 4.7), X1 (where load
+alternatives above, now tracked as issues: X4 (delete a root) #57, X14 (key reuse) #58, X7 and X6
+(set loads, loads on `Load.after` results, nested paths) #59, X3 (`insert_all` in the commit
+batch, inserting through parent relations) #60. Proposed as scope of existing issues (comments,
+bodies left to the maintainer): X5 (the `bind` rule for dependent loads) #48, X2
+(`Column.__hash__`) #10 and #27, X13 item 2 (the `@process` signature) #32, FK-update edges of the
+commit planner #15. Smaller text fixes once decided: X12 (3.1 vs 4.3 / 4.7), X1 (where load
 declarations are written, or stating that seal is their only check under mypy), X15, X16.
 
 ## Reproduction
@@ -953,9 +973,12 @@ declarations are written, or stating that seal is their only check under mypy), 
 ### Type reproduction (type-reviewer)
 - **Who / date:** the `type-reviewer` sub-agent, 2026-11-25, launched by the maintainer's session
   (not by the author), given this write-up and the code; it did not run the spike. It wrote its
-  own probes and saved scripts and raw output in `results/repro-types/` (`00-` to `12-` files,
-  copies of the stub under `base/`, `hash/`, `tight/`, `tight-ref/`, `regress0001*/`). The author
-  of this write-up compared the write-up with those files; the author did not rerun them.
+  own probes; the sources are now in `repro/types/` (probes, and the stub variants as patches),
+  their first output in the git-ignored `results/repro-types/`. The author of this write-up
+  compared the write-up with that output; the author did not rerun it as a reproduction (the
+  moved sources were only checked to run at their new path). File names `00-...` to `12-...` below
+  are that first run's git-ignored output; `run.sh` regenerates the checker, probe and regression
+  output, not the version and gate listings (`00-`, `01-`) or the stub listings (`07-`).
 - **Setup:** Python 3.14.7, pyright 1.1.414, mypy 2.4.1 (compiled), psycopg 3.3.9 - the same as
   Setup (`01-versions.txt`). Repository gates clean (`00-repo-gates.txt`).
 - **Ran and observed:**
@@ -968,14 +991,17 @@ declarations are written, or stating that seal is their only check under mypy), 
     34. **Agree.** Extended: mypy reports nothing inside `Annotated[...]` metadata at all (X1 now
     says so; `base/x1_extra.py`, `10-x1_extra-*.txt`).
   - X2 (`probe_column_key.py`): pyright `reportUnhashable` at lines 22 and 25, mypy silent.
-    **Agree.** As a new probe of its own it tried `Column.__hash__` (X2; `hash/`, `08-hash-*`,
-    `09-regress0001-hash.txt`) - run once, not reproduced.
+    **Agree.** As a new probe of its own it tried `Column.__hash__` (X2; `patches/hash.patch`) -
+    run once, not reproduced.
   - X13 (`probe_accepted.py`, `10-x13_reveal-*.txt`): items 1, 5, 6, 8 are real limits of the
     design's signatures. **Agree.** Item 2 (`@process(on=E)` not tied to the handler): **disagree**
     - it is accepted only because this spike's `process` signature is loose; with
     `process[E, **P](*, on: type[E])` taking `Callable[Concatenate[E, ProcessContext, P], ...]` both
-    checkers reject it and the four real handlers still pass (`tight/`, `11-tight-*.txt`,
-    `11-tight-after-*.txt`). The write-up now says so (X13, use case 10, Stub additions). Item 8
+    checkers reject it and the four real handlers still pass (`patches/tight.patch`). The
+    write-up now says so (X13, use case 10, Stub additions). The reproducer also tried item 1
+    with `Load.after` carrying the function's result type (`patches/tight-after.patch`): no
+    rejection in either checker, so item 1 stays a limit (an earlier version of this write-up
+    cited that output for item 2 by mistake). Item 8
     with `ref(id: Id[Self])`: both reject it, and also 15 `ref(...)` arguments on 11 lines of the use
     cases that pass a raw `UUID` (`tight-ref/`, `11-tight-ref-*.txt`; the maintainer's summary said
     "15 call sites", which are 15 arguments on 11 lines).
@@ -993,7 +1019,8 @@ declarations are written, or stating that seal is their only check under mypy), 
 ### Database reproduction (pg-researcher)
 - **Who / date:** the `pg-researcher` sub-agent, 2026-11-25, launched by the maintainer's
   session, from this write-up; it did not run the spike. Scripts and raw output in
-  `results/repro-db/` (`harness.py`, `part_a.py`, `part_b*.py`, `part_c.py`, `part*.txt`). The
+  `repro/db/` (`harness.py`, `script.py`, `part_a.py`, `part_b*.py`, `part_c.py`, `summarize.py`;
+  output in the git-ignored `results/repro-db/`). The
   author compared them; the author did not rerun them.
 - **Setup:** PostgreSQL 18.6 (`PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2) on aarch64-unknown-linux-
   gnu`), psycopg 3.3.9 (libpq 18.0.6), fast profile (port 26432, `fsync = off`), one run per

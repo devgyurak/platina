@@ -25,7 +25,9 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
   (`spikes/0002-use-cases-on-paper/db_increment_conflicts.py`). The pg-researcher sub-agent
   reproduced all six results independently, with the lock wait observed in `pg_locks`, and ran
   design 4.6's statement order (`INSERT INTO run_claim` first, then `SELECT ... FOR UPDATE`, then
-  the update) under both levels (spike 0002, Reproduction, `results/repro-db/`). Its conditions:
+  the update) under both levels (spike 0002, Reproduction; scripts in
+  `spikes/0002-use-cases-on-paper/repro/db/`, output regenerated into the git-ignored
+  `results/repro-db/`). Its conditions:
   - the waiter fails with `40001` only when the holder **commits an actual update** of the row; a
     holder that only locked the row, or rolled back, lets the waiter commit;
   - a transaction that begins after the holder's commit does not fail;

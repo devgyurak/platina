@@ -1,0 +1,10 @@
+--- a/lib.pyi
++++ b/lib.pyi
+@@ -53,6 +53,7 @@
+     def __ge__(self, other: _T, /) -> Pred[_O_co]: ...
+     def __gt__(self, other: _T, /) -> Pred[_O_co]: ...  # [0002] 4.3 shows `<` and `>=` only
+     def __le__(self, other: _T, /) -> Pred[_O_co]: ...  # [0002]
++    def __hash__(self) -> int: ...  # [repro] X2 candidate fix
+ 
+ class Relation[O, E](Expr):
+     """Class access of a collection relation of O with children E (`Order.items`)."""
