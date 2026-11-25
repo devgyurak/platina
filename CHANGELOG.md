@@ -36,6 +36,13 @@ All notable changes are documented here. Format: [Keep a Changelog](https://keep
   lock-wait timeout) and ADR-0005 (accepted: `lock="for_update"` is not an escape hatch from
   serialization failures; design 3.1, 4.3, 4.4, 4.6, 7.3 and 8.3 distinguish the same-row and the
   read/write-dependency `40001`).
+- Core exception hierarchy (#8, ADR-0006): `platina.core.errors`, re-exported from `platina`,
+  with `PlatinaError` and every class of design section 10.12 plus `ModuleBoundaryError` under
+  `SealError`, and `SourceLocation`. Keyword-only read-only fields (`usecase`, `entity`, `field`,
+  `location`, `hint`, `details`); `str(exc)` renders the headline, `Location:`, the details and
+  `Fix:`; pickle and copy keep every field; `DatabaseError` requires `sqlstate` and keeps the
+  driver exception as `__cause__`. Design 4.13 uses the `Location:` line throughout and splits
+  the first example's `·` line in two. The first runtime code of the package.
 
 ### Changed
 - Entity syntax (ADR-0003, accepted): entities inherit `Entity` with table options as class

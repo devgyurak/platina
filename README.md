@@ -28,10 +28,12 @@ await app.run(pay.bind(order=Order.ref(order_id), wallet=wallets.by_user(user_id
 
 ## Status
 
-**Design settled, nothing implemented yet.** The code above is the target syntax, not a working
-API. The type-surface spike is done ([`docs/spikes/0001-type-surface.md`](docs/spikes/0001-type-surface.md));
-the other experiments in the design document (SSI concurrency, Alembic round trip, ten real use
-cases) come before the prototype.
+**Design settled, implementation just started.** Only the exception hierarchy
+(`platina.PlatinaError` and its subclasses) exists so far; the code above is the target syntax,
+not a working API. The type-surface spike ([`docs/spikes/0001-type-surface.md`](docs/spikes/0001-type-surface.md))
+and the ten use cases on paper ([`docs/spikes/0002-use-cases-on-paper.md`](docs/spikes/0002-use-cases-on-paper.md))
+are done; the remaining experiments in the design document (SSI concurrency, Alembic round trip,
+measurements) come before the rest of the prototype.
 
 - Design document: [`docs/design/design.md`](docs/design/design.md)
 - Current architecture: [`docs/architecture.md`](docs/architecture.md)

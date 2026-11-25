@@ -756,8 +756,9 @@ async def test_pay_roundtrips(app_with_db):
 
 ```
 RelationNotLoaded: Order.items is not loaded.
-  Use case: shop/billing/usecases.py:12  (pay)
-  Actual load declaration: Load()  ·  Example of the needed declaration: orders.payable = Profile(Order.items, Order.user)
+  Location: shop/billing/usecases.py:12  (pay)
+  Actual load declaration: Load()
+  Example of the needed declaration: orders.payable = Profile(Order.items, Order.user)
   Fix: use Annotated[Order, orders.payable] or add Load(Order.items)
 
 MovedSnapshotAccess: alias is an alias of order, which was moved by chain. Order.total was read.
@@ -781,6 +782,8 @@ SealError: the Load.when expression is ambiguous. refund_merge has two parameter
 ModuleBoundaryError: shop.catalog.usecases.restock loads the entity Order of the billing module.
   Fix: use a query published by billing (orders.summaries) or communicate through events
 ```
+
+Every message has the same layout ([ADR-0006](../adr/0006-exception-fields-and-rendering.md)): the headline, then one line per present item, each indented two spaces - `Location: <file>:<line>  (<function>)`, the `details` lines in order, `Fix: <hint>` last. The `ClassName:` prefix shown above is printed by the traceback (module-qualified there, `platina.core.errors.RelationNotLoaded:`); it is not part of `str(exc)`.
 
 ---
 
@@ -1438,6 +1441,7 @@ Transformation plugins are pure functions too, so they are applied deterministic
 ```
 PlatinaError
 ├── SealError                 # validation failure at startup (module boundaries, invariants, mappings)
+│   └── ModuleBoundaryError   # a module uses an entity another module owns
 ├── UsageError                # programming error, not retried
 │   ├── RelationNotLoaded
 │   ├── UnloadedReference     # reading a field of a ref, .set, == or hash() (provisional) on a ref
@@ -1455,7 +1459,11 @@ PlatinaError
 (user domain exceptions are not wrapped; they propagate as is)
 ```
 
-Besides the message, every exception has structured fields (`usecase`, `entity`, `field`, `location`, `hint`). No string parsing is needed for CLI or IDE integration or for test assertions.
+Besides the message, every exception has structured fields (`usecase`, `entity`, `field`, `location`, `hint`, and `details` for extra lines). No string parsing is needed for CLI or IDE integration or for test assertions. Their types, the constructor and the rendering are fixed by [ADR-0006](../adr/0006-exception-fields-and-rendering.md):
+
+- The message is the only positional argument; the fields are keyword-only and read-only: `usecase: str | None` (the use case's registry name), `entity: type[object] | None` (the entity class), `field: str | None` (attribute path relative to `entity`, `"address.city"`), `location: SourceLocation | None` (`file`, `line`, `function`; `file` is the path from the top-level package, never absolute), `hint: str | None` (rendered as `Fix:`), and `details: tuple[tuple[str, str], ...]` for ordered lines the five fields cannot hold.
+- `DatabaseError` adds a required `sqlstate: str | None`; the original driver exception is its `__cause__`, not a field.
+- Every exception survives `pickle`, `copy` and `deepcopy` with all its fields (one `__reduce__` on `PlatinaError`).
 
 ---
 

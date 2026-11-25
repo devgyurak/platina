@@ -6,8 +6,10 @@ package as code lands. Decisions taken after the design document: [`adr/`](adr/)
 
 ## Status
 
-No runtime code yet. The package skeleton below exists with one docstring per package that states
-its contract, so the layer contracts and guards are enforced from the first line of code.
+The first runtime code is the exception hierarchy, `platina.core.errors` (design section 10.12,
+ADR-0006). Everything else is still the package skeleton below, with one docstring per package
+that states its contract, so the layer contracts and guards are enforced from the first line of
+code.
 
 ## Zones and layers
 
@@ -21,13 +23,15 @@ core                                  sans-I/O  schema, expr, snapshot, changes,
 ```
 
 Imports point downwards only (`|` separates independent siblings). The contract is exhaustive:
-every direct child of `platina` must appear in it. Public re-exports will live in
+every direct child of `platina` must appear in it. Public re-exports live in
 `platina/__init__.py`, which belongs to no layer and re-exports only from `core`, `sql` and
-`app` (ADR-0001).
+`app` (ADR-0001). It re-exports so far the exception hierarchy and `SourceLocation` from
+`platina.core.errors` (`__all__`).
 
 | Package | Zone | Contract |
 |---|---|---|
 | `platina.core.*` | sans-I/O | Pure and immutable: imports only the standard-library allowlist; no I/O, event loop, clock, randomness or `async`. The engine yields Commands. Time arrives as the `Now` parameter, the jitter's randomness as an engine argument, new IDs from an injected ID source (ADR-0002). |
+| `platina.core.errors` | sans-I/O | The exception hierarchy of design section 10.12 (`PlatinaError` and its subclasses, `ModuleBoundaryError` under `SealError`) and `SourceLocation`. The bottom of the core: imports nothing from `platina`. Keyword-only read-only fields, one rendering layout for `str(exc)`, pickle/copy through one `__reduce__` (ADR-0006). Raise sites and SQLSTATE mapping come with later issues. |
 | `platina.sql.*` | sans-I/O | Renders SQL from the immutable AST; never connects. |
 | `platina.app` | shell | App (configuration, registry), seal orchestration (core checks, then load-plan compilation via `sql`), `run` / `query` (ADR-0001). |
 | `platina.drivers` | shell | The only importer of psycopg / psycopg_pool. |
@@ -57,3 +61,4 @@ every direct child of `platina` must appear in it. Public re-exports will live i
 | [0003](adr/0003-entity-base-class.md) entities declared with an `Entity` base class and created with `Order(...)` | Accepted | entity declaration (`class Order(Entity, table=...)`), creation by the keyword constructor (no `new`), `frozen_default=True` (type level); runtime value equality with a type-plus-primary-key hash as a provisional working rule (#54) |
 | [0004](adr/0004-owner-typed-columns-and-embedded-paths.md) columns carry their owner; embedded paths are `Order.total.path(Money.amount)` | Accepted | `Column[Owner, T]` with fixed variance, owner checks by type where the receiver fixes the owner (queries when built, the rest at seal), value-object fields declared `Col[...]`, increments through paths |
 | [0005](adr/0005-hot-rows-under-serializable.md) `lock="for_update"` is not an escape hatch from serialization failures | Accepted | the hot-row text of the design (two kinds of `40001`; REPEATABLE READ + `version` escapes only the read/write-dependency kind; `lock=` counts as "fail early" until 9.2 decides) |
+| [0006](adr/0006-exception-fields-and-rendering.md) exception fields are typed keyword-only values; `str(exc)` renders them in a fixed layout | Accepted | `platina.core.errors`: field types (`entity: type[object]`, `usecase`/`field: str`, `SourceLocation`), `details` for extra lines, the rendering order (`Location:`, details, `Fix:`), the pickle/copy guarantee, required `DatabaseError.sqlstate` with the driver exception as `__cause__` |

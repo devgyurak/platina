@@ -59,9 +59,14 @@ core                                  sans-I/O: schema, expr, snapshot, changes,
   `QueryTransformer`, `Observer`); no global signals (design section 10.10).
 
 ## Errors
-Every Platina exception derives from `PlatinaError`, sits in the hierarchy of design section 10.12
-and carries structured fields (`usecase`, `entity`, `field`, `location`, `hint`) besides the
-message. User domain exceptions propagate unwrapped.
+Every Platina exception derives from `PlatinaError` (`platina.core.errors`, re-exported from
+`platina`), sits in the hierarchy of design section 10.12 and carries structured fields
+(`usecase`, `entity`, `field`, `location`, `hint`, `details`) besides the message - typed,
+keyword-only and read-only (ADR-0006). A subclass may add fields and take its own constructor
+shape, but the message stays the only item of `args`; pickle and copy go through
+`PlatinaError.__reduce__` only, so no subclass defines its own. `errors.py` imports nothing
+from `platina`. Lines that restate a subclass's own typed field are built by the class, not
+passed in `details`. User domain exceptions propagate unwrapped.
 
 ## Decisions
 The design document's decision record (section 8) and accepted ADRs in `docs/adr/` are binding.
