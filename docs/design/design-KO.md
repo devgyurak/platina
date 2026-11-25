@@ -1,4 +1,4 @@
-<!-- i18n: source=docs/design/design.md source-sha256=c0f0285f3b19 translation-sha256=1a406c47306f -->
+<!-- i18n: source=docs/design/design.md source-sha256=353284b611ce translation-sha256=3287d6c96eac -->
 # Platina 설계 문서
 
 > **Platina**: 백금(platinum)의 옛 스페인어 이름. 백금이 산에도 녹지 않고 반응하지 않듯, 도메인 코드는 DB와 반응하지 않는다.
@@ -860,7 +860,7 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
 외부 결과가 쓰기를 결정하는 흐름은 process 핸들러와 여러 유스케이스로 쪼개진다. JPA의 메서드 하나가 이벤트 흐름이 되는 비용은 그대로 남는다.
 
 ### 7.3 SERIALIZABLE 기본값의 비용
-경합이 심한 테이블에서는 직렬화 실패와 재시도가 늘어난다. 핫 로우에는 `lock="for_update"`나 `isolation=REPEATABLE_READ` + `version`으로 내려가야 하고, 후자는 write skew를 막지 못한다. inline 프로젝션이 만드는 핫 로우는 키 규칙(§4.10)으로 대부분 막지만, 엔티티 ID 키도 뜨거울 수 있다. 이 비용이 실제로 얼마인지는 벤치마크로 확인해야 한다(§9).
+경합이 심한 테이블에서는 직렬화 실패와 재시도가 늘어난다. 핫 로우에는 `lock="for_update"`나 `isolation=REPEATABLE_READ` + `version`으로 내려가야 하고, 후자는 write skew를 막지 못한다. (검토 중, ADR-0005(Proposed): 스파이크 0002는 트랜잭션의 스냅샷 이후 동시에 실행되는 Command가 갱신하고 커밋한 행에서 REPEATABLE READ와 SERIALIZABLE 모두 `lock="for_update"`도, 읽지 않는 증감(blind increment)도 여전히 40001로 끝나는 것을 관찰했다(pg-researcher가 재현했다).) inline 프로젝션이 만드는 핫 로우는 키 규칙(§4.10)으로 대부분 막지만, 엔티티 ID 키도 뜨거울 수 있다. 이 비용이 실제로 얼마인지는 벤치마크로 확인해야 한다(§9).
 
 ### 7.4 대량 쓰기의 남은 문제
 - 집합 기반 갱신은 `@invariant`가 없는 필드에만 허용
@@ -988,7 +988,7 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
 - 결정: 유스케이스는 기본 SERIALIZABLE로 실행하고, 직렬화 실패 시 자동 재시도한다. Query 경로는 READ COMMITTED.
 - 근거: PostgreSQL은 SERIALIZABLE을 쓰는 애플리케이션이 직렬화 실패(SQLSTATE 40001)를 재시도할 준비가 돼 있어야 한다고 명시하고, 정확성을 보장할 수 없어 DB가 자동 재시도를 제공하지 않는다고도 밝힌다. 대부분의 ORM에서는 이 재시도가 위험하지만(트랜잭션 안의 부수효과가 반복됨), Platina의 유스케이스는 순수 함수라 전체 재실행이 안전하다.
 - 효과: "읽기 범위 버전 검증" 같은 별도 기능이 필요 없다. write skew는 SSI가 막는다.
-- 탈출구: `@usecase(isolation=REPEATABLE_READ)` + `version`, 또는 `lock="for_update"` 프로필. **READ COMMITTED는 Command에 허용하지 않는다.** 로드 계획의 문장마다 스냅샷이 달라 "로드한 스냅샷은 한 시점의 모습"이라는 전제가 깨진다. REPEATABLE READ는 write skew를 막지 못하므로, 읽기 집합에 기반한 규칙이 있으면 SERIALIZABLE에 남아야 한다.
+- 탈출구: `@usecase(isolation=REPEATABLE_READ)` + `version`, 또는 `lock="for_update"` 프로필. (검토 중: 어느 쪽도 동시에 실행되는 Command가 갱신하고 커밋한 행에서 40001을 피하지 못한다 - 스파이크 0002에서 나온 ADR-0005, Proposed.) **READ COMMITTED는 Command에 허용하지 않는다.** 로드 계획의 문장마다 스냅샷이 달라 "로드한 스냅샷은 한 시점의 모습"이라는 전제가 깨진다. REPEATABLE READ는 write skew를 막지 못하므로, 읽기 집합에 기반한 규칙이 있으면 SERIALIZABLE에 남아야 한다.
 
 **재시도 정책**
 - 결정: 40001과 40P01은 무조건 재시도. 23505는 `on_unique=True`를 명시한 유스케이스만(실행 ID 테이블의 23505는 멱등 경로로 따로 처리). 최대 4회 시도, 지수 백오프 + full jitter(기준 10ms, 상한 200ms), 재시도마다 로드부터 다시.
@@ -1176,20 +1176,20 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
 - [ ] 프레임워크 내부 테이블(특히 파티션)
 
 ### 9.4 실제 유스케이스 10개를 이 문법으로 옮기기
-각각 설계의 다른 부분을 시험하도록 골랐다. 종이에 옮겨지지 않는 게 나오면 문법을 고친다.
+각각 설계의 다른 부분을 시험하도록 골랐다. 종이에 옮겨지지 않는 게 나오면 문법을 고친다. 결과: [스파이크 0002](../spikes/0002-use-cases-on-paper.md) - 부분적으로 성립하며, 이 결과로 바뀐 문법은 없다. 유스케이스 셋은 결정이 필요하고(루트 삭제, 다른 인자로 멱등 키를 재사용하는 경우), 나머지는 우회책을 안고 있으며(집합 로드, `Load.after` 결과에 대한 로드, 중첩 로드 경로, 의존 로드에 대한 `bind` 규칙, 커밋 배치 안의 `insert_all`), 핫 로우 탈출구는 PostgreSQL에서 성립하지 않는다(ADR-0005, Proposed). 판정은 스파이크의 것이고 architect 서브 에이전트가 검토했다(두 차례 끝에 합의). 타입 검사는 type-reviewer가, 데이터베이스 관찰은 pg-researcher가 재현했으며 바뀐 판정은 없다(타입 발견 하나가 정정되었고 데이터베이스 사실에는 조건이 붙었다. 보고서의 Reproduction 참고).
 
-| # | 유스케이스 | 시험하는 부분 |
-|---|---|---|
-| 1 | 결제 | 멱등 키, 실행 ID |
-| 2 | 환불 | 의존 로드(`Load.when`/`after`) |
-| 3 | 쿠폰 적용 후 결제 | `chain` |
-| 4 | 재고 예약 | 핫 로우, 비관적 락 프로필 |
-| 5 | 좌석 예약 | write skew, SERIALIZABLE |
-| 6 | 주문 병합 | 같은 타입 파라미터 둘, `Load.after` |
-| 7 | 미결제 주문 일괄 만료 | 집합 변경, `emit_each` 순서 번호 |
-| 8 | 계좌 이체 | 원장, 교환 가능한 증감 |
-| 9 | 프로필 편집 | `expected_version`, `owned` 자식 |
-| 10 | 결제 승인 알림 | `@process`, 작업 파이프라인, 외부 멱등 키 |
+| # | 유스케이스 | 시험하는 부분 | 결과(스파이크 0002) |
+|---|---|---|---|
+| 1 | 결제 | 멱등 키, 실행 ID | 표현 불가: 다른 인자로 재사용한 키가 저장된 결과를 받는다 |
+| 2 | 환불 | 의존 로드(`Load.when`/`after`) | 표현됨, 어색함: 컬럼 대 컬럼 `match`를 쓴 `Load.when`은 타입 에러이고(#51), 의존 로드 파라미터는 기본값이 없으면 `bind`에 넘겨야 한다 |
+| 3 | 쿠폰 적용 후 결제 | `chain` | 표현됨, 어색함: `chain`은 쓰인 그대로 성립한다. "이 고객이 썼는가?"가 관계를 필요 이상으로 읽는다 |
+| 4 | 재고 예약 | 핫 로우, 비관적 락 프로필 | 표현됨, 어색함: 재고 행을 선언할 수 없고(호출자가 미리 읽음), `lock="for_update"`도 여전히 40001로 끝난다(ADR-0005) |
+| 5 | 좌석 예약 | write skew, SERIALIZABLE | 표현됨, 어색함: write skew는 SERIALIZABLE이 막는다. 가용성 조회가 관계 전체를 필요 이상으로 읽는다 |
+| 6 | 주문 병합 | 같은 타입 파라미터 둘, `Load.after` | 표현 불가: 루트 행을 삭제하는 방법이 없다 |
+| 7 | 미결제 주문 일괄 만료 | 집합 변경, `emit_each` 순서 번호 | 표현됨, 주문마다 유스케이스 하나로 해야 해서 어색함. 집합 변경으로는 표현되지 않는다 |
+| 8 | 계좌 이체 | 원장, 교환 가능한 증감 | 표현 불가: 1과 같은 키 재사용 문제. 한 행에 몰리는 증감은 여전히 충돌한다(ADR-0005) |
+| 9 | 프로필 편집 | `expected_version`, `owned` 자식 | 표현됨 |
+| 10 | 결제 승인 알림 | `@process`, 작업 파이프라인, 외부 멱등 키 | 표현됨, 어색함: 알림은 `then`이 아니라 두 번째 `@process`이고, 일시적 오류 규칙이 명시돼 있지 않다 |
 
 ### 9.5 그 밖의 측정
 - [ ] 파이프라인 효과: 로드 단계를 한 왕복에 보낼 때와 순차 실행 대비 지연 (로컬 / 리전 간)

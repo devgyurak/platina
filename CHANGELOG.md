@@ -27,6 +27,13 @@ All notable changes are documented here. Format: [Keep a Changelog](https://keep
 - Spike 0001 (design 9.1, type surface under pyright and mypy): write-up
   `docs/spikes/0001-type-surface.md`, independently reproduced in two rounds; design 9.1 ticked.
   Open decisions from the spike are issues #48-#52; #9 and #12 now describe the decided surface.
+- Spike 0002 (design 9.4, ten real use cases on paper, rules taken from rocket-rides-atomic,
+  eShop, pretix, saleor, Solidus, django-hordak and TigerBeetle): write-up
+  `docs/spikes/0002-use-cases-on-paper.md`, reviewed by the architect sub-agent and reproduced by
+  type-reviewer (type checks) and pg-researcher (database observations); design 9.4 table gains a
+  result column. Partly holds; open decisions for the maintainer (delete of a root,
+  idempotency-key reuse, set loads, `insert_all` in the commit batch) and ADR-0005 (Proposed:
+  `lock="for_update"` is not an escape hatch from serialization failures).
 
 ### Changed
 - Entity syntax (ADR-0003, accepted): entities inherit `Entity` with table options as class
