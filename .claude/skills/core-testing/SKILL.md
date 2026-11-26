@@ -38,5 +38,9 @@ dependency, with a justification in the PR). Every snapshotted statement is also
 real PostgreSQL in an integration test, so a snapshot cannot hide a syntax error.
 
 ## Free-threaded
-Core unit tests are meant to run on 3.14t with pytest-run-parallel (design section 11.10); avoid
-module-level mutable state in tests as in code.
+Every PR runs all of `tests/unit` on free-threaded 3.14t, each test on 8 threads at once with
+pytest-run-parallel (`make test-unit-ft`, design section 11.10). The run fails when the GIL is on
+before or after it, so a dependency whose extension module re-enables the GIL is caught, and on
+any recorded warning. Avoid module-level mutable state in tests as in code; a test that cannot
+run on several threads gets `@pytest.mark.thread_unsafe(reason="...")`, never a skip - the run
+fails a test that the plugin moved to one thread without that marker.

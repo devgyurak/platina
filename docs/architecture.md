@@ -50,6 +50,7 @@ every direct child of `platina` must appear in it. Public re-exports live in
 | Layer order between packages | import-linter, `[tool.importlinter]` in `pyproject.toml` |
 | External modules and calls per zone (A101-A106; the core imports only `CORE_ALLOWED`) | `tools/guards/archlint.py` |
 | Public type surface under pyright and mypy | `tools/typetests.py` over `tests/typing/` |
+| Unit tests on free-threaded CPython with the GIL off, each test on several threads (ADR-0002's counter included, with an unsafe control counter that must race; no silent single-thread fallback, no warnings) | `tools/freethreaded.py` (`make test-unit-ft`, CI) |
 | Everything else in the design invariants | review (`arch-guardian`, `code-reviewer`, `type-reviewer`) |
 
 ## ADRs

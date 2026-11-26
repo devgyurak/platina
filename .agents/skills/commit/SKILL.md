@@ -106,7 +106,7 @@ hook (`make hooks-install`) refuses pushes to `main` / `develop` before they lea
 | Branch | Rule |
 |---|---|
 | `develop` | Changes only through PRs. Merging needs an approval from the code owner (@devgyurak, `.github/CODEOWNERS`). The maintainer may bypass-merge their own PR. Squash for work PRs, merge commit allowed for back-merges. No force pushes, no deletion. |
-| `main` | **No direct pushes for anyone, no bypass.** Only PRs whose head is `develop` (required check "main accepts PRs from develop only", `.github/workflows/branch-policy.yml`) with the CI `check` jobs green (py3.14, py3.15), merged with a merge commit. No force pushes, no deletion. Renaming a required CI job means updating the ruleset. |
+| `main` | **No direct pushes for anyone, no bypass.** Only PRs whose head is `develop` (required check "main accepts PRs from develop only", `.github/workflows/branch-policy.yml`) with the CI `check` jobs (py3.14, py3.15) and "unit tests, free-threaded (py3.14t)" green, merged with a merge commit. No force pushes, no deletion. Renaming a required CI job means updating the ruleset. |
 
 Consequences for agents: never push to `main` or `develop`; push a work branch and open a PR
 (`gh pr create --base develop`) - and only when the user asks. Never approve or merge PRs - that

@@ -25,19 +25,29 @@ def test_planner_orders_parent_insert_before_child_insert():
 `for`, `async for`, `while`, `if`, conditional expressions, `match`, `try`, and all
 comprehensions are forbidden anywhere in a test module - no exceptions, no suppressions.
 - Variation -> `@pytest.mark.parametrize` with literal values, or Hypothesis `@given`.
-- Setup logic, loops over yield points, replay drivers -> `tests/support/` (or fixtures).
+- Setup logic, loops over yield points, replay drivers -> `tests/support/` (or fixtures); a helper
+  that a `tools/` runner also uses lives in `tools/` instead (`tools/` never imports `tests/`, and
+  `src/` imports neither).
 - No `sleep` in tests: the engine's `Sleep` command makes backoff testable without time; for
   concurrency, synchronise with barriers/events from a support helper.
 
 ## Layers (design section 11.2)
 | Dir | Needs | What |
 |---|---|---|
-| `tests/unit/` | nothing | core laws (Hypothesis), compiler snapshots, engine replay with fault injection, guards and tools |
+| `tests/unit/` | nothing (also run on free-threaded 3.14t, each test on 8 threads: `make test-unit-ft`) | core laws (Hypothesis), compiler snapshots, engine replay with fault injection, guards and tools |
 | `tests/typing/` | pyright + mypy | `pass_*.py` / `fail_*.py` for the public type surface (`make test-types`; not collected by pytest) |
 | `tests/integration/` | `make db-up` | real SQL on real PostgreSQL: pipelines, SSI, migrations, outbox, codegen |
-| `tests/support/` | - | the only place for helper logic; unit-test it when non-trivial |
+| `tests/support/` | - | the place for helper logic (or `tools/` when a tool also uses it); unit-test it when non-trivial |
 
 ## Rules that follow from the architecture
+- **Every unit test runs on several threads at once** on free-threaded 3.14t (pytest-run-parallel,
+  design section 11.10). No module-level mutable state; a test that cannot share its process
+  with copies of itself (`monkeypatch`, `capsys`, `pytest.warns`, process-wide state) gets
+  `@pytest.mark.thread_unsafe(reason="...")` - never a skip. `make test-unit-ft` fails a test
+  that runs on one thread without that marker, and fails on any recorded warning. For an
+  expected warning use `pytest.warns`, not a `filterwarnings("error")` marker: an error raised
+  in the plugin's worker threads is swallowed. After the tests it also fails when an unsafe
+  `n += 1` control counter (`tools/concurrent_draws.py`) shows no race on the machine.
 - **The core is tested without a database.** If a core test needs PostgreSQL, the code is in the
   wrong layer.
 - **Database semantics are tested only against real PostgreSQL.** Never write an in-memory fake

@@ -1491,7 +1491,7 @@ Besides the message, every exception has structured fields (`usecase`, `entity`,
 | Concurrency | write skew, retry, deadlock, stress invariants | ✓ | Ordering controlled with anyio events | nightly |
 | Differential testing | Semantic correctness of the compiler | ✓ | Hypothesis + reference evaluator | nightly (phase 2) |
 | Compatibility suite | Shared capability-based tests per dialect | ✓ | `platina.testing.suite` | Per-dialect CI |
-| free-threaded | Thread safety of the core | ✗ | 3.14t + pytest-run-parallel | nightly |
+| free-threaded | Thread safety of the core | ✗ | 3.14t + pytest-run-parallel | Every PR |
 | Performance | §9 benchmark scenarios, regression detection | ✓ | pytest-benchmark | nightly |
 | Mutation testing | Effectiveness of planner and ChangeSet tests | ✗ | mutmut | Once a week |
 
@@ -1676,7 +1676,7 @@ Following SQLAlchemy's approach, dialect-independent shared tests are published 
 
 ### 11.10 free-threaded verification
 
-Core unit tests are run on 3.14t with pytest-run-parallel. This plugin does not run the whole test suite in parallel; it runs the same test concurrently on several threads to find thread safety problems. This is where we confirm that the immutable snapshot and `SealedRegistry` designs are actually safe without locks.
+The unit tests, core first, are run on 3.14t with pytest-run-parallel. This plugin does not run the whole test suite in parallel; it runs the same test concurrently on several threads to find thread safety problems. This is where we confirm that the immutable snapshot and `SealedRegistry` designs are actually safe without locks. It runs on every PR, and the run also fails when the GIL is on: a dependency whose extension module re-enables it would turn the run into an ordinary GIL run.
 
 ### 11.11 Test kit for users (`platina.testing`)
 

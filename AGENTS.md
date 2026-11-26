@@ -24,9 +24,10 @@ experiments, internal architecture, test strategy), `docs/architecture.md` (what
 | Git hooks | `make hooks-install` (pre-commit checks + pre-push refusal for `main` / `develop`) |
 | Fast gate | `make check` (ruff format check, ruff lint, pyright + mypy, import-linter, guards, agents-check, unit tests, type tests) |
 | Format | `make fmt` (ruff format + ruff check --fix) |
+| Free-threaded | `make test-unit-ft` (unit tests on CPython 3.14t in `.venv-ft`, each on 8 threads; fails if the GIL is on) |
 | Type tests | `make test-types` (`tests/typing/pass_*` / `fail_*` under pyright **and** mypy) |
 | Integration | `make test-int` (needs `make db-up`) |
-| Everything | `make check-all` |
+| Everything | `make check-all` (`check` + `test-unit-ft` + `test-int`) |
 | Agent config | `make agents-sync` after editing `.agents/` |
 
 Always use `uv run ...` for Python tools; never `pip install`. Never add dependencies without

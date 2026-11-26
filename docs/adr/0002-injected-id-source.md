@@ -40,8 +40,11 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
      draws, 1.6 million per run, 5 runs): `itertools.count().__next__` produced 0 duplicates, a `box[0] += 1` counter
      up to about 1.2 million. That is an observation on one build, not a documented guarantee, so
      it is pinned as a unit test (`tests/unit/test_fallback_id_counter.py`, helper
-     `tests/support/free_threading.py`), which becomes the real check once the 3.14t CI job
-     (design section 11.10) runs it.
+     `tools/concurrent_draws.py`). The free-threaded CI job (design section 11.10,
+     `make test-unit-ft`) runs it on 3.14t with the GIL off on every PR and fails if one of its
+     cases did not pass, so it is a real check, not one that passes trivially under a GIL. The same
+     run draws from a `box[0] += 1` counter as a control and fails if that gives no duplicates,
+     so a green run also shows that the threads raced on that machine.
    - Fallback IDs are **version-8 UUIDs** with a fixed marker prefix and the sequence number in
      the low bits. Real IDs are version 7, so the two spaces cannot overlap.
    - The commit planner rejects a fallback-space ID with `UsageError` ("a test-only ID reached a
@@ -109,3 +112,6 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
 - 2026-11-25 - accepted by the maintainer.
 - 2026-11-25 - creation is now the plain constructor `Order(...)` (ADR-0003); the text says
   `Order(...)` where it said `Order.new()`. No change to the decision.
+- 2026-11-26 - the 3.14t CI job exists (issue #7): the counter test now runs with the GIL off on
+  every PR; its helper moved to `tools/concurrent_draws.py`, and the run adds a `box[0] += 1`
+  control that must show duplicates. No change to the decision.
