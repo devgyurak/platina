@@ -1,4 +1,4 @@
-<!-- i18n: source=docs/design/design.md source-sha256=68f3b759ac97 translation-sha256=1c64baaeacda -->
+<!-- i18n: source=docs/design/design.md source-sha256=8c9039fd75ca translation-sha256=5c9f006c5930 -->
 # Platina 설계 문서
 
 > **Platina**: 백금(platinum)의 옛 스페인어 이름. 백금이 산에도 녹지 않고 반응하지 않듯, 도메인 코드는 DB와 반응하지 않는다.
@@ -127,7 +127,7 @@ N+1, `MissingGreenlet`, expire 사고, 흐릿한 레이어 경계, DB 없이 테
 ### 3.1 Command (쓰기) 경로
 - `@usecase`: 트랜잭션 시작 → 로드 계획 실행 → 순수 함수 → ChangeSet 커밋. 로드부터 커밋까지 한 트랜잭션이며, 사이에 외부 IO가 없어 트랜잭션이 짧다.
 - **로드 계획**: `Annotated` 시그니처 선언 기반, seal 시점에 확정·검증. 선언했지만 안 쓴 관계 경고
-- **의존 로드**: `Load.when`(컬럼 식, 서브쿼리로 접혀 추가 왕복 없음) / `Load.after`(타입 단 순수 함수, 로드 단계 1개 추가). 함수가 ref 목록을 돌려주면 한 번에 배치 로드. 제너레이터는 없고, 왕복 단계 수는 seal에서 확정
+- **의존 로드**: `Load.when`(컬럼 식, 서브쿼리로 접혀 추가 왕복 없음) / `Load.after`(타입 단 순수 함수, 로드 단계 1개 추가). 함수는 ref 하나, ref 목록(한 번에 배치 로드), 또는 행 집합(row set. `Entity.where(...)`, 조건에 맞는 행들)을 돌려준다. 선언을 작성할 때 알 수 있는 것(상수 술어를 쓴 부분 로드, `Load.when`)은 대신 자신이 이어 가는 행의 단계에 접힌다(파라미터 자체의 선언 아래에서는 1단계)([ADR-0011](../adr/0011-row-set-loads.md)). 제너레이터는 없고, 왕복 단계 수는 seal에서 확정
 - **호출**: `app.run(uc.bind(...))`. `bind`는 유스케이스와 시그니처가 같아 ParamSpec만으로 타입 검사
 - **재귀 로드**: `Load.recursive(...)` → `WITH RECURSIVE` (깊이 제한 필수, 순환 감지)
 - **ChangeSet**: 행 단위 변경 / 조건 기반 변경 / 청크 스트림이 모두 같은 타입
@@ -347,7 +347,7 @@ orders, wallets = OrderRepo(), WalletRepo()
 ```
 
 - **ref는 자리표시자다.** `Order.ref(id)`와 `orders.by_number("A-1")`는 타입상 `Order`지만, 실제로는 "이 행을 로드해 달라"는 표시다. 호출 측에서 ref의 필드를 읽거나 **ref에 `.set`이나 `.delete()`를 하면** 즉시 `UnloadedReference` 에러다. `.set`을 막는 이유는, 로드와 `@invariant` 검사를 건너뛰는 쓰기가 되기 때문이다. 로드 없이 쓰고 싶으면 `Order.where(Order.id == x).set(...)` 집합 변경으로 명시한다(seal에서 불변식 검사를 받는다).
-- **`Order.where(pred, *preds)`는 `RowSet[Order]`다**: 조건에 맞는 `Order`의 행들이며, `.set(...)`(집합 변경)과 `.delete()`를 가진다. `Changes`가 아니므로 그 자체로 반환하거나 `+`로 더할 수 없다. 술어는 하나 이상 필요하다. `Order.where()`는 두 체커 모두에서 타입 에러이고, 언팩한 리스트가 런타임에 비어 있으면(`Order.where(*preds)`) `UsageError`다(스파이크 0007; [ADR-0010](../adr/0010-writes-beyond-set.md)). 바뀌는 것은 `Entity.where`뿐이고, 관계의 `.where(...)`(부분 로드, §4.7)와 쿼리의 `where`는 바뀌지 않는다. row set이 로드이기도 한지는 #59에서 정한다.
+- **`Order.where(pred, *preds)`는 `RowSet[Order]`다**: 조건에 맞는 `Order`의 행들이며, `.set(...)`(집합 변경)과 `.delete()`를 가진다. `Changes`가 아니므로 그 자체로 반환하거나 `+`로 더할 수 없다. 술어는 하나 이상 필요하다. `Order.where()`는 두 체커 모두에서 타입 에러이고, 언팩한 리스트가 런타임에 비어 있으면(`Order.where(*preds)`) `UsageError`다(스파이크 0007; [ADR-0010](../adr/0010-writes-beyond-set.md)). 바뀌는 것은 `Entity.where`뿐이고, 관계의 `.where(...)`(부분 로드, §4.7)와 쿼리의 `where`는 바뀌지 않는다. 행 집합은 로드이기도 하다: 조건에 맞는 행을 로드하려고 `Load.after` 함수가 이것을 돌려준다(§4.7, [ADR-0011](../adr/0011-row-set-loads.md)).
 - **요청 사이 낙관적 락**: `Order.ref(id, expected_version=v)`로 넘기면, 로드한 버전이 다를 때 `VersionMismatch`다. 편집 화면을 열 때 받은 버전을 저장 요청에 실어 보내는 패턴(HTTP `If-Match`)이다.
 - Finder 인자는 컬럼 타입으로 검사된다. 키워드 문자열이 없다. `Repository[Order]`의 Finder는 `Order`의 컬럼으로 만들어야 하고, 다른 엔티티의 컬럼은 타입 에러다(ADR-0004).
 - **쿼리는 자신이 select하거나 join한 엔티티만 참조할 수 있다.** 그 밖의 엔티티 컬럼은 쿼리 서술을 만들 때 거부된다. 이는 타입으로 검사하지 않는다. 여러 엔티티의 컬럼을 받는 호출에서 pyright와 mypy가 소유자를 다르게 추론하기 때문이다(ADR-0004). seal에서도 잡을 수 있는지는 열린 질문이다(#52).
@@ -597,10 +597,10 @@ async with app.read(consistency="snapshot") as r:                    # REPEATABL
 
 ### 4.7 부분 로드와 의존 로드
 
-제너레이터는 없다. 추가로 필요한 데이터도 **선언**한다. 로드 단계 수는 seal 시점에 확정된다.
+제너레이터는 없다. 추가로 필요한 데이터도 **선언**한다. 로드 단계 수는 seal 시점에 확정된다. 형태는 규칙 하나가 정한다([ADR-0011](../adr/0011-row-set-loads.md)): 선언된 행의 컬럼과 **선언을 작성할 때 알 수 있는** 상수에 대한 SQL로 표현할 수 있는 것은 자신이 이어 가는 행의 단계에 접히며 자기 단계를 갖지 않는다(중첩 경로, 부분 로드, `Load.when`). **실행마다만 알 수 있는** 값(로드되지 않는 유스케이스 파라미터, `Now`)이 필요한 것, 로드한 값에 대한 Python 로직, `Load.when`이 허용하지 않는 경우는 `Load.after` 함수이며, 이는 입력 다음에 로드 단계 하나를 실행한다(빨라도 2단계이고, 깊이가 같은 함수들은 단계를 공유한다). 호출자가 이미 가진 키로 고르며 없으면 에러인 행 하나는 어느 쪽도 아니다: `bind`에 넘기는 ref 파라미터이며(`wallet=wallets.by_user(user_id)`), 1단계에서 로드된다(ref에는 `missing="none"`이 없다. 키로 고르는 선택적 행은 ref 하나의 `Load.after`로 남는다).
 
 ```python
-# 부분 로드: 컬렉션 전체를 읽지 않음
+# 부분 로드: 컬렉션 전체를 읽지 않음. 술어가 상수다(1단계에 접힘)
 type OrderWithCount = Annotated[Order, orders.with_item_count]
 
 @usecase
@@ -610,17 +610,34 @@ def add_item(order: OrderWithCount, sku: str) -> Changes:
     # Item은 order_id를 받지 않는다: 부모가 add할 때 parent_fk 키를 채운다(§4.2, #49)
     return order.set(Order.items.add(Item(sku=sku, price=..., position=order.items.count)))
 
+# 중첩 경로: 자신이 이어 가는 관계 위에 쓴다(평평한 Profile(Order.items, Item.allocations)는 SealError)
+releasable = Profile(Order.items.load(Item.allocations.load(Allocation.stock)))
+
 # 식 형태: 조건과 매칭이 컬럼 식이면 서브쿼리로 접혀 추가 왕복이 없다
-type PointWallet = Annotated[Wallet | None,
-    Load.when(Order.paid_with == PaymentMethod.POINT, match=Wallet.user_id == Order.user_id)]
-    # match는 값 타입이 같은 두 컬럼을 비교한다: Wallet | Order에 대한 술어(§8.2 "필드 타입 표면", #51).
-    # Annotated 메타데이터 안에서는 pyright만 이를 타입 검사하고(mypy는 거기서 아무것도 검사하지 않는다, 스파이크 0002 X1), seal이 선언을 검증한다
+point_wallet_when = Load.when(Order.paid_with == PaymentMethod.POINT,
+                              match=Wallet.user_id == Order.user_id, missing="none")
+type PointWallet = Annotated[Wallet | None, point_wallet_when]
+    # match는 값 타입이 같은 두 컬럼을 비교한다: Wallet | Order에 대한 술어(§8.2 "필드 타입 표면", #51)
 
-# 함수 형태(Load.after): 식으로 표현하기 어려울 때. 인자 이름이 유스케이스 파라미터에 바인딩됨
-def point_wallet(order: Order) -> Wallet | None:
-    return wallets.by_user(order.user_id) if order.paid_with is PaymentMethod.POINT else None
+# 함수 형태(Load.after): 함수는 ref 하나, ref 목록, 행 집합 중 하나를 돌려주며, 로드 단계를 하나 더한다.
+# 인자 이름이 유스케이스 파라미터에 바인딩됨(seal)
+def dst_wallet(dst: Order) -> Wallet | None:    # ref 하나: refund_merge는 Order 파라미터가 둘이라 Load.when으로는 어느 쪽인지 말할 수 없다(§4.13)
+    return wallets.by_user(dst.user_id) if dst.paid_with is PaymentMethod.POINT else None
 
-type PointWalletAfter = Annotated[Wallet | None, Load.after(point_wallet)]   # 로드 단계 1개 추가
+def variants_of(order: Order) -> list[Variant]:                  # ref 목록: 한 문장으로 로드
+    return [Variant.ref(i.variant_id) for i in order.items]
+
+def other_holds(seat: Seat, user_id: Id[User], now: Now) -> RowSet[SeatHold]:   # 행 집합: 조건에 맞는 행들
+    return SeatHold.where(SeatHold.seat_id == seat.id, SeatHold.user_id != user_id,
+                          SeatHold.expires_at > now)
+
+dst_wallet_load = Load.after(dst_wallet, missing="none")
+variants_with_stock = Load.after(variants_of).load(Variant.stocks.load(Stock.warehouse))  # 로드 인자는 결과 위에
+holds_load = Load.after(other_holds)
+
+type DstWallet = Annotated[Wallet | None, dst_wallet_load]   # refund_merge(src, dst, wallet: DstWallet = INJECTED)
+type VariantsWithStock = Annotated[Sequence[Variant], variants_with_stock]
+type OtherHolds = Annotated[Sequence[SeatHold], holds_load]
 
 @usecase
 def refund(order: Annotated[Order, Load(Order.items)], wallet: PointWallet = INJECTED) -> Changes:
@@ -633,9 +650,19 @@ def refund(order: Annotated[Order, Load(Order.items)], wallet: PointWallet = INJ
 type RoleTree = Annotated[list[Role], Load.recursive(start=User.roles, via=Role.parent, max_depth=10)]
 ```
 
+- **로드 선언은 이름 붙은 값으로 쓰고** `Annotated[...]`에서는 그 이름을 쓴다: 메타데이터 안에서는 pyright만 선언을 타입 검사하고 mypy는 아무것도 검사하지 않는다(스파이크 0002 X1). seal은 어느 쪽이든 선언을 검증한다.
+- **중첩 경로**는 자신이 쓰인 관계를 이어 간다, `Order.items.load(Item.allocations.load(Allocation.stock))`. 다른 엔티티의 경로, 건너뛴 단계, 컬럼은 수신자가 소유자를 고정하는 곳(`relation.load(...)`, `Load.after(...).load(...)`)이면 어디서든 타입 에러다. `Profile(...)` / `Load(...)` 최상위의 평평한 형태는 `SealError`다(거기서는 seal만 파라미터의 엔티티를 안다). `.count()` / `.exists()`는 로드 경로가 아니므로 `Profile` / `Load`의 최상위에만 오고 중첩되지 않는다(이 제한을 유지할지는 #14가 정한다).
+- **부분 `.where(...)`**는 상수 술어를 받는다. 로드 선언에 쓴 술어(깊이와 무관한 부분 `.where`, `Load.when`의 조건과 `match`) 안의 날짜나 날짜-시각 상수는 `SealError`다 - `date` / `datetime` 값, 또는 `date` / `timestamp` / `timestamptz` 컬럼과 비교한 `None`이 아닌 모든 값. 모듈 수준에 쓰면 `datetime.now()`는 import 때 한 번 평가되고, 모든 실행과 재시도가 그 값을 다시 쓴다. 시계에 달린 시각은 `now: Now`에 대한 행 집합이고, 고정된 날짜도 행 집합이다(로드 단계 하나 더). seal은 그 밖의 상수가 어디서 왔는지도, `Load.after` 함수 안도 볼 수 없다(ADR-0011).
 - **식 형태**는 같은 엔티티 타입의 파라미터가 하나일 때만 허용한다. 둘 이상이면 seal 에러를 내고 `Load.after`를 안내한다.
-- **함수 형태**는 인자 이름이 유스케이스 파라미터에 바인딩되고(seal 검사), 타입을 단 함수를 권장한다(람다 인자는 `Any`로 추론됨). 함수는 순수해야 하며 ref나 `None`을 돌려준다.
-- **`None`과 `NotFound`를 구분한다.** 조건이 거짓이거나 함수가 `None`을 돌려주면 `None`, 조건은 참인데 행이 없으면 `NotFound`. 없어도 되면 `Load.after(fn, missing="none")`.
+- **함수 형태**는 인자 이름이 유스케이스 파라미터에 바인딩되고(seal 검사), 타입을 단 함수여야 한다: seal은 엔티티 하나를 가리키는 반환 어노테이션을 읽는다(ADR-0011). 람다는 반환 어노테이션을 가질 수 없다. `now: Now` 파라미터도 다른 인자처럼 이름으로 바인딩되므로, 유스케이스도 `now: Now = INJECTED`를 선언하며(본문이 읽지 않더라도), 둘 다 그 시도의 시계 값 하나를 본다. 함수는 순수해야 하며 다음을 돌려준다:
+  - **ref 하나나 `None`**;
+  - **ref 목록**(어떤 `Sequence`든). 한 문장으로, 함수가 준 순서대로 로드된다;
+  - **행 집합**, `Entity.where(...)`(§4.3) - 조건에 맞는 행들이며, 기본 키 순으로 정렬된다(모든 시도에서 같은 순서다. 단위 테스트는 자기 순서로 행을 넘긴다). 비어 있을 수 있고, 필수 `limit`은 없다.
+
+  함수는 시도마다 그 시도의 스냅샷으로 다시 실행된다. 함수가 예외를 내면 시도는 본문이 예외를 냈을 때처럼 끝난다(재시도 없음). 로드 인자는 관계에서처럼 결과 위에 쓴다, `Load.after(fn).load(...)`. 로드 인자는 단계를 더하지 않는다(`Load.when`은 로드 인자를 받지 않는다). 함수는 엔티티 타입 하나를 돌려주고 모든 로드 인자는 그 타입에서 시작한다(seal: 결과에 선언한 타입이나 합집합 반환은 타입이 잡지 못하게 그것을 넓힐 수 있다, 스파이크 0007 라운드 6). 파라미터의 선언 타입은 함수의 결과와 맞아야 한다(목록이나 행 집합이면 `Sequence[E]`. 타입으로는 둘을 연결할 수 없어 seal에서 검사한다).
+- **`None`과 `NotFound`를 구분한다.** 조건이 거짓이거나 함수가 `None`을 돌려주면 `None`, 조건은 참인데 행이 없으면 `NotFound`(목록의 ref에 해당하는 행이 없을 때도 마찬가지다). 없어도 되면 `missing="none"`을 쓴다 - `Load.when`과 `Load.after`의 ref 하나 형태에서만(다른 형태에서는 타입 에러), 그리고 `None`을 허용하는 파라미터에서만(seal).
+- 다른 형태가 같은 행을 로드할 수 있다: 상수 부분 로드와 같은 술어의 행 집합, `Load.when`과 ref 하나의 `Load.after`, 외래 키의 ref를 돌려주는 `Load.after`와 그 다대일 관계를 거치는 중첩 경로, 로드되지 않는 파라미터만 쓰고 `missing="none"`이 없는 ref 하나의 `Load.after`와 호출자가 바인딩하는 ref 파라미터, 그리고 `.load(a).load(b)` / `.load(a, b)`(#14가 표기 하나를 남긴다). 이 중 무엇을 쓸지는 위의 규칙이 정한다. seal은 정할 수 없는데, 함수 본문이 seal에게 불투명하기 때문이다 - 여기서 "방법은 하나만"은 문서화된 규칙으로 지키고, 날짜 검사가 가장 일어나기 쉬운 실수를 감지한다(ADR-0011).
+- 행 집합의 술어는 단위 테스트에서 실행되지 않는다. 단위 테스트는 로드된 행을 손으로 넘기기 때문이다(§4.12). 틀린 술어는 통합 테스트가 잡는다.
 - 이걸로도 표현할 수 없는 "데이터를 끝없이 따라가는" 로직은 한 유스케이스에 담을 수 없다(§7.1).
 
 ### 4.8 대량 쓰기
@@ -834,6 +861,17 @@ SealError: refund의 파라미터 wallet은 의존 로드(Load.when)로 채워�
   위치: shop/billing/usecases.py:58  (refund)
   해결: wallet: PointWallet = INJECTED 로 작성 (실행기가 채우며, bind와 app.run은 이 값을 받지 않음)
 
+SealError: Profile(Order.items, Item.allocations)에 Order에서 시작하지 않는 경로가 있습니다: Item.allocations.
+  위치: shop/billing/repos.py:22  (OrderRepo.releasable)
+  사용처: expire_order (shop/billing/usecases.py:74)
+  해결: 경로를 그것이 이어 가는 관계 위에 작성: Profile(Order.items.load(Item.allocations))
+
+SealError: 부분 로드 Order.items.where(...)가 Item.created_at을 datetime 상수와 비교합니다.
+  위치: shop/billing/repos.py:18  (OrderRepo.recent_items)
+  사용처: refund (shop/billing/usecases.py:58)
+  값: 2026-11-26 09:14:03+00:00, 선언이 평가될 때 고정됨
+  해결: 실행마다 알 수 있는 시각이나 고정된 날짜는 행 집합 로드: Item.where(...)를 돌려주는 Load.after(fn). 시계의 시각은 fn의 파라미터로 now: Now를 받음
+
 SealError: Load.when 식이 모호합니다. refund_merge에는 Order 타입 파라미터가 둘(src, dst) 있습니다.
   해결: Load.after(함수)로 어느 파라미터인지 명시
 
@@ -983,7 +1021,7 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
 **필드 타입 표면: `Col[T]` 래퍼와 소유자 타입 컬럼**
 - 결정: 엔티티·이벤트·값 객체의 모든 컬럼 필드는 `Col[T]`로 선언한다(`status: Col[OrderStatus] = column(...)`, `Money`의 `amount: Col[Decimal]`). 관계는 `Rel[...]`(`many_to_one`, `one_to_many`)이고, owned 컬렉션은 `Owned[list[...]]`(`owns_many`)다. 클래스에서는 `Relation[Owner, E]`(읽기와 로드만)와 `OwnedRelation[Owner, E]`(`add` / `remove` / `update`를 더함), 인스턴스에서는 `Sequence[E]`다. 관계 연산은 `RelOp[Owner]`(`add`는 `AddOp[Owner]`)이고, 소유자에 대해 불변이며 `Op`가 아니므로, 집합 변경은 이를 타입으로 거부하고 `insert`는 `add`만 받는다(스파이크 0007; [ADR-0010](../adr/0010-writes-beyond-set.md)). 클래스 접근은 `Column[Owner, T]`이고, 소유자는 필드를 선언한 클래스다(`Order.status`: `Column[Order, OrderStatus]`). 인스턴스 접근은 `T`. 임베디드 값 안으로의 경로는 `Order.total.path(Money.amount)`(`Column[Order, Decimal]`)다. `Column`의 소유자 파라미터는 공변, 값 파라미터는 불변이며 타입 테스트로 고정한다(ADR-0004).
 - 근거: 평범한 어노테이션이면 타입 체커가 클래스 접근(`Order.status`)도 `T`로 본다. 클래스에선 컬럼, 인스턴스에선 `T`로 보이려면 어노테이션 자체가 오버로드된 `__get__`을 가진 디스크립터 타입이어야 한다. SQLAlchemy 2.0의 `Mapped[T]`가 같은 이유로 존재한다. `.to()`, Finder, 프로젝션 키가 모두 이 위에 서 있다. 소유자는 `__get__`의 `owner` 인자에서 오므로, 연산(`Op[Owner]`), 술어, 관계가 자신이 속한 엔티티를 지닌다. 스파이크 0001이 이 모두를 pyright와 mypy에서 확인했다.
-- **소유자를 검사하는 곳**: 타입으로는 수신자가 소유자를 고정하는 곳만 검사한다 - `order.set(...)`, `Entity.where(...)`, `RowSet.set(...)`, `SetChange.set(...)`, `SetChange.emit_each(...)`, 관계 연산, `Repository[E]`의 Finder, `path` - 그리고 `insert(entity, *children)`에서도 검사한다. 여기서는 소유자를 여러 인자에서 풀지만 `RelOp`의 불변성 때문에 엔티티가 유일한 해로 남는다(mypy에서는 관계의 클래스 접근에 적어 둔 선언 타입이 여전히 이를 넓힐 수 있다, ADR-0004). 한 호출의 여러 인자에서 소유자를 추론해야 하는 곳은 타입으로 검사하지 않는다: 쿼리(`select`/`join`/`where`)는 서술을 만들 때 검증하고(seal에서도 잡을 수 있는지는 #52), `Profile`, `Load`, `Index`, `Check`, `@invariant(fields=...)`는 seal이 검증한다. 이유(스파이크 0001, P-A): 한 호출에 두 엔티티의 컬럼을 주면 pyright는 소유자를 합집합 `Order | Item`으로, mypy는 공통 기반 `Entity`로 추론해, 같은 오용이 한 체커에서만 에러가 된다.
+- **소유자를 검사하는 곳**: 타입으로는 수신자가 소유자를 고정하는 곳만 검사한다 - `order.set(...)`, `Entity.where(...)`, `RowSet.set(...)`, `SetChange.set(...)`, `SetChange.emit_each(...)`, 관계 연산, `Repository[E]`의 Finder, `path`, 로드 경로 `relation.load(...)`(#59)와 `Load.after(...).load(...)`([ADR-0011](../adr/0011-row-set-loads.md)) - 그리고 `insert(entity, *children)`에서도 검사한다. 여기서는 소유자를 여러 인자에서 풀지만 `RelOp`의 불변성 때문에 엔티티가 유일한 해로 남는다(mypy에서는 관계의 클래스 접근에 적어 둔 선언 타입이 여전히 이를 넓힐 수 있다, ADR-0004). 한 호출의 여러 인자에서 소유자를 추론해야 하는 곳은 타입으로 검사하지 않는다: 쿼리(`select`/`join`/`where`)는 서술을 만들 때 검증하고(seal에서도 잡을 수 있는지는 #52), `Profile`, `Load`, `Index`, `Check`, `@invariant(fields=...)`는 seal이 검증한다. 이유(스파이크 0001, P-A): 한 호출에 두 엔티티의 컬럼을 주면 pyright는 소유자를 합집합 `Order | Item`으로, mypy는 공통 기반 `Entity`로 추론해, 같은 오용이 한 체커에서만 에러가 된다.
 - **비교 피연산자**(#51, [스파이크 0006](../spikes/0006-parent-fk-and-column-operands.md)): 컬럼과 비교하는 값은 정확히 `T`이고 숫자 확장(widening)은 없다 - `Order.total.path(Money.amount) >= 0`은 타입 에러이고 §4.2는 `>= Decimal(0)`으로 쓴다(`float` 컬럼에는 타이핑 명세의 `int`에서 `float`로의 승격이 그대로 적용된다). 두 컬럼은 값 타입이 같을 때 `Column` 비교 연산자의 오버로드를 통해 직접 비교되며, null 허용 여부만 다른 경우(`T` 대 `T | None`)는 허용한다. 결과는 두 소유자에 대한 술어다: `Column[O, T] == Column[O2, T]`는 `Pred[O | O2]`이므로, 수신자가 소유자를 고정하는 곳(`Order.where(...)`)은 다른 엔티티의 컬럼을 언급하는 술어를 여전히 거부한다. 두 엔티티가 범위에 있는 곳에서는 쿼리 서술이나 seal이 소유자를 검사한다(ADR-0004 Decision 4). 그곳에서 두 소유자에 대한 술어를 받는 파라미터 타입은 미결이다(쿼리는 #52. 스파이크의 스텁에서 `Load.when`의 `match`는 `Pred[object]`를 받는다). 이 거부는 `Pred`가 소유자에 대해 공변이라는 데 기댄다: `Column`처럼, 그 변성은 `Pred`를 작성할 때 선언하고 타입 테스트로 고정한다(스파이크 0006 O1). 값 형태와 컬럼 형태는 별개의 오버로드다. 체커들의 판단이 갈리는 형태인 `T | Column[O, T]`를 받는 파라미터는 없다(스파이크 0001).
 - 비교의 빈틈(미결. #9에서 정한다. 스파이크 0006):
   - 타입이 틀린 값과의 `==`, `!=`는 두 체커 모두에게 `bool`이다. 체커는 값의 반사된(reflected) `__eq__`(typeshed: `(object) -> bool`)로 떨어진다. 이 실수는 술어가 필요한 곳(`Order.where`, `Check`, `Load.when`, `select(...).where`)에서만 보고된다. 이것은 체커의 관점이다: 런타임에는 `Column.__eq__`가 먼저 호출되며, `T`가 아닌 값을 받았을 때 그것이 하는 일은 조용한 `bool`로 끝나서는 안 된다.
@@ -1009,10 +1047,12 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
 
 **의존 로드: 선언형만, 제너레이터 없음**
 - 결정: 추가로 필요한 데이터는 `Load.when`(컬럼 식)이나 `Load.after`(타입 단 순수 함수)로 선언한다. 유스케이스 안에서 `yield`로 데이터를 요청하는 방식은 두지 않는다.
+- 함수가 돌려주는 것([ADR-0011](../adr/0011-row-set-loads.md), #59와 [스파이크 0007](../spikes/0007-phase-1a-type-shapes.md)에서): ref 하나(`E | None`), 한 문장으로 로드되는 ref의 `Sequence[E]`, 또는 행 집합 `RowSet[E]` - `Entity.where(pred, /, *preds)`로, 집합 변경과 집합 수준 삭제가 시작하는 것과 같은 객체다. 행 집합은 기본 키 순으로 정렬되며 필수 `limit`이 없다. 로드 인자는 결과 위에 `Load.after(fn).load(...)`로 쓰며, `relation.load(...)`처럼 타입이 붙는다: 수신자가 엔티티를 고정하므로 두 체커 모두 다른 엔티티의 경로를 거부한다(인자를 `Load.after(fn, ...)` 자체에 두면 엔티티가 두 인자에서 풀려 불변 경로 타입이 필요했다, 스파이크 0007 라운드 6). 선언한 타입이나 합집합 반환으로 넓어진 결과는 seal이 잡는다(함수당 엔티티 하나, 모든 경로는 그 엔티티의 것). 중첩 경로와 로드 인자는 단계를 더하지 않는다. 함수는 시도마다 다시 실행되며, `now: Now` 파라미터는 이름으로 유스케이스의 `Now` 파라미터에 바인딩된다.
+- 부분 로드와의 경계: 선언된 행의 컬럼과 선언을 작성할 때 알 수 있는 상수에 대한 SQL로 표현할 수 있는 것은 자기 단계 없이 접힌다(중첩 경로, 상수 술어를 쓴 부분 로드, `Load.when`). 실행마다의 값(로드되지 않는 파라미터, `Now`), 로드한 값에 대한 Python 로직, `Load.when`이 허용하지 않는 경우가 필요한 것은 `Load.after`이며, 언제나 입력 다음에 단계를 하나 더한다(서로 독립인 함수들은 그 단계를 공유한다. 로드되지 않는 파라미터만 쓰는 함수를 1단계에 접는 것은 #14 / #28에 맡긴 최적화다). 호출자가 가진 키로 고르며 없으면 에러인 행 하나는 `Load.after`가 아니라 `bind`에 넘기는 ref 파라미터이며, 1단계에서 로드된다. 로드 선언의 술어 안의 날짜나 날짜-시각 상수는 `SealError`다(import 때 한 번 평가되기 때문이다). 그래도 다른 형태가 같은 행을 로드할 수 있고 seal은 그것들을 구별하지 못한다(함수 본문이 불투명하다). 그래서 여기서 "방법은 하나만"은 이 문서화된 규칙에 기대고, 날짜 검사는 제거가 아니라 감지다 - ADR-0011이 밝히는 두 가지 예외다.
 - 근거: 제너레이터 유스케이스는 새로운 함수 색깔이었다. `chain`에 그냥 넣을 수 없고, 호출하는 쪽도 제너레이터가 돼야 하며, send 타입이 하나라 `wallet = yield ...`의 타입도 추론되지 않았다. 선언으로 바꾸면 색깔이 사라지고, 파라미터 타입(`Wallet | None`)이 정확해지며, 왕복 단계 수가 모든 유스케이스에서 seal 시점에 확정된다.
 - 식 형태는 같은 엔티티 타입의 파라미터가 하나일 때만 허용한다(둘이면 seal 에러 → `Load.after` 안내). 조건과 매칭이 컬럼 식이라 서브쿼리로 접혀 추가 왕복이 없다.
-- 함수 형태는 인자 이름이 유스케이스 파라미터에 바인딩되고(seal 검사), 람다 대신 타입 단 함수를 권장한다(람다 인자는 `Any`로 추론됨).
-- `None`과 `NotFound`를 구분한다. 조건이 거짓이면 `None`, 조건은 참인데 행이 없으면 `NotFound`. 없어도 되는 경우는 `missing="none"`으로 명시한다.
+- 함수 형태는 인자 이름이 유스케이스 파라미터에 바인딩되고(seal 검사), 타입 단 함수여야 한다: seal은 등록된 엔티티 하나를 가리키는 반환 어노테이션을 읽고, 모든 로드 인자를 그것에 비추어 검사한다([ADR-0011](../adr/0011-row-set-loads.md)). 람다는 반환 어노테이션을 가질 수 없다.
+- `None`과 `NotFound`를 구분한다. 조건이 거짓이면 `None`, 조건은 참인데 행이 없으면 `NotFound`. 없어도 되는 경우는 `missing="none"`으로 명시한다 - `Load.when`과 ref 하나의 `Load.after`에서(목록이나 행 집합에서는 타입 에러, `None`을 허용하지 않는 파라미터에서는 `SealError`).
 - 대가: 깊이를 알 수 없는 탐색은 표현할 수 없다(§7.1).
 
 **재귀 로드**
@@ -1050,6 +1090,7 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
 
 **큰 집계의 부분 로드**
 - 결정: `Load(Order.items.count())`, `.exists()`, `.where(...)` 같은 부분 로드를 제공. 쓰기에는 컬렉션 전체의 로드가 필요 없다: `add`에는 로드한 자식이 필요 없고, `update` / `remove`에는 그것이 가리키는 자식이 필요하며, 루트의 `.delete()`는 로드하지 않은 owned 관계도 삭제한다([ADR-0010](../adr/0010-writes-beyond-set.md)). 순회·조회는 로드가 필요.
+- 부분 `.where(...)`는 상수 술어를 받고 자신이 이어 가는 행의 단계에 접힌다(파라미터 자체의 선언 아래에서는 1단계). 로드한 값, 파라미터, `Now`에 달린 필터는 행 집합 로드다(`Load.after`, 단계 하나 더). 부분 `.where` 로드를 행 집합으로 대체하는 안은 기각했다. 그러면 모든 상수 필터가 왕복을 하나씩 치르게 되기 때문이다(§8.3). 그 술어 안의 날짜와 날짜-시각 상수는 seal에서 거부한다([ADR-0011](../adr/0011-row-set-loads.md)).
 
 **Python 전용 불변식 표시**
 - 결정: `@invariant(fields=lambda: (Order.status, ...))`로 보호 필드를 명시(문자열 대신 참조). 집합 기반 갱신이 해당 필드를 건드리면 seal 시점 에러. SQL로 표현 가능한 규칙은 `Check(...)`로 선언해 DB `CHECK` 제약으로 내리고, 이런 필드는 집합 갱신을 허용.
@@ -1286,10 +1327,10 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
 범위가 넓다는 지적을 반영한 제안에서 출발했고, 메인테이너가 2026-11-26에 #6에서 §9.1-9.4의 판정과 그로부터 나온 결정 이슈의 권고를 보고 확정했다. 1차는 처음으로 동작하는 `app.run`을 기준으로 둘로 나눈다. 어떤 부분이 아직 열려 있는 결정 이슈에 달려 있으면 그 이슈의 결정을 따른다.
 - **Phase 1a - Core execution path**: 순수 유스케이스와 실행 엔진, PostgreSQL 방언, 실행 ID(#9-#22), 그다음 릴리스 파이프라인과 동작하는 0.0.1(#44, #30).
   - 종료 조건: [스파이크 0002](../spikes/0002-use-cases-on-paper.md)의 유스케이스 6(주문 병합, 루트 삭제), 8(계좌 이체, 새 루트 INSERT), 9(프로필 편집)가 PostgreSQL 위 통합 테스트로 로드 배치 1회와 커밋 배치 1회 안에서, 재시도와 실행 ID를 갖춘 SERIALIZABLE로 통과한다.
-  - 그것이 막고 있는 구현 이슈보다 먼저: #49와 #51을 위한 타입 스파이크(완료: [스파이크 0006](../spikes/0006-parent-fk-and-column-operands.md)); 결정 #48, #54, #57, #58, #59, #60, #61, #63과 #48, #57, #59, #60의 형태를 위한 별도 타입 스파이크(완료: [스파이크 0007](../spikes/0007-phase-1a-type-shapes.md); 메인테이너가 2026-11-26에 `owns_many`, 새 루트의 owned 자식에 대한 후보 B, `Entity.where`의 필수 술어를 정했다. 첫 번째 후속 ADR인 [ADR-0010](../adr/0010-writes-beyond-set.md)(2026-11-26 수락, `.set` 너머의 쓰기, #57과 #60)은 §4.2-4.4 / 4.6 / 4.8 / 4.12 / 8.2 / 8.3 / 10.7 / 10.12를 바꾸고 1a 종료 조건의 유스케이스 6, 8, 9를 막고 있다. 두 번째(#59)는 §4.7과 8.2 "의존 로드"를 바꾸고 row set이 partial `.where` 로드를 대체하는지를 정한다), 그리고 이 결정들이 요구하는 ADR(그중 하나는 #61의 실행 예산); #65 이후의 ADR-0007; #63이 스키마를 고정하기 전에 실행 ID 테이블의 정리 비용(#72). 이 결정들이 구현 이슈에 더하는 것은 각 결정을 따른다.
+  - 그것이 막고 있는 구현 이슈보다 먼저: #49와 #51을 위한 타입 스파이크(완료: [스파이크 0006](../spikes/0006-parent-fk-and-column-operands.md)); 결정 #48, #54, #57, #58, #59, #60, #61, #63과 #48, #57, #59, #60의 형태를 위한 별도 타입 스파이크(완료: [스파이크 0007](../spikes/0007-phase-1a-type-shapes.md); 메인테이너가 2026-11-26에 `owns_many`, 새 루트의 owned 자식에 대한 후보 B, `Entity.where`의 필수 술어를 정했다. 첫 번째 후속 ADR인 [ADR-0010](../adr/0010-writes-beyond-set.md)(2026-11-26 수락, `.set` 너머의 쓰기, #57과 #60)은 §4.2-4.4 / 4.6 / 4.8 / 4.12 / 8.2 / 8.3 / 10.7 / 10.12를 바꾸고 1a 종료 조건의 유스케이스 6, 8, 9를 막고 있다. 두 번째인 [ADR-0011](../adr/0011-row-set-loads.md)(2026-11-26 수락됨, #59)은 §4.7과 §8.2의 의존 로드를 바꾸고, 상수 술어를 쓴 부분 `.where` 로드는 유지한다), 그리고 이 결정들이 요구하는 ADR(그중 하나는 #61의 실행 예산); #65 이후의 ADR-0007; #63이 스키마를 고정하기 전에 실행 ID 테이블의 정리 비용(#72). 이 결정들이 구현 이슈에 더하는 것은 각 결정을 따른다.
   - `expected_version`, `VersionMismatch`, owned 자식 변경 시 루트 `version` 증가는 #11, #13, #15, #17에 속한다. outbox가 들어오기 전(#23)까지 이벤트를 내는 유스케이스는 조용히 버리지 않고 거부한다. 시점(seal 또는 실행)은 #21에서 정한다.
 - **Phase 1b - Events, queries and tooling**: inline 프로젝션과 outbox 로그(#23), Query 경로(TypedSQL, #24), 스키마 도구(선택 extra, #25, CLI #26), 테스트 키트(#27), §9.5 측정(#28), 테스트로서의 문서 예제(#29). 종료 조건: 도입 3단계(§6).
-  - 1b에 함께 들어가는 것: 집합 로드 구현(#59를 따름), #23 전에 outbox 로그의 정리 비용(#73), SSI 부하에서 `53200`의 분류(#74. 아무것도 막지 않으며, 그때까지는 재시도하지 않고 `DatabaseError`로 드러난다).
+  - 1b에 함께 들어가는 것: 집합 로드 구현(#59와 [ADR-0011](../adr/0011-row-set-loads.md)을 따름), #23 전에 outbox 로그의 정리 비용(#73), SSI 부하에서 `53200`의 분류(#74. 아무것도 막지 않으며, 그때까지는 재시도하지 않고 `DatabaseError`로 드러난다).
   - 1차의 스키마 도구([스파이크 0004](../spikes/0004-alembic-round-trip.md)): 왕복되는 것은 Alembic이 생성한다(생성, 컬럼 추가·삭제, 타입 변경, `version` 트리거). 제약·인덱스 이름 규칙은 1b에서, 첫 이름이 만들어지기 전에 정한다. Alembic이 보지 못하는 것은 shadow 스키마 카탈로그 diff가 보고한다. `platina migrate`를 쓰는 프로젝트에서는 `platina check`가 CI에서 이를 실행하며, Platina가 마이그레이션하지 않는 DB의 선언된 테이블도 검사할 수 있다. rename, 바뀐 CHECK나 부분 인덱스는 손으로 쓰는 마이그레이션이고 drift 보고가 이를 잡는다. 내부 테이블은 #63을 따른다([ADR-0009](../adr/0009-internal-tables-owned-by-the-core.md): 전용 스키마의 버전 붙은 SQL, #72 이후에만 제공).
   - `platina gen`은 기존 DB를 스키마 소스로 받는다(#24).
 - **2차**: async 프로젝션, `then`·`@process`와 작업 파이프라인, 배치 유스케이스와 집합 변경(#33. 집합 단위 삭제와 `insert_all`은 [ADR-0010](../adr/0010-writes-beyond-set.md)를 따른다), 마이그레이션 충실도(rename, 파생 이름, CHECK·부분 인덱스 변경, #70), `platina pull`(#71). 1차에는 외부 세계와의 경계가 없다. 스파이크 0002의 유스케이스 넷에 필요한 `@process` 핸들러는 여기서 들어온다.

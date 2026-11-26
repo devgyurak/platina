@@ -61,18 +61,21 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
    `Column` is implemented. The same holds for the types ADR-0010 adds, each declared and pinned:
    `RelOp[O]` (and `AddOp[O]`) and `RowSet[E]` are **invariant** (inferred, `RowSet` came out
    contravariant; with a covariant `RelOp` both checkers accepted another entity's operation in
-   `insert`, spike 0007 F11). For the dependent-load ADR (#59): spike 0007 found that
-   `Load.after`'s load arguments need an invariant `Path[O]` (F17, F21, F22) while
-   `relation.load(...)` needs a covariant `LoadPath[O]` that columns do not derive from (F30,
-   F31); they are pinned when that ADR adopts them.
+   `insert`, spike 0007 F11). The dependent-load ADR (ADR-0011, #59) takes the receiver form
+   `Load.after(fn).load(*paths: LoadPath[E])`, so no invariant `Path[O]` is needed (spike 0007
+   round 6). Declared and pinned there: `LoadPath[O]` **covariant**, and only relations derive
+   from it (a column is not a load path, F30, F31); `LoadAfter[E]` **invariant**; `Relation` /
+   `RelColumn` covariant in the owner and invariant in the second parameter.
 4. **Where the owner is checked.** Owner types are checked only where the receiver fixes the owner:
    `order.set(...)`, `Entity.where(...)`, `SetChange.set(...)`, `SetChange.emit_each(...)`,
    relation operations (`Order.items.add/remove/update`), `RowSet.set(...)`, the Finders of
-   `Repository[E]`, and `path`. Where the owner would have to be inferred from several arguments
-   of one call it is not checked by types, with one exception: `insert(entity, *children:
-   AddOp[E])` (ADR-0010) solves `E` from the entity and the children, and the invariant `AddOp`
-   leaves the given entity as the only solution, so both checkers reject another entity's `add`
-   (spike 0007 F11). Elsewhere: queries (`select`/`join`/`where`) are validated when their description is
+   `Repository[E]`, `path`, and the load paths `relation.load(...)` (#59) and
+   `Load.after(...).load(...)` (ADR-0011). Where the owner would have to be inferred
+   from several arguments of one call it is not checked by types, with one exception:
+   `insert(entity, *children: AddOp[E])` (ADR-0010) solves `E` from the entity and the
+   children, and the invariant `AddOp` leaves the given entity as the only solution, so both
+   checkers reject another entity's `add` (spike 0007 F11). Elsewhere: queries
+   (`select`/`join`/`where`) are validated when their description is
    built (whether seal can also catch them is #52), and `Profile`, `Load`, `Index`, `Check` and
    `@invariant(fields=...)` are validated by seal. Reason: at those places pyright solves the owner
    to a union and mypy to the common base `Entity`, so the same misuse would be an error under one
@@ -120,7 +123,8 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
 
 - **Known gap (mypy):** a declared type written directly on a relation's class access widens its
   owner - `rel: OwnedRelation[Transfer | Order, Item] = Order.items`, then `insert(t,
-  rel.add(item))` type-checks for a `Transfer` `t`; the same reaches `Load.after`. It is how mypy
+  rel.add(item))` type-checks for a `Transfer` `t`. It no longer reaches `Load.after`: in
+  ADR-0011's receiver form both checkers reject it (spike 0007 round 6, W5). It is how mypy
   infers a descriptor's class access under an expected type, not variance (declaring the relation
   types invariant does not change it); pyright rejects the declaration, and so does mypy when the
   relation goes through a variable first (spike 0007 `probe_owner_widen.py`, W1-W5). Not closed.
@@ -172,3 +176,9 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
   `Path` / `LoadPath` finding for #59; Decision 4 adds `RowSet.set` and `insert(entity,
   *children)`, an owner solved from several arguments that invariance keeps checkable; the mypy
   gap of a declared type that widens a relation's owner is a Consequence.
+- 2026-11-26 - amended in place, without changing the direction: the load paths `relation.load(...)`
+  (#59 point 1, nested paths) and `Load.after(...).load(...)` (ADR-0011) are added to
+  Decision 4's receiver-fixed places; both checkers reject a path of another entity there (spike
+  0007 S5 and round 6). Decision 3's #59 sentence now records what ADR-0011 adopted (no
+  invariant `Path`; `LoadPath` covariant, `LoadAfter` invariant, `Relation` / `RelColumn`
+  covariant in the owner), and the known mypy gap no longer reaches `Load.after` (W5).
