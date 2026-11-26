@@ -29,7 +29,10 @@ been wrong on paper (design section 9), so prefer a measurement over an argument
    `pg_xact_status`. Caller keys store the result in `run_result` (INSERT, never UPDATE of
    `run_claim`) with the call's fingerprint, compared only on the `23505` replay path
    (`IdempotencyKeyReuse`, #58); replayed tokens fetch a fresh LSN. An unknown outcome is
-   resolved by that rerun's claim before a deadline or the retry limit may end the run.
+   resolved first by `ResolveClaim` (a claim of the same run ID; not an attempt, not bounded by
+   the deadline): `23505` -> the replay path; success -> `Rollback`, then a normal attempt from
+   `BEGIN` and the claim (ADR-0008 Decision 6). Only then may a deadline or the retry limit end
+   the run.
 3. **Inside SERIALIZABLE, internal tables are INSERT only** (`run_claim`, `run_result`, outbox
    log, job tables, checkpoints): no read, no UPDATE - B-tree leaf-page predicate locks on
    ever-growing keys turn unrelated commands into serialization failures. Reads go to a separate

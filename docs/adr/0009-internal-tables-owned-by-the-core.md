@@ -1,6 +1,6 @@
 # ADR-0009: The core owns the versioned SQL of the internal tables, in a dedicated schema
 
-- Status: Proposed
+- Status: Accepted (maintainer, 2026-11-26)
 - Date: 2026-11-26
 - Related: design sections 4.6 (internal append-only table rule), 7.7, 8.3, 8.5 ("Schema tooling"),
   9.3, 9.5, 9.6; issue #63 (direction decided 2026-11-26), #72 (run-ID table cleanup cost), #73,
@@ -51,16 +51,18 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
    - Each step and its version bump run in one transaction under an advisory lock, so two
      deploys applying at once are safe. The version table is updated only there; `app.run` never
      touches it, so it is outside the internal-table rule's SERIALIZABLE transactions.
-   - Steps are expand/contract: each keeps the previous release's statements working, because
-     old and new application instances share the schema during a rolling deploy.
-   - The Alembic operation's downgrade does nothing to the internal schema (forward-only), and
-     says so in the generated revision.
+   - **Forward-only**: the Alembic operation's downgrade does nothing to the internal schema, and
+     says so in the generated revision (decided by the maintainer, 2026-11-26). Whether steps are
+     expand/contract is open (below).
 2. **Nothing runs DDL at `app.seal()` or startup.** It is applied by a command (core-only
    installs; a `platina` CLI command and the same as a function for tests - names open) or, for
    `platina[migrate]` users, by an Alembic operation the user's own revision calls ("internal
    schema to version N"), so there is one migration history. Platina's Alembic integration adds
    an `include_name` filter that excludes the dedicated schema, for projects that turn on
-   `include_schemas`.
+   `include_schemas`, and **refuses to autogenerate with an error when the connection's default
+   schema is the internal schema** (the `"$user"` / `search_path` trap above); the error says how
+   to fix it (rename the role or the schema, or set `search_path`). `platina check` reports the
+   same condition as a second line of defence (decided by the maintainer, 2026-11-26).
 3. **No separate startup check.** The first table statement of every run, the claim INSERT,
    already touches an internal table. A `42P01` (undefined table), `42703` (undefined column) or
    `42501` (insufficient privilege, e.g. no `USAGE` on the schema) on **any** internal-table
@@ -69,9 +71,9 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
    old or not granted, and whose `hint` names the command to run or the grant needed. The
    application role needs `USAGE` on the schema, `INSERT` on the tables a run writes and `SELECT`
    on `run_result` for the replay path; the apply command prints them. The version comparison
-   (shipped version against the version table) is part of `platina check`, which accepts a
-   database that is ahead by the steps of one release (a rolling deploy) and reports a dedicated schema that is the
-   connection's default schema.
+   (shipped version against the version table) is part of `platina check`, which also reports a
+   dedicated schema that is the connection's default schema. Whether a database ahead of the
+   shipped version is accepted (a rolling deploy) is open (below).
 4. **Partitioning and the key shapes are not decided here: they wait for #72** (and #73 / #32
    for their tables). No internal-table DDL is shipped before #72 has measured the cleanup cost,
    because the partition key must be part of every unique key (PostgreSQL 18, "Partitioning";
@@ -81,34 +83,22 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
 - A core-only install can create and upgrade what `app.run` needs; `platina[migrate]` users keep
   one Alembic history. Unless the dedicated schema is the connection's default schema,
   autogenerate with Alembic's defaults never proposes dropping an internal table, whatever the
-  partitions are, because it does not look at the schema at all.
+  partitions are, because it does not look at the schema at all; when it is, Platina's
+  integration refuses. An Alembic setup that does not use Platina's integration is not
+  protected: there only `platina check` reports the condition.
 - This is an exception to 8.5 ("DDL generation ... handed to SQLAlchemy Core and Alembic") for
   the internal tables only; entity tables are unchanged.
 - The core holds SQL text for one dialect; a MySQL dialect will need its own versions.
 - A missing schema is reported on the first run, not at startup - the price of keeping `seal()`
   free of database I/O. `platina check` in CI and deployment closes that gap for version skew.
-- #22 (run IDs) has no table to run its integration tests against until the first DDL step
-  exists, and no DDL ships before #72 (Decision 4). Whether #22 waits for #72 or starts with a
-  test-only DDL is open question 6.
+- #22 (run IDs) does not wait for #72: its integration tests run against test-only DDL in
+  `tests/support` (created by the test setup, never shipped). Only the shipped DDL waits for #72
+  (Decision 4), and replaces the test-only DDL when it lands (decided by the maintainer,
+  2026-11-26).
 - `platina pull` and the drift check (8.5) skip the dedicated schema by name; no prefix rule.
-- Open, tracked in #63: the schema name, the command names, the version-table shape, and
-  everything #72 decides (partitioning, keys, retention).
-
-## Open for the maintainer
-Recorded with the options; none is chosen here. (Questions 1-3 and 7 are in ADR-0008; question 1
-- accepting this ADR when #77 merges - applies to both.)
-4. **Expand/contract steps, a forward-only downgrade, and "a database one release ahead is
-   allowed".** These came from the architect review, not from #63's decision. The alternative is
-   to leave all three to the first implementation (#22). Changes: Decisions 1 and 3, `platina
-   check`.
-5. **The `"$user"` trap: when the internal schema is the connection's default schema, does
-   Platina's Alembic integration refuse to autogenerate (an error), or does `platina check` only
-   report it?** An error removes the drop proposals; a report keeps autogenerate usable in a
-   setup the user chose. Changes: Decision 2, design 8.5.
-6. **#22 before #72: wait for #72, or start #22 with test-only DDL** (created by the test setup,
-   not shipped) and replace it with the first shipped step after #72? Waiting keeps one DDL
-   source; test-only DDL unblocks the run-ID work and the engine's integration tests. Changes:
-   Consequences, the #22 / #72 dependency.
+- Open, tracked in #63: the schema name, the command names, the version-table shape, everything
+  #72 decides (partitioning, keys, retention), and whether steps are expand/contract with a
+  database one release ahead accepted - decided with the first DDL step.
 
 ## Alternatives considered
 - **3a - Alembic only, with an `include_name` filter** (spike 0004 P3): a core-only install has
@@ -132,3 +122,10 @@ Recorded with the options; none is chosen here. (Questions 1-3 and 7 are in ADR-
   statement, with the grants the role needs; #22 waits for #72.
 - 2026-11-26 - amended after an independent review: the docker-compose role `platina`; `42P01` for
   a missing schema; "#22 waits for #72" is open (question 6); open questions 4-6.
+- 2026-11-26 - the maintainer's decisions: Platina's Alembic integration refuses to autogenerate
+  when the internal schema is the default schema (`platina check` stays a second line); downgrade
+  is forward-only; expand/contract and "one release ahead" move to the items open in #63; #22
+  does not wait for #72 (test-only DDL in `tests/support`). The open questions are answered and
+  removed.
+- 2026-11-26 - accepted by the maintainer, on the condition that the decisions above (Decisions 1-3,
+  Consequences) are in the text; #63 stays open for the items listed there.

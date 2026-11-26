@@ -449,7 +449,7 @@ attempt 1..N:
 
 - Writes, COMMIT and the LSN query are sent in one batch. In a pipeline, if an earlier statement fails, later statements are not executed, so this is safe. The cost is a wider window in which the commit outcome is unknown; the run ID covers it (below).
 - The shield that blocks cancellation covers the whole of round trip 2.
-- **`timeout=` is one budget for the run** ([ADR-0008](../adr/0008-run-timeout-budget.md), Proposed; #61), from the start of `app.run` across every attempt and backoff. The runner holds the deadline and reports facts; the engine decides. The engine puts `set_config('statement_timeout', $1, true)` at the head of each round trip before `COMMIT` and the runner binds the remaining time (PostgreSQL applies it to each statement, also inside a pipeline); the runner reports a passed deadline at a yield point, including instead of a backoff that would end past it, and the engine turns that, or a budget 57014 before `COMMIT`, into `RunTimeout`, which is not retried. The budget covers the statements before `COMMIT`; `COMMIT` itself is not timed out by PostgreSQL and the commit batch is shielded, so a run can exceed its budget by the duration of its `COMMIT`. Whether the batch committed is decided by which statement failed, not by the SQLSTATE: an error before or on `COMMIT` is a rollback; once `COMMIT` has returned, the run is committed, whatever the LSN query after it reports; no reply at all is unknown, and that is resolved by the claim of the rerun before any deadline or retry limit ends the run.
+- **`timeout=` is one budget for the run** ([ADR-0008](../adr/0008-run-timeout-budget.md); #61), from the start of `app.run` across every attempt and backoff. The runner holds the deadline and reports facts; the engine decides. The engine puts `set_config('statement_timeout', $1, true)` at the head of each round trip before `COMMIT` and the runner binds the remaining time (PostgreSQL applies it to each statement, also inside a pipeline; the local value replaces a smaller session, role or database default `statement_timeout` for those statements); the runner reports a passed deadline at a yield point, including instead of a backoff that would end past it, and the engine turns that, or a budget 57014 before `COMMIT`, into `RunTimeout`, which is not retried. The budget covers the statements before `COMMIT`; `COMMIT` itself is not timed out by PostgreSQL and the commit batch is shielded, so a run can exceed its budget by the duration of its `COMMIT`. Whether the batch committed is decided by which statement failed, not by the SQLSTATE: an error before or on `COMMIT` is a rollback; once `COMMIT` has returned, the run is committed, whatever the LSN query after it reports; no reply at all is unknown, and that is resolved first by a claim of the same run ID (`ResolveClaim`, not counted as an attempt and not bounded by the deadline): a 23505 means it committed (the replay path); a successful claim means it did not, and the engine rolls back and starts a normal attempt from `BEGIN` and the claim. A deadline or the retry limit ends the run only after that.
 - "The first statement" (the run ID claim, everywhere in this document) means the first statement on a table, after `BEGIN` and the budget's `set_config`.
 
 #### Run ID: idempotency and commit-outcome resolution unified
@@ -1027,7 +1027,7 @@ On highly contended tables, serialization failures and retries increase. Two kin
 **Retry policy**
 - Decision: 40001 and 40P01 are always retried. 23505 only for use cases that explicitly set `on_unique=True` (23505 on the run ID tables is handled separately as the idempotent path). At most 4 attempts, exponential backoff + full jitter (base 10ms, cap 200ms), each retry starting again from the load.
 - Rationale: the PostgreSQL documentation advises that serialization failures can always be retried, but other codes such as unique violations may be permanent errors and need more care.
-- 57014 (`statement_timeout`) is not retried: `timeout=` is the caller's limit for the whole run, so a retry after it expired would spend more than the caller allowed. The deadline and a 57014 before `COMMIT` both raise `RunTimeout` ([ADR-0008](../adr/0008-run-timeout-budget.md), Proposed; #61). No `lock_timeout` option and no retry of 55P03 for now (revisit with #64); a user who sets `lock_timeout` gets `DatabaseError(55P03)`.
+- 57014 (`statement_timeout`) is not retried: `timeout=` is the caller's limit for the whole run, so a retry after it expired would spend more than the caller allowed. The deadline and a 57014 before `COMMIT` both raise `RunTimeout` ([ADR-0008](../adr/0008-run-timeout-budget.md); #61). No `lock_timeout` option and no retry of 55P03 for now (revisit with #64); a user who sets `lock_timeout` gets `DatabaseError(55P03)`.
 - This retry loop and the job runner's domain exception retry (`retry_later`, §8.4) are separate.
 
 **Commit order within a single use case**
@@ -1140,7 +1140,7 @@ On highly contended tables, serialization failures and retries increase. Two kin
 - Decision: the query compiler and the execution engine stay independent, and **DDL generation, catalog reflection and migrations are handed to SQLAlchemy Core and Alembic.** The entity registry is converted to SQLAlchemy `MetaData` to use Alembic autogenerate. This is needed only for `platina migrate`, `pull` and drift checks, so it lives in the optional extra `platina[migrate]`, and the runtime core does not depend on SQLAlchemy.
 - History: at first we decided to implement our own migration tool, reasoning that "Alembic is tied to SQLAlchemy metadata and does not fit a standalone ORM". But the rationale for not using Core (§8.1) was wrong, and it became clear that the work Core actually saves is not query compilation but DDL, reflection and migrations, so the decision was reversed. When MySQL is added, we also get this work for free.
 - Risk: fidelity of the conversion. The weak spots of Alembic autogenerate overlap with features of this design. ① `renamed_from` hints (autogenerate does not detect renames → plan to turn drop+add into a rename with the `process_revision_directives` hook), ② `Check` declared with lambdas, ③ `version` triggers (Alembic does not handle triggers → evaluate third-party PG object support), ④ expression and partial indexes, ⑤ framework internal tables (especially partitions). Whether these five round-trip is a spike item (§9). Result ([spike 0004](../spikes/0004-alembic-round-trip.md), §9.3): columns, tables, foreign keys, composite unique keys and expression indexes round-trip. ① works for columns only with a rewrite that also builds the downgrade (Alembic's reverse of a rename loses it) and orders renames first; a table rename leaves names derived from the table behind, and any rename leaves PostgreSQL 18's NOT NULL constraint names behind. ② and ④: a CHECK or partial-index change is detected only when its name changes with the expression (for a CHECK also only with Alembic's opt-in `checkconstraint_byname` plugin); expression indexes give no false diffs. ③ works with Alembic's own extension points (custom operations and a comparator plugin), without a third-party package; drift is detected by trigger name and function body only. ⑤ does not round-trip: partitions created outside migrations (partitioning was assumed for the experiment, not decided) are proposed for drop and the downgrade cannot re-create them; the partition scheme and `xid8` columns are not compared. The same reflection gaps (`xid8`, CHECK bodies, partial-index predicates, NOT NULL names) also limit `platina pull` and the drift comparison, not only `migrate`. Of the choices this leaves, the naming rule is open for #25, and renames of indexed columns with the other fidelity gaps for #70 (Phase 2, §9.6).
-- **Internal tables are the exception** ([ADR-0009](../adr/0009-internal-tables-owned-by-the-core.md), Proposed; direction decided in #63): the core ships their DDL as versioned SQL in a dedicated schema, which Alembic autogenerate does not compare with its defaults (it compares only the connection's default schema) - unless that schema *is* the connection's default schema, through `search_path` or a role of the same name (`"$user"`), and then it is compared and proposed for drop. Nothing runs DDL at startup: a `platina` command applies it, and `platina[migrate]` users call it as an Alembic operation from their own history. There is no separate startup check: a `42P01` / `42703` / `42501` from any internal-table statement (the claim INSERT is the first) becomes a `DatabaseError` whose hint names the command or the grant, and `platina check` compares the versions. Partitioning and the key shapes wait for #72; no internal-table DDL ships before it.
+- **Internal tables are the exception** ([ADR-0009](../adr/0009-internal-tables-owned-by-the-core.md); direction decided in #63, which stays open for the details): the core ships their DDL as versioned SQL in a dedicated schema, which Alembic autogenerate does not compare with its defaults (it compares only the connection's default schema) - unless that schema *is* the connection's default schema, through `search_path` or a role of the same name (`"$user"`), and then it is compared and proposed for drop; Platina's Alembic integration therefore refuses to autogenerate in that case, with an error that says how to fix it, and `platina check` reports it too. Nothing runs DDL at startup: a `platina` command applies it, and `platina[migrate]` users call it as an Alembic operation from their own history. There is no separate startup check: a `42P01` / `42703` / `42501` from any internal-table statement (the claim INSERT is the first) becomes a `DatabaseError` whose hint names the command or the grant, and `platina check` compares the versions. Partitioning and the key shapes wait for #72; no internal-table DDL ships before it, and until then integration tests (#22) run against test-only DDL in `tests/support`. The downgrade is forward-only.
 - Rationale (for reference): Atlas has an Apache 2.0 core but is open core, and in October 2025 with v0.38 it moved migration linting to a paid tier. sqldef manages the schema with a single SQL file, but it is a Go binary, which breaks the experience of finishing with a single `pip install`.
 
 **Pydantic integration**
@@ -1246,7 +1246,7 @@ Started as a proposal reflecting the comment that the scope is too broad; decide
   - `expected_version`, `VersionMismatch` and the root `version` bump on `owned` changes are part of #11, #13, #15 and #17. Until the outbox lands (#23), a use case that emits events is rejected, never silently dropped; whether at seal or at run time is decided in #21.
 - **Phase 1b - Events, queries and tooling**: inline projections and the outbox log (#23), Query path (TypedSQL, #24), schema tooling (optional extra, #25, CLI #26), the test kit (#27), the §9.5 measurements (#28) and documentation examples as tests (#29). Exit: adoption step 3 (§6).
   - Also in 1b: the set-load implementation (following #59), the cleanup cost of the outbox log (#73) before #23, and the classification of `53200` under SSI load (#74; it gates nothing - until then it is not retried and surfaces as `DatabaseError`).
-  - Schema tooling in Phase 1 ([spike 0004](../spikes/0004-alembic-round-trip.md)): Alembic generates what round-trips (create, add or drop a column, a type change, `version` triggers); the constraint and index naming rule is decided in 1b, before the first name is created; a shadow-schema catalog diff reports what Alembic cannot see. `platina check` runs it in CI in projects that use `platina migrate`, and it can also check the declared tables of a database Platina does not migrate. A rename, or a changed CHECK or partial index, is a hand-written migration that the drift report catches. The internal tables follow #63 ([ADR-0009](../adr/0009-internal-tables-owned-by-the-core.md), Proposed: versioned SQL in a dedicated schema, shipped only after #72).
+  - Schema tooling in Phase 1 ([spike 0004](../spikes/0004-alembic-round-trip.md)): Alembic generates what round-trips (create, add or drop a column, a type change, `version` triggers); the constraint and index naming rule is decided in 1b, before the first name is created; a shadow-schema catalog diff reports what Alembic cannot see. `platina check` runs it in CI in projects that use `platina migrate`, and it can also check the declared tables of a database Platina does not migrate. A rename, or a changed CHECK or partial index, is a hand-written migration that the drift report catches. The internal tables follow #63 ([ADR-0009](../adr/0009-internal-tables-owned-by-the-core.md): versioned SQL in a dedicated schema, shipped only after #72).
   - `platina gen` accepts an existing database as its schema source (#24).
 - **Phase 2**: async projections, `then` and `@process` with the job pipeline, batch use cases and set changes (#33; the set-level delete and `insert_all` follow #57 and #60), migration fidelity (renames, derived names, CHECK and partial-index changes, #70) and `platina pull` (#71). Phase 1 has no boundary with the outside world: the `@process` handlers that four of spike 0002's use cases need arrive here.
 - **Later**: MySQL and MariaDB dialects, saga helpers, official free-threaded support
@@ -1348,7 +1348,7 @@ class CommitBatch: statements: tuple[CompiledSQL, ...]; bounded = True  # writes
 class StoredResult: run_id: RunId; bounded = False       # read run_result (result + fingerprint) in a separate READ COMMITTED transaction
 class FreshLsn: bounded = False                          # query pg_current_wal_insert_lsn()
 class Rollback: bounded = False
-class ResolveClaim: run_id: RunId; bounded = False       # after CommitUnknown: BEGIN + claim only (ADR-0008 Decision 6)
+class ResolveClaim: run_id: RunId; bounded = False       # after CommitUnknown: BEGIN + claim only; not an attempt (ADR-0008 Decision 6)
 class Sleep:    seconds: float; bounded = True           # retry backoff; bounded by its end, now + seconds
 
 # core/engine/run.py  (no IO)
@@ -1356,24 +1356,22 @@ def run_usecase(uc: Usecase, args: Bound, policy: RetryPolicy, d: Dialect
                ) -> Generator[Command, Reply, RunResult]:
     pending: RunResult | None = None                        # result computed before commit (kept across attempts)
     fp = fingerprint(uc, args) if run_id.kind == "caller" else None   # once, before anything runs (UsageError if not serializable, #58)
-    claimed = False                                         # after ResolveClaim: the open transaction already holds the claim
     for attempt in policy.attempts():
-        stage_kind = "load"
+        stage_kind = "load"                                 # RunTimeout's stage: "load", "commit" (or "backoff", below)
         try:
             snapshots = {}
             for i, stage in enumerate(uc.plan.stages):        # number of stages fixed at seal
-                head = (begin(uc.isolation), budget(), claim(run_id)) if i == 0 and not claimed else (budget(),)
+                head = (begin(uc.isolation), budget(), claim(run_id)) if i == 0 else (budget(),)
                 rows = yield Pipeline(head + stage.compile(d, args, snapshots))   # round trip 1: BEGIN + budget + run ID claim + load
                 snapshots |= stage.materialize(rows)          # Load.after functions also run here (pure)
-            claimed = False
-            changes = uc.invoke(snapshots)                    # user use case: a plain pure function
+            changes = uc.invoke(snapshots)                    # user use case (pure); a deadline passed here is reported at the commit batch
             pending = RunResult.from_changes(changes)
             stage_kind = "commit"
             reply = yield CommitBatch(commit_plan(changes, d, run_id, fp))   # round trip 2: budget, writes … COMMIT, LSN
             return pending.committed(reply)                   # COMMIT's tag is COMMIT; an error after it still means committed
         except StatementFailed as f:                        # a fact from the runner: which statement failed, its SQLSTATE
             fault = classify(f, stage_kind)                   # (typed by drivers), whether the deadline had passed - the engine
-        except DeadlineReached as e:                        # decides: claimed / retry / deadline / unknown / committed / raise
+        except DeadlineReached as e:                        # decides: claimed / retry / deadline / unknown / committed / fatal
             fault = Deadline(e)
         # Every yield below is outside the except clauses, so a DeadlineReached the runner reports at
         # one of them (only Sleep is bounded) reaches this code instead of escaping the generator.
@@ -1385,7 +1383,7 @@ def run_usecase(uc: Usecase, args: Bound, policy: RetryPolicy, d: Dialect
                 return (yield from replay(run_id, fp, pending))
             case Deadline():                                # the runner's deadline, or a budget 57014 before COMMIT
                 yield Rollback()
-                raise RunTimeout(...) from fault.cause        # never retried
+                raise RunTimeout(stage=stage_kind, ...) from fault.cause   # never retried
             case Retryable():                               # 40001 / 40P01
                 yield Rollback()
                 try:
@@ -1396,10 +1394,12 @@ def run_usecase(uc: Usecase, args: Bound, policy: RetryPolicy, d: Dialect
                 if not (yield ResolveClaim(run_id)):        # 23505: the earlier attempt committed
                     yield Rollback()
                     return (yield from replay(run_id, fp, pending))
-                claimed = True                              # not committed; continue in this transaction, without BEGIN and claim
-    if claimed:
-        yield Rollback()
-    raise RetryExhausted(...)
+                yield Rollback()                            # claimed: it did not commit (the claim waited for it to end);
+                                                            # release and start a normal attempt, from BEGIN and the claim
+            case Fatal():                                   # not retryable: 23503, 23505 on a user table (without on_unique), 22xxx, ...
+                yield Rollback()
+                raise fault.error                           # the DatabaseError the driver typed, SQLSTATE kept
+    raise RetryExhausted(...)                               # every attempt's outcome is known by now
 
 def replay(run_id, fp, pending):                            # the replay path; never stopped by the deadline
     match run_id.kind:
@@ -1532,7 +1532,8 @@ PlatinaError
 │   └── CommitCycle
 ├── NotFound                  # row of the root ref or of a required dependent load is missing
 ├── IdempotencyKeyReuse       # caller key reused with different arguments (#58; not retried, a client's mistake)
-├── RunTimeout                # the run's timeout= budget ran out: deadline or 57014 before COMMIT (ADR-0008; not retried)
+├── RunTimeout                # the run's timeout= budget ran out: deadline or 57014 before COMMIT (ADR-0008; not retried;
+│                             #   fields budget, stage "load" / "backoff" / "commit", sqlstate)
 ├── ConcurrencyError
 │   ├── RetryExhausted        # 40001/40P01 retry limit exceeded
 │   └── VersionMismatch       # expected_version mismatch (optimistic lock across requests)
@@ -1659,14 +1660,14 @@ def test_retryable_fault_restarts_from_begin(point, fault):
 ```python
 @pytest.mark.parametrize("committed", [True, False], ids=["committed", "rolled-back"])
 def test_commit_unknown_is_resolved_by_rerun_with_same_run_id(committed):
-    """If the connection drops during the commit batch, re-run with the same run ID to decide whether it committed."""
+    """If the connection drops during the commit batch, a claim with the same run ID decides whether it committed."""
     # when
     trace = replay(run_usecase(pay_usecase, ARGS, POLICY, PG),
                    happy_path_script(pay_usecase), inject=("CommitBatch", ConnectionLost()),
                    server_state={"committed": committed})
     # then
     assert trace.second_attempt_run_id == trace.first_attempt_run_id
-    assert trace.applied_once()                      # if committed, AlreadyClaimed; otherwise a normal run
+    assert trace.applied_once()                      # committed: 23505, the replay path; otherwise rollback, then a normal attempt
 ```
 
 - In the same way, we check that when cancellation is injected, it is not delivered in the middle of `CommitBatch`/`Rollback` commands (shield).

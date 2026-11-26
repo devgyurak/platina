@@ -118,7 +118,7 @@ All notable changes are documented here. Format: [Keep a Changelog](https://keep
     `PlatinaError`, added with #22); the fingerprint (registry name + canonical serialization of
     the bound arguments) is stored in `run_result` and compared only on the `23505` replay path
     (design 4.5, 4.6, 8.3, 10.5, 10.12).
-  - #61: ADR-0008 (Proposed) - `timeout=` is one budget for the run, held by the runner; `57014`
+  - #61: ADR-0008 (accepted) - `timeout=` is one budget for the run, held by the runner; `57014`
     before `COMMIT` and the deadline raise `RunTimeout` (directly under `PlatinaError`, added with
     #17), never retried; no `lock_timeout` option; `TxDefaults(statement_timeout=)` becomes
     `TxDefaults(timeout=)`; the runner reports the deadline, the engine emits the
@@ -127,7 +127,7 @@ All notable changes are documented here. Format: [Keep a Changelog](https://keep
     10.12, 11.4; the `engine-and-concurrency` and `design-invariants` rules). Facts from
     pg-researcher: `statement_timeout` limits each statement also inside a pipeline, `COMMIT` is
     not timed out, and a `57014` after `COMMIT` means committed.
-  - #63 (direction only, the issue stays open): ADR-0009 (Proposed) - the core owns versioned SQL
+  - #63 (direction only, the issue stays open): ADR-0009 (accepted) - the core owns versioned SQL
     for the internal tables in a dedicated schema (Alembic's defaults compare only the default
     schema - checked; a schema that is the default schema, e.g. through `"$user"`, is compared),
     no DDL at startup, a `42P01` / `42703` / `42501` on an internal table names the command or
@@ -142,6 +142,14 @@ All notable changes are documented here. Format: [Keep a Changelog](https://keep
     the command, continues without a second claim after `ResolveClaim` and keeps every `yield`
     out of the `except` clauses; the equality rule points at #76 for a parent key before `add`;
     seven questions recorded as open for the maintainer in ADR-0008 / ADR-0009.
+  - The maintainer answered the seven questions and accepted ADR-0008 and ADR-0009 (2026-11-26):
+    after a successful `ResolveClaim` the engine rolls back and starts a normal attempt (no
+    `claimed` state; design 10.5 also raises non-retryable failures instead of retrying them);
+    `RunTimeout` directly under `PlatinaError` with stages `load` / `backoff` / `commit`; the
+    budget replaces a smaller default `statement_timeout`; Platina's Alembic integration refuses
+    to autogenerate when the internal schema is the default schema; the internal-schema downgrade
+    is forward-only (expand/contract stays open in #63); #22 runs on test-only DDL and does not
+    wait for #72.
 
 ### Changed
 - Entity syntax (ADR-0003, accepted): entities inherit `Entity` with table options as class

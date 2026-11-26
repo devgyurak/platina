@@ -1,6 +1,6 @@
 # ADR-0008: `timeout=` is one budget for the whole run; `57014` and the deadline raise `RunTimeout`
 
-- Status: Proposed
+- Status: Accepted (maintainer, 2026-11-26)
 - Date: 2026-11-26
 - Related: design sections 4.1, 4.5, 4.6 ("Options", "Execution order", "Exception handling"),
   8.3 ("Retry policy"), 10.5, 10.12; issue #61 (decided 2026-11-26), #17, #22, #64, #74;
@@ -90,6 +90,9 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
      statement, the driver-typed error with its SQLSTATE, whether the deadline had passed). The
      engine classifies it - claimed, retryable, deadline, unknown outcome, committed, or a
      `DatabaseError` to raise. The runner maps nothing to a meaning.
+   - **The budget replaces a smaller default.** The local `statement_timeout` it sets replaces a
+     smaller session, role or database default for the statements before `COMMIT`, so the run's
+     budget, not the connection's default, bounds them (decided by the maintainer, 2026-11-26).
    - The engine turns `DeadlineReached`, and a `57014` that arrives with the deadline passed on a
      statement before `COMMIT`, into a rollback and **`RunTimeout`, never retried**. A `57014` with
      the deadline not passed (`pg_cancel_backend`, or a role or database default
@@ -104,8 +107,10 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
      outer cancellation, which still propagates.
 3. **One error for both sides.** `RunTimeout` sits directly under `PlatinaError` (a deadline is
    neither a conflict nor a database fault; the client-side deadline has no SQLSTATE). Its own
-   fields (ADR-0006): `budget: timedelta`, `stage: Literal["load", "use case", "backoff",
-   "commit"]` and `sqlstate: str | None` (`"57014"` when the server cancelled). In the `"backoff"`
+   fields (ADR-0006): `budget: timedelta`, `stage: Literal["load", "backoff", "commit"]` and
+   `sqlstate: str | None` (`"57014"` when the server cancelled). There is no `"use case"` stage:
+   the engine sees the deadline only at a yield point, so a deadline that passes while the use
+   case runs is reported at the next one, the commit batch, as `"commit"`. In the `"backoff"`
    stage the last `40001` is its `__cause__`. It is distinct from `RetryExhausted` ("the row was
    contended" and "the deadline passed" call for different reactions).
 4. **The commit batch: the budget applies up to `COMMIT`, not to it.** The statements before
@@ -125,14 +130,17 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
 6. **An unknown outcome is resolved before any deadline or retry limit ends the run.** After
    `CommitUnknown` the engine yields its own command, `ResolveClaim` (`BEGIN` and the claim
    INSERT only, no `set_config`, no load), which the runner sends without a deadline check; it may
-   wait on the earlier transaction. A `23505` means the earlier attempt committed: the result is
-   returned as on the replay path (`StoredResult` / `FreshLsn`, also unbounded), never an error. A
-   successful claim means it did not commit: the run continues in that transaction without
-   sending `BEGIN` or the claim again (a second claim of the same ID in one transaction is a
-   `23505` that would read as "committed"), bounded again - the deadline check comes first, then
-   the load round trip with its `set_config` - so
-   `RunTimeout` or `RetryExhausted` is raised only once the outcome is known. This also closes the
-   same gap for `RetryExhausted` after a `CommitUnknown` on the last attempt.
+   wait on the earlier transaction. `ResolveClaim` is not counted as an attempt.
+   - A `23505` means the earlier attempt committed: `Rollback`, then the replay path
+     (`StoredResult` / `FreshLsn`, also unbounded), never an error.
+   - A successful claim means it did not commit: a second claim of the same ID waits until the
+     first transaction ends, and gets `23505` if it committed or proceeds if it rolled back (spike
+     0003, reproduced). The engine yields `Rollback` - nothing is lost - and, with attempts and
+     budget left, starts a normal attempt from `BEGIN` and the claim. With none left, the run
+     ends with `RetryExhausted` or `RunTimeout`, both only after the outcome is known. This also
+     closes the gap for `RetryExhausted` after a `CommitUnknown` on the last attempt.
+   - Decided by the maintainer on 2026-11-26, over continuing in the resolving transaction
+     (Alternatives).
 7. **No `lock_timeout` option and no retry of `55P03` in Phase 1** (#61; revisit with #64). A user
    who sets `lock_timeout` themselves gets `DatabaseError(55P03)`.
 
@@ -153,9 +161,11 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
 - One `set_config` per round trip inside the pipelines that already exist: no extra round trip.
 - `set_config` at the head of round trip 1 fixes the transaction's snapshot before the claim, so
   a claim that waits on a concurrent run with the same ID does so on a snapshot taken before the
-  wait (with `SET LOCAL` the claim itself took it). Relevant to open question 2.
-- The local `statement_timeout` replaces a smaller session, role or database default for the
-  statements before `COMMIT` (open question 7).
+  wait (with `SET LOCAL` the claim itself took it). Decision 6 does not carry such a snapshot
+  forward: after `ResolveClaim` the engine rolls back.
+- The run's budget replaces a smaller session, role or database default `statement_timeout`
+  before `COMMIT` (Decision 2): a connection default no longer cuts a run short inside its
+  budget, and an operator who relies on a short default for runs needs a short `timeout=`.
 - If the server stops answering, neither runner can end the run by itself: the server bounds each
   statement, and interrupting a round trip in flight is #17's (Decision 2). `ResolveClaim` may
   wait without limit on the earlier transaction (it is unbounded by design, Decision 6).
@@ -170,6 +180,14 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
   attempt (fact above), and resets on each attempt.
 - **`transaction_timeout`**: terminates the session (`FATAL 25P04`), also during `COMMIT`'s
   deferred triggers, so a run past it loses its connection instead of rolling back one statement.
+- **Continue in the resolving transaction after a successful `ResolveClaim`** (the earlier text of
+  Decision 6): saves one round trip on a rare path, but the `claimed` state it needs broke the
+  design 10.5 sketch twice in a row (a later retry sent neither `BEGIN` nor the claim and reported
+  a commit), and the claim that waited holds an old snapshot, which raises the `40001` rate
+  (spike 0003).
+- **Bind `min(remaining, the connection's default statement_timeout)`**: keeps a smaller default
+  in force, at the cost of reading the default once per connection; the maintainer chose the
+  run's budget instead (Decision 2).
 - **The runner maps `57014` to the deadline error itself**: it would have to know which statement
   is `COMMIT` and would report a committed run as rolled back on a post-`COMMIT` `57014`.
 - **Bound the commit batch client-side too** (cancel it at the deadline): a cancel that lands on
@@ -177,27 +195,6 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
   shield exists to avoid exactly that.
 - **`lock_timeout` + retry of `55P03`**: an option whose value interacts with `statement_timeout`
   and turns a wait into more retries on the rows ADR-0005 says cannot escape them (#64).
-
-## Open for the maintainer
-Recorded with the options; none is chosen here.
-1. **Accept ADR-0008 (and ADR-0009) when #77 merges?** The status stays Proposed until then, and
-   the `engine-and-concurrency` / `design-invariants` rules already state Decisions 2-6. If the
-   ADR is not accepted, those rule lines go back with it.
-2. **After `ResolveClaim` succeeds: continue in that transaction, or roll back and start a normal
-   attempt?** Continuing (the current text) saves a round trip. Rolling back removes the
-   `claimed` state from the engine at the cost of one more round trip. Spike 0003 observed that a
-   claim that waited holds an older snapshot, and that more `40001` follow from it - an argument
-   for rolling back. Changes: Decision 6, design 10.5, the replay tests.
-3. **`RunTimeout`'s place (directly under `PlatinaError`) and fields.** `stage="use case"` cannot
-   be observed by the engine: a deadline is reported only at a yield point, so a run whose use
-   case overran is reported at the next one (the commit batch, `stage="commit"`). The options are
-   to drop `"use case"`, or to let the runner report the clock at the commit batch and keep it.
-   Changes: Decision 3, design 10.12, #17.
-7. **May the budget's `set_config` replace a smaller session, role or database default
-   `statement_timeout`?** Yes (current), or the runner binds `min(remaining, configured default)`,
-   which needs the default read once per connection. Changes: Decision 2, design 4.6.
-
-(Questions 4-6 are ADR-0009's.)
 
 ## History
 - 2026-11-26 - created (Proposed) from the maintainer's #61 decision and pg-researcher's
@@ -215,3 +212,10 @@ Recorded with the options; none is chosen here.
   property of the command and failed statements as facts the engine classifies; no second
   `BEGIN` / claim after `ResolveClaim`; consequences for an unresponsive server; open questions
   1, 2, 3 and 7.
+- 2026-11-26 - the maintainer's decisions: after a successful `ResolveClaim` the engine rolls back
+  and starts a normal attempt (Decision 6; continuing moved to Alternatives); `RunTimeout`'s
+  stages are `load` / `backoff` / `commit` (no `use case`); the budget replaces a smaller default
+  `statement_timeout` (Decision 2; `min(...)` moved to Alternatives). The open questions are
+  answered and removed.
+- 2026-11-26 - accepted by the maintainer, on the condition that the decisions above (Decisions 2,
+  3 and 6) are in the text.

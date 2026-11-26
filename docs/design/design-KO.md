@@ -1,4 +1,4 @@
-<!-- i18n: source=docs/design/design.md source-sha256=107346defd00 translation-sha256=3cdcdbf74a6e -->
+<!-- i18n: source=docs/design/design.md source-sha256=8fb527e1315f translation-sha256=9c4846ff98fc -->
 # Platina 설계 문서
 
 > **Platina**: 백금(platinum)의 옛 스페인어 이름. 백금이 산에도 녹지 않고 반응하지 않듯, 도메인 코드는 DB와 반응하지 않는다.
@@ -449,7 +449,7 @@ attempt 1..N:
 
 - 쓰기·COMMIT·LSN 조회를 한 배치로 보낸다. 파이프라인에서 앞 문장이 실패하면 뒤 문장은 실행되지 않으므로 안전하다. 대가로 커밋 결과를 모르는 구간이 넓어지는데, 이는 실행 ID가 덮는다(아래).
 - 취소를 막는 shield는 왕복 2 전체에 걸린다.
-- **`timeout=`은 실행 하나에 대한 예산이다**([ADR-0008](../adr/0008-run-timeout-budget.md), Proposed; #61). `app.run`이 시작된 때부터 모든 시도와 백오프에 걸친다. 실행기는 마감 시각을 쥐고 사실을 보고하고, 판단은 엔진이 한다. 엔진은 `COMMIT` 전 각 왕복의 맨 앞에 `set_config('statement_timeout', $1, true)`를 두고, 실행기가 남은 시간을 바인딩한다(PostgreSQL은 이를 문장마다 적용하며, 파이프라인 안에서도 마찬가지다). 실행기는 마감이 지났음을 yield 지점에서 보고하는데, 끝나는 시각이 마감을 넘을 백오프를 하는 대신 보고하는 경우도 포함한다. 엔진은 이 보고나 `COMMIT` 전에 예산 때문에 난 57014를 `RunTimeout`으로 바꾸고, 이는 재시도하지 않는다. 예산은 `COMMIT` 전의 문장들을 덮는다. `COMMIT` 자체는 PostgreSQL이 타임아웃시키지 않고 커밋 배치는 shield되므로, 실행은 `COMMIT`에 걸린 시간만큼 예산을 넘을 수 있다. 배치가 커밋됐는지는 SQLSTATE가 아니라 어느 문장이 실패했는지로 판정한다. `COMMIT` 이전이나 `COMMIT`에서 난 오류는 롤백이다. `COMMIT`이 응답을 돌려준 뒤라면, 그 뒤의 LSN 조회가 무엇을 보고하든 실행은 커밋된 것이다. 응답이 전혀 없으면 알 수 없음이고, 이는 마감이나 재시도 한도가 실행을 끝내기 전에 재실행의 claim으로 판정한다.
+- **`timeout=`은 실행 하나에 대한 예산이다**([ADR-0008](../adr/0008-run-timeout-budget.md); #61). `app.run`이 시작된 때부터 모든 시도와 백오프에 걸친다. 실행기는 마감 시각을 쥐고 사실을 보고하고, 판단은 엔진이 한다. 엔진은 `COMMIT` 전 각 왕복의 맨 앞에 `set_config('statement_timeout', $1, true)`를 두고, 실행기가 남은 시간을 바인딩한다(PostgreSQL은 이를 문장마다 적용하며, 파이프라인 안에서도 마찬가지다. 그 문장들에 대해서는 이 로컬 값이 세션, 롤, 데이터베이스 기본값으로 설정된 더 작은 `statement_timeout`을 대체한다). 실행기는 마감이 지났음을 yield 지점에서 보고하는데, 끝나는 시각이 마감을 넘을 백오프를 하는 대신 보고하는 경우도 포함한다. 엔진은 이 보고나 `COMMIT` 전에 예산 때문에 난 57014를 `RunTimeout`으로 바꾸고, 이는 재시도하지 않는다. 예산은 `COMMIT` 전의 문장들을 덮는다. `COMMIT` 자체는 PostgreSQL이 타임아웃시키지 않고 커밋 배치는 shield되므로, 실행은 `COMMIT`에 걸린 시간만큼 예산을 넘을 수 있다. 배치가 커밋됐는지는 SQLSTATE가 아니라 어느 문장이 실패했는지로 판정한다. `COMMIT` 이전이나 `COMMIT`에서 난 오류는 롤백이다. `COMMIT`이 응답을 돌려준 뒤라면, 그 뒤의 LSN 조회가 무엇을 보고하든 실행은 커밋된 것이다. 응답이 전혀 없으면 알 수 없음이고, 이는 먼저 같은 실행 ID의 claim(`ResolveClaim`. 시도로 세지 않고 마감의 제한도 받지 않는다)으로 판정한다. 23505가 나면 커밋된 것이다(재생 경로). claim이 성공하면 커밋되지 않은 것이고, 엔진은 롤백한 뒤 `BEGIN`과 claim부터 정상 시도를 시작한다. 마감이나 재시도 한도가 실행을 끝내는 것은 그 다음이다.
 - "첫 문장"(실행 ID claim, 이 문서 전체에서)은 `BEGIN`과 예산의 `set_config` 다음에 테이블에 대해 실행하는 첫 문장을 뜻한다.
 
 #### 실행 ID: 멱등성과 커밋 결과 판정을 하나로
@@ -1027,7 +1027,7 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
 **재시도 정책**
 - 결정: 40001과 40P01은 무조건 재시도. 23505는 `on_unique=True`를 명시한 유스케이스만(실행 ID 테이블의 23505는 멱등 경로로 따로 처리). 최대 4회 시도, 지수 백오프 + full jitter(기준 10ms, 상한 200ms), 재시도마다 로드부터 다시.
 - 근거: PostgreSQL 문서는 직렬화 실패는 무조건 재시도해도 좋지만, unique 위반 같은 다른 코드는 영구적 오류일 수 있어 더 주의해야 한다고 권한다.
-- 57014(`statement_timeout`)는 재시도하지 않는다. `timeout=`은 실행 전체에 대한 호출자의 한도이므로, 그것이 다 된 뒤에 재시도하면 호출자가 허용한 것보다 더 쓰게 된다. 마감과 `COMMIT` 전의 57014는 모두 `RunTimeout`을 낸다([ADR-0008](../adr/0008-run-timeout-budget.md), Proposed; #61). 당분간 `lock_timeout` 옵션도, 55P03의 재시도도 없다(#64에서 다시 본다). `lock_timeout`을 직접 설정한 사용자는 `DatabaseError(55P03)`를 받는다.
+- 57014(`statement_timeout`)는 재시도하지 않는다. `timeout=`은 실행 전체에 대한 호출자의 한도이므로, 그것이 다 된 뒤에 재시도하면 호출자가 허용한 것보다 더 쓰게 된다. 마감과 `COMMIT` 전의 57014는 모두 `RunTimeout`을 낸다([ADR-0008](../adr/0008-run-timeout-budget.md); #61). 당분간 `lock_timeout` 옵션도, 55P03의 재시도도 없다(#64에서 다시 본다). `lock_timeout`을 직접 설정한 사용자는 `DatabaseError(55P03)`를 받는다.
 - 이 재시도 루프와 작업 러너의 도메인 예외 재시도(`retry_later`, §8.4)는 별개다.
 
 **같은 유스케이스 안의 커밋 순서**
@@ -1140,7 +1140,7 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
 - 결정: 쿼리 컴파일러와 실행 엔진은 독립으로 유지하고, **DDL 생성·카탈로그 리플렉션·마이그레이션은 SQLAlchemy Core와 Alembic에 맡긴다.** 엔티티 레지스트리를 SQLAlchemy `MetaData`로 변환해 Alembic autogenerate를 쓴다. 이 기능은 `platina migrate`·`pull`·drift 검사 때만 필요하므로 `platina[migrate]` 선택 extra로 두어, 런타임 코어는 SQLAlchemy에 의존하지 않는다.
 - 변천: 처음에는 "Alembic은 SQLAlchemy 메타데이터에 묶여 독립 ORM에 맞지 않는다"며 마이그레이션 도구를 자체 구현하기로 했다. 그런데 Core를 쓰지 않는 근거(§8.1)가 틀렸고, Core가 실제로 아껴 주는 작업이 쿼리 컴파일이 아니라 DDL·리플렉션·마이그레이션이라는 점이 드러나 결정을 뒤집었다. MySQL을 붙일 때도 이쪽 작업을 공짜로 얻는다.
 - 위험: 변환의 충실도. Alembic autogenerate가 약한 지점이 이 설계의 기능과 겹친다. ① `renamed_from` 힌트(autogenerate는 rename을 감지하지 못함 → `process_revision_directives` 훅으로 drop+add를 rename으로 바꾸는 방안), ② 람다로 선언한 `Check`, ③ `version` 트리거(Alembic은 트리거를 다루지 않음 → 서드파티 PG 객체 지원 검토), ④ 표현식·부분 인덱스, ⑤ 프레임워크 내부 테이블(특히 파티션). 이 다섯 가지가 왕복되는지가 스파이크 항목이다(§9). 결과([스파이크 0004](../spikes/0004-alembic-round-trip.md), §9.3): 컬럼, 테이블, 외래 키, 복합 유니크 키, 표현식 인덱스는 왕복된다. ①은 다운그레이드까지 만들고(Alembic이 만드는 rename의 역연산은 rename을 잃는다) rename을 맨 앞에 두는 재작성이 있을 때 컬럼에서만 동작하며, 테이블 rename은 테이블 이름에서 파생된 이름을 남기고, 어떤 rename이든 PostgreSQL 18의 NOT NULL 제약 이름을 남긴다. ②와 ④: CHECK나 부분 인덱스의 변경은 이름이 식과 함께 바뀔 때만 감지된다(CHECK는 Alembic의 opt-in 플러그인 `checkconstraint_byname`도 있어야 한다). 표현식 인덱스는 거짓 차이를 내지 않는다. ③은 서드파티 패키지 없이 Alembic 자체의 확장 지점(사용자 정의 연산과 비교자 플러그인)으로 동작하며, drift는 트리거 이름과 함수 본문으로만 감지한다. ⑤는 왕복되지 않는다: 마이그레이션 밖에서 만든 파티션(파티셔닝은 실험을 위해 가정한 것이고 결정된 것이 아니다)은 drop 대상으로 제안되고 다운그레이드는 이를 다시 만들지 못하며, 파티션 방식과 `xid8` 컬럼은 비교되지 않는다. 같은 리플렉션 공백(`xid8`, CHECK 본문, 부분 인덱스 조건식, NOT NULL 이름)은 `migrate`뿐 아니라 `platina pull`과 drift 비교도 제한한다. 이로써 남는 선택 중 이름 규칙은 #25에서, 인덱스가 걸린 컬럼의 rename과 나머지 충실도 문제는 #70(2차, §9.6)에서 정한다.
-- **내부 테이블은 예외다**([ADR-0009](../adr/0009-internal-tables-owned-by-the-core.md), Proposed; 방향은 #63에서 결정): 코어가 그 DDL을 전용 스키마의 버전 붙은 SQL로 제공하며, Alembic autogenerate는 기본 설정으로 이 스키마를 비교하지 않는다(연결의 기본 스키마만 비교한다). 다만 그 스키마가 `search_path`나 같은 이름의 롤(`"$user"`)을 통해 연결의 기본 스키마 *그 자체*라면, 비교되어 drop 대상으로 제안된다. 기동 시 DDL을 실행하는 것은 없다. `platina` 명령이 이를 적용하고, `platina[migrate]` 사용자는 자기 마이그레이션 이력에서 Alembic 연산으로 호출한다. 별도의 기동 시 검사는 없다. 내부 테이블에 대한 어떤 문장(첫 문장은 claim INSERT)에서든 `42P01` / `42703` / `42501`이 나면, 실행할 명령이나 필요한 권한을 힌트로 담은 `DatabaseError`가 된다. `platina check`는 버전을 비교한다. 파티셔닝과 키 형태는 #72를 기다리며, 그 전에는 내부 테이블 DDL을 내놓지 않는다.
+- **내부 테이블은 예외다**([ADR-0009](../adr/0009-internal-tables-owned-by-the-core.md); 방향은 #63에서 결정했고, 세부 사항은 #63에서 계속 다룬다): 코어가 그 DDL을 전용 스키마의 버전 붙은 SQL로 제공하며, Alembic autogenerate는 기본 설정으로 이 스키마를 비교하지 않는다(연결의 기본 스키마만 비교한다). 다만 그 스키마가 `search_path`나 같은 이름의 롤(`"$user"`)을 통해 연결의 기본 스키마 *그 자체*라면, 비교되어 drop 대상으로 제안된다. 그래서 Platina의 Alembic 통합은 이 경우 autogenerate를 거부하고 고치는 방법을 알려 주는 오류를 내며, `platina check`도 이를 보고한다. 기동 시 DDL을 실행하는 것은 없다. `platina` 명령이 이를 적용하고, `platina[migrate]` 사용자는 자기 마이그레이션 이력에서 Alembic 연산으로 호출한다. 별도의 기동 시 검사는 없다. 내부 테이블에 대한 어떤 문장(첫 문장은 claim INSERT)에서든 `42P01` / `42703` / `42501`이 나면, 실행할 명령이나 필요한 권한을 힌트로 담은 `DatabaseError`가 된다. `platina check`는 버전을 비교한다. 파티셔닝과 키 형태는 #72를 기다리며, 그 전에는 내부 테이블 DDL을 내놓지 않으며, 그때까지 통합 테스트(#22)는 `tests/support`의 테스트 전용 DDL로 돈다. 다운그레이드는 전진 전용(forward-only)이다.
 - 근거(참고): Atlas는 코어가 Apache 2.0이지만 오픈코어이고 2025년 10월 v0.38에서 마이그레이션 린트를 유료 등급으로 옮겼다. sqldef는 SQL 파일 하나로 스키마를 관리하지만 Go 바이너리라 `pip install` 한 번으로 끝나는 경험을 깨뜨린다.
 
 **Pydantic 연동**
@@ -1246,7 +1246,7 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
   - `expected_version`, `VersionMismatch`, `owned` 변경 시 루트 `version` 증가는 #11, #13, #15, #17에 속한다. outbox가 들어오기 전(#23)까지 이벤트를 내는 유스케이스는 조용히 버리지 않고 거부한다. 시점(seal 또는 실행)은 #21에서 정한다.
 - **Phase 1b - Events, queries and tooling**: inline 프로젝션과 outbox 로그(#23), Query 경로(TypedSQL, #24), 스키마 도구(선택 extra, #25, CLI #26), 테스트 키트(#27), §9.5 측정(#28), 테스트로서의 문서 예제(#29). 종료 조건: 도입 3단계(§6).
   - 1b에 함께 들어가는 것: 집합 로드 구현(#59를 따름), #23 전에 outbox 로그의 정리 비용(#73), SSI 부하에서 `53200`의 분류(#74. 아무것도 막지 않으며, 그때까지는 재시도하지 않고 `DatabaseError`로 드러난다).
-  - 1차의 스키마 도구([스파이크 0004](../spikes/0004-alembic-round-trip.md)): 왕복되는 것은 Alembic이 생성한다(생성, 컬럼 추가·삭제, 타입 변경, `version` 트리거). 제약·인덱스 이름 규칙은 1b에서, 첫 이름이 만들어지기 전에 정한다. Alembic이 보지 못하는 것은 shadow 스키마 카탈로그 diff가 보고한다. `platina migrate`를 쓰는 프로젝트에서는 `platina check`가 CI에서 이를 실행하며, Platina가 마이그레이션하지 않는 DB의 선언된 테이블도 검사할 수 있다. rename, 바뀐 CHECK나 부분 인덱스는 손으로 쓰는 마이그레이션이고 drift 보고가 이를 잡는다. 내부 테이블은 #63을 따른다([ADR-0009](../adr/0009-internal-tables-owned-by-the-core.md), Proposed: 전용 스키마의 버전 붙은 SQL, #72 이후에만 제공).
+  - 1차의 스키마 도구([스파이크 0004](../spikes/0004-alembic-round-trip.md)): 왕복되는 것은 Alembic이 생성한다(생성, 컬럼 추가·삭제, 타입 변경, `version` 트리거). 제약·인덱스 이름 규칙은 1b에서, 첫 이름이 만들어지기 전에 정한다. Alembic이 보지 못하는 것은 shadow 스키마 카탈로그 diff가 보고한다. `platina migrate`를 쓰는 프로젝트에서는 `platina check`가 CI에서 이를 실행하며, Platina가 마이그레이션하지 않는 DB의 선언된 테이블도 검사할 수 있다. rename, 바뀐 CHECK나 부분 인덱스는 손으로 쓰는 마이그레이션이고 drift 보고가 이를 잡는다. 내부 테이블은 #63을 따른다([ADR-0009](../adr/0009-internal-tables-owned-by-the-core.md): 전용 스키마의 버전 붙은 SQL, #72 이후에만 제공).
   - `platina gen`은 기존 DB를 스키마 소스로 받는다(#24).
 - **2차**: async 프로젝션, `then`·`@process`와 작업 파이프라인, 배치 유스케이스와 집합 변경(#33. 집합 단위 삭제와 `insert_all`은 #57과 #60의 결정에 따른다), 마이그레이션 충실도(rename, 파생 이름, CHECK·부분 인덱스 변경, #70), `platina pull`(#71). 1차에는 외부 세계와의 경계가 없다. 스파이크 0002의 유스케이스 넷에 필요한 `@process` 핸들러는 여기서 들어온다.
 - **이후**: MySQL·MariaDB 방언, saga 헬퍼, free-threaded 공식 지원
@@ -1348,7 +1348,7 @@ class CommitBatch: statements: tuple[CompiledSQL, ...]; bounded = True  # 쓰기
 class StoredResult: run_id: RunId; bounded = False       # 별도 READ COMMITTED 트랜잭션에서 run_result(결과 + 핑거프린트) 조회
 class FreshLsn: bounded = False                          # pg_current_wal_insert_lsn() 조회
 class Rollback: bounded = False
-class ResolveClaim: run_id: RunId; bounded = False       # CommitUnknown 뒤: BEGIN + claim만 (ADR-0008 Decision 6)
+class ResolveClaim: run_id: RunId; bounded = False       # CommitUnknown 뒤: BEGIN + claim만. 시도가 아님 (ADR-0008 Decision 6)
 class Sleep:    seconds: float; bounded = True           # 재시도 백오프. 끝나는 시점(now + seconds)으로 마감을 적용
 
 # core/engine/run.py  (IO 없음)
@@ -1356,24 +1356,22 @@ def run_usecase(uc: Usecase, args: Bound, policy: RetryPolicy, d: Dialect
                ) -> Generator[Command, Reply, RunResult]:
     pending: RunResult | None = None                        # 커밋 전에 계산해 둔 결과 (시도를 넘어 유지)
     fp = fingerprint(uc, args) if run_id.kind == "caller" else None   # 아무것도 실행하기 전에 한 번 (직렬화할 수 없으면 UsageError, #58)
-    claimed = False                                         # ResolveClaim 뒤: 열린 트랜잭션이 이미 claim을 쥐고 있음
     for attempt in policy.attempts():
-        stage_kind = "load"
+        stage_kind = "load"                                 # RunTimeout의 stage: "load", "commit" (또는 아래의 "backoff")
         try:
             snapshots = {}
             for i, stage in enumerate(uc.plan.stages):        # 단계 수는 seal에서 확정
-                head = (begin(uc.isolation), budget(), claim(run_id)) if i == 0 and not claimed else (budget(),)
+                head = (begin(uc.isolation), budget(), claim(run_id)) if i == 0 else (budget(),)
                 rows = yield Pipeline(head + stage.compile(d, args, snapshots))   # 왕복 1: BEGIN + 예산 + 실행 ID 선점 + 로드
                 snapshots |= stage.materialize(rows)          # Load.after 함수도 여기서 실행(순수)
-            claimed = False
-            changes = uc.invoke(snapshots)                    # 사용자 유스케이스: 평범한 순수 함수
+            changes = uc.invoke(snapshots)                    # 사용자 유스케이스(순수). 여기서 지난 마감은 커밋 배치에서 보고됨
             pending = RunResult.from_changes(changes)
             stage_kind = "commit"
             reply = yield CommitBatch(commit_plan(changes, d, run_id, fp))   # 왕복 2: 예산, 쓰기 … COMMIT, LSN
             return pending.committed(reply)                   # COMMIT의 태그는 COMMIT. 그 뒤에 난 오류도 커밋된 것
         except StatementFailed as f:                        # 실행기가 준 사실: 어느 문장이 실패했는지, 그 SQLSTATE
             fault = classify(f, stage_kind)                   # (드라이버가 타입으로), 마감이 지났는지. 엔진이 정한다:
-        except DeadlineReached as e:                        # 선점됨 / 재시도 / 마감 / 결과 불명 / 커밋됨 / 예외
+        except DeadlineReached as e:                        # 선점됨 / 재시도 / 마감 / 결과 불명 / 커밋됨 / 치명적 오류
             fault = Deadline(e)
         # 아래의 yield는 모두 except 절 밖에 있으므로, 실행기가 그중 하나에서 보고한 DeadlineReached
         # (마감이 적용되는 것은 Sleep뿐)는 제너레이터를 빠져나가지 않고 이 코드에 닿는다.
@@ -1385,7 +1383,7 @@ def run_usecase(uc: Usecase, args: Bound, policy: RetryPolicy, d: Dialect
                 return (yield from replay(run_id, fp, pending))
             case Deadline():                                # 실행기의 마감, 또는 COMMIT 전에 예산 때문에 난 57014
                 yield Rollback()
-                raise RunTimeout(...) from fault.cause        # 재시도하지 않음
+                raise RunTimeout(stage=stage_kind, ...) from fault.cause   # 재시도하지 않음
             case Retryable():                               # 40001 / 40P01
                 yield Rollback()
                 try:
@@ -1396,10 +1394,12 @@ def run_usecase(uc: Usecase, args: Bound, policy: RetryPolicy, d: Dialect
                 if not (yield ResolveClaim(run_id)):        # 23505: 앞선 시도가 커밋됨
                     yield Rollback()
                     return (yield from replay(run_id, fp, pending))
-                claimed = True                              # 커밋되지 않음. BEGIN과 claim 없이 이 트랜잭션에서 계속
-    if claimed:
-        yield Rollback()
-    raise RetryExhausted(...)
+                yield Rollback()                            # 선점함: 커밋되지 않음 (claim은 앞선 시도가 끝나기를 기다렸다).
+                                                            # 해제하고 BEGIN과 claim부터 정상 시도를 시작
+            case Fatal():                                   # 재시도 불가: 23503, 사용자 테이블의 23505 (on_unique 없음), 22xxx, ...
+                yield Rollback()
+                raise fault.error                           # 드라이버가 타입을 붙인 DatabaseError, SQLSTATE 보존
+    raise RetryExhausted(...)                               # 이 시점에는 모든 시도의 결과가 알려져 있음
 
 def replay(run_id, fp, pending):                            # 재생 경로. 마감으로 멈추지 않음
     match run_id.kind:
@@ -1532,7 +1532,8 @@ PlatinaError
 │   └── CommitCycle
 ├── NotFound                  # 루트 ref나 필수 의존 로드의 행이 없음
 ├── IdempotencyKeyReuse       # 호출자 키를 다른 인자로 재사용 (#58. 재시도 없음, 클라이언트의 실수)
-├── RunTimeout                # 실행의 timeout= 예산 소진: 마감 또는 COMMIT 전 57014 (ADR-0008. 재시도 없음)
+├── RunTimeout                # 실행의 timeout= 예산 소진: 마감 또는 COMMIT 전 57014 (ADR-0008. 재시도 없음.
+│                             #   필드 budget, stage "load" / "backoff" / "commit", sqlstate)
 ├── ConcurrencyError
 │   ├── RetryExhausted        # 40001/40P01 재시도 한도 초과
 │   └── VersionMismatch       # expected_version 불일치 (요청 사이 낙관적 락)
@@ -1659,14 +1660,14 @@ def test_retryable_fault_restarts_from_begin(point, fault):
 ```python
 @pytest.mark.parametrize("committed", [True, False], ids=["committed", "rolled-back"])
 def test_commit_unknown_is_resolved_by_rerun_with_same_run_id(committed):
-    """커밋 배치 도중 연결이 끊기면, 같은 실행 ID로 재실행해 커밋 여부를 판정한다."""
+    """커밋 배치 도중 연결이 끊기면, 같은 실행 ID의 claim으로 커밋 여부를 판정한다."""
     # when
     trace = replay(run_usecase(pay_usecase, ARGS, POLICY, PG),
                    happy_path_script(pay_usecase), inject=("CommitBatch", ConnectionLost()),
                    server_state={"committed": committed})
     # then
     assert trace.second_attempt_run_id == trace.first_attempt_run_id
-    assert trace.applied_once()                      # 커밋됐으면 AlreadyClaimed, 아니면 정상 실행
+    assert trace.applied_once()                      # 커밋됐으면 23505, 재생 경로. 아니면 롤백 뒤 정상 시도
 ```
 
 - 취소 주입 시 `CommitBatch`/`Rollback` 명령 도중에는 취소가 전달되지 않는지(shield)도 같은 방식으로 확인한다.
