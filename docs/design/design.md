@@ -187,7 +187,7 @@ soft delete, auditing, multi-tenancy, pagination, Pydantic DTO generation, saga 
 
 ## 4. Syntax
 
-> The code below is a design proposal. Names and signatures may change in the prototype. The type surface of §4.2-§4.6 and the misuse list of §11.8 were confirmed under pyright and mypy by the type stub spike ([spike 0001](../spikes/0001-type-surface.md), ADR-0003, ADR-0004); the other sections are not yet checked by a type spike, and two lines of §4.7 depend on open decisions (marked there).
+> The code below is a design proposal. Names and signatures may change in the prototype. The type surface of §4.2-§4.6 and the misuse list of §11.8 were confirmed under pyright and mypy by the type stub spike ([spike 0001](../spikes/0001-type-surface.md), ADR-0003, ADR-0004), and the parent key of owned children and the comparison operands of §4.2 and §4.7 by [spike 0006](../spikes/0006-parent-fk-and-column-operands.md); the other sections are not yet checked by a type spike.
 > Example domain: the `billing` module of an online store (orders, order items, wallets).
 
 ### 4.0 Concepts at a glance
@@ -236,7 +236,7 @@ app.seal()   # validates load plans, module boundaries, invariants, projection k
 from decimal import Decimal
 from datetime import datetime
 from platina import (
-    Entity, value, event, Col, Id, Rel, pk, column, embedded, fk,
+    Entity, value, event, Col, Id, Rel, pk, column, embedded, fk, parent_fk,
     many_to_one, one_to_many, version_column, invariant, Check, Index, server_now,
 )
 
@@ -267,6 +267,13 @@ class Order(Entity, table="orders", aggregate_root=True):
     def paid_requires_total(self) -> bool:
         return self.status is not OrderStatus.PAID or self.total.amount > 0
 
+class Item(Entity, table="items"):                         # an owned child of Order
+    id: Col[Id[Item]] = pk(generated="uuid7")
+    order_id: Col[Id[Order]] = parent_fk(lambda: Order)   # set by Order.items.add(...), not a constructor parameter
+    sku: Col[str] = column(length=40)
+    price: Col[Money] = embedded(prefix="price_")
+    position: Col[int] = column()
+
 @event(aggregate=lambda: OrderPaid.order_id)               # declares only which aggregate the event belongs to
 class OrderPaid:
     order_id: Col[Id[Order]]
@@ -279,7 +286,8 @@ class OrderPaid:
 - **Entities inherit `Entity`** and pass their table options as class keywords (ADR-0003). A class decorator can make a type checker synthesise a constructor but cannot add members, so `Order.ref`, `Order.where`, `Order.stub` and `order.set` need the base class (spike 0001).
 - **Every field is declared as `Col[T]`.** With a plain annotation (`status: OrderStatus = column(...)`), the type checker also sees class access (`Order.status`) as `OrderStatus`. For it to appear as `Column[Order, OrderStatus]` on the class (the column knows the class that declares it) and `OrderStatus` on the instance, the annotation itself must be a descriptor type. This is the same reason SQLAlchemy 2.0 uses `Mapped[T]`. Event fields and value-object fields are the same (`OrderPaid.user_id` in projection keys, `Money.amount` in embedded paths, ADR-0004).
 - **Snapshots are immutable.** `order.status = PAID` is an error; writes happen only through `.set(...)` (§4.4). Collection fields are a read-only `Sequence[Item]` on the instance.
-- **Creation is the keyword constructor**: `Order(number="A-1", total=..., user_id=...)`, the same as events and values. A missing required field is a type error in both checkers; generated keys, `version_column()`, server defaults and relations are not parameters (§8.2 "Creation syntax", ADR-0003).
+- **Creation is the keyword constructor**: `Order(number="A-1", total=..., user_id=...)`, the same as events and values. A missing required field is a type error in both checkers; generated keys, `version_column()`, server defaults, relations and the parent key of an owned child are not parameters (§8.2 "Creation syntax", ADR-0003).
+- **The parent sets the key of an owned child.** The child declares it with `parent_fk(lambda: Order)` (working name; the final name is fixed in #9), so `Item(sku=..., price=..., position=...)` takes no `order_id` and `Order.items.add(item)` fills it; passing it is a type error in both checkers, so a new child cannot be created with another parent's key. A child of a relation that is not `owned` declares its key with `fk` and passes it to the constructor like any other column (#49, [spike 0006](../spikes/0006-parent-fk-and-column-operands.md)). Open: reading the key of a child that has not been added yet (#76); owned children of a new root and `add` on a relation that is not `owned` (#60); how `owned=True` and `parent_fk` are kept consistent (one derived from the other, or a seal check), and moving an existing child to another parent, which still type-checks (`Item.order_id.to(...)` in a child update or a set change, `add` of a child loaded under another parent; spike 0006 O9) (#9).
 - **Equality** (provisional working rule, #54): two snapshots are equal when they hold the same values (columns and loaded relations, including what is loaded); the hash is the entity type plus the primary key. `==` and `hash()` on a ref raise `UnloadedReference` (ADR-0003 Decision 4; spike 9.4 confirms or changes it).
 - **`owned=True`**: a child that belongs to the aggregate. When a child changes, the root's `version` is bumped as well (JPA `OPTIMISTIC_FORCE_INCREMENT`). So when an edit screen handles an order and its items together, a change to only the items is still caught by the optimistic lock across requests (§4.6). Ordinary FK children (e.g. comments on a post) are not `owned` and do not touch the root.
 - **Client-generated IDs are the default.** Thanks to Python 3.14's `uuid.uuid7()`, the ID of a new entity is known inside the pure function. `generated="identity"` is also supported, but in that case the ID is only available from the commit result (`result.created(Order)`). The core never calls `uuid7()` itself: `Order(...)` takes the ID from the source the engine installs for the invocation; direct calls in tests and `Order.stub()` use a deterministic fallback sequence, and `Order(...)` outside any use case or step is a `UsageError` (ADR-0002). Under SERIALIZABLE an ever-increasing key (uuid7, identity) makes commands that read recent rows of a table (including a child's foreign-key check of a new parent) and insert into it conflict; [ADR-0007](../adr/0007-ever-increasing-entity-keys.md) (Proposed) proposes a random default.
@@ -351,7 +359,7 @@ orders, wallets = OrderRepo(), WalletRepo()
 |---|---|---|
 | `Order.status.to(v)` | Assign a value (`v` checked against `T` of `Column[Order, T]`) | `SET status = $1` |
 | `Wallet.balance.path(Money.amount).add(n)` | DB-side increment/decrement of a part of an embedded value (does not read the current value; concurrent writers of the same row still conflict with 40001, ADR-0005) | `SET balance_amount = balance_amount + $1` |
-| `Order.items.add(item)` | Add a child row | `INSERT` (+ root version increment if `owned`) |
+| `Order.items.add(item)` | Add a child row; for an `owned` relation the parent sets the child's `parent_fk` key (§4.2; a relation that is not `owned`: #60) | `INSERT` (+ root version increment if `owned`) |
 | `Order.items.remove(item)` | Delete a child row | `DELETE` (+ root version increment) |
 | `Order.items.update(item, Item.price.to(p))` | Update a child row | `UPDATE` (+ root version increment) |
 
@@ -568,13 +576,14 @@ type OrderWithCount = Annotated[Order, orders.with_item_count]
 def add_item(order: OrderWithCount, sku: str) -> Changes:
     if order.items.count >= 100:
         raise TooManyItems(order.id)
-    # open (#49): how an owned child gets its parent key (spike 0001 F2) - without `order_id` this is a type error today
+    # Item takes no order_id: the parent sets its parent_fk key on add (§4.2, #49)
     return order.set(Order.items.add(Item(sku=sku, price=..., position=order.items.count)))
 
 # Expression form: if the condition and the match are column expressions, they fold into a subquery with no extra round trip
 type PointWallet = Annotated[Wallet | None,
     Load.when(Order.paid_with == PaymentMethod.POINT, match=Wallet.user_id == Order.user_id)]
-    # open (#51): column-to-column comparison operands (spike 0001 L5) - `==` between two columns is a type error today
+    # match compares two columns of the same value type: a predicate over Wallet | Order (§8.2 "Field type surface", #51).
+    # Inside Annotated metadata only pyright type-checks it (mypy checks nothing there, spike 0002 X1); seal validates the declaration
 
 # Function form (Load.after): when it is hard to express as an expression. Argument names bind to use case parameters
 def point_wallet(order: Order) -> Wallet | None:
@@ -926,18 +935,27 @@ On highly contended tables, serialization failures and retries increase. Two kin
 - Decision: every column field of entities, events and value objects is declared as `Col[T]` (`status: Col[OrderStatus] = column(...)`, `amount: Col[Decimal]` in `Money`). Relations are `Rel[...]`. Class access is `Column[Owner, T]`, where the owner is the class that declares the field (`Order.status`: `Column[Order, OrderStatus]`); instance access is `T`. Paths into embedded values are `Order.total.path(Money.amount)` (`Column[Order, Decimal]`). `Column`'s owner parameter is covariant and its value parameter invariant, pinned by type tests (ADR-0004).
 - Rationale: with a plain annotation, the type checker also sees class access (`Order.status`) as `T`. For it to appear as a column on the class and `T` on the instance, the annotation itself must be a descriptor type with an overloaded `__get__`. SQLAlchemy 2.0's `Mapped[T]` exists for the same reason. `.to()`, Finders and projection keys all stand on top of this. The owner comes from the `owner` argument of `__get__`, so operations (`Op[Owner]`), predicates and relations carry the entity they belong to. Spike 0001 confirmed all of it under pyright and mypy.
 - **Where the owner is checked**: by types only where the receiver fixes the owner - `order.set(...)`, `Entity.where(...)`, `SetChange.set(...)`, `SetChange.emit_each(...)`, relation operations, the Finders of `Repository[E]`, and `path`. Where the owner would have to be inferred from several arguments of one call it is not checked by types: queries (`select`/`join`/`where`) are validated when their description is built (whether seal can also catch them is #52), and `Profile`, `Load`, `Index`, `Check` and `@invariant(fields=...)` are validated by seal. Reason (spike 0001, P-A): given columns of two entities in one call, pyright infers the owner as the union `Order | Item` and mypy as the common base `Entity`, so the same misuse would be an error under one checker only.
+- **Comparison operands** (#51, [spike 0006](../spikes/0006-parent-fk-and-column-operands.md)): a value compared with a column is exactly `T`, with no numeric widening - `Order.total.path(Money.amount) >= 0` is a type error and §4.2 writes `>= Decimal(0)` (the typing spec's `int` to `float` promotion still applies to a `float` column). Two columns compare directly, through overloads of `Column`'s comparison operators, when they have the same value type; a difference in nullability only (`T` against `T | None`) is allowed. The result is a predicate over both owners: `Column[O, T] == Column[O2, T]` is `Pred[O | O2]`, so a place where the receiver fixes the owner (`Order.where(...)`) still rejects a predicate that mentions another entity's column. Where two entities are in scope the owner is checked by the query description or by seal (ADR-0004 Decision 4); the parameter type that accepts a predicate over two owners there is open (queries #52; `Load.when`'s `match` takes `Pred[object]` in the spike's stub). That rejection rests on `Pred` being covariant in its owner: like `Column`'s, its variance is declared and pinned by a type test when it is written (spike 0006 O1). The value and the column forms are separate overloads; no parameter takes `T | Column[O, T]`, the shape on which the checkers split (spike 0001).
+- Comparison gaps (open, decided in #9; spike 0006):
+  - `==` and `!=` with a value of the wrong type are `bool` to both checkers, which fall back to the value's reflected `__eq__` (typeshed: `(object) -> bool`); the mistake is reported only where a predicate is required (`Order.where`, `Check`, `Load.when`, `select(...).where`). That is the checkers' view: at run time `Column.__eq__` is called first, and what it does with a value that is not a `T` must not end in a silent `bool`.
+  - `== None` on a non-null column is the same case. On a nullable column `== None` is a `Pred` whose SQL meaning (compiled to `IS NULL`, or replaced by an explicit `is_null()`) is open, and ordering against `None` (`Order.guest_id >= None`) is accepted by both checkers although it can never be true in SQL.
+  - Ordering on an enum column is accepted (`Order.paid_with >= PaymentMethod.POINT`), although Python's plain `Enum` has no order and the SQL order depends on `enum_as` (`IntEnum` and `StrEnum` are ordered, and a `StrEnum`'s order by value can differ from a native PostgreSQL enum's declaration order).
+  - Comparisons on an embedded value column are accepted (`Order.total >= Money(...)`, `Order.total == Money(...)`). The value class is ordered (`@value` orders its fields, so `wallet.balance < order.total` in §4.5 is a plain `bool`), but the column spans several SQL columns: whether such a comparison compiles to a row comparison or is allowed only through `path(...)` is open.
+  - A column in a set (`{Order.amount}`) is rejected by pyright and accepted by mypy (`Column` defines `__eq__` without `__hash__`, which also makes it unhashable at run time).
+  - Comparing columns of different numeric types (`Decimal` against `int`) needs an explicit cast that is not designed yet; until then it is a type error.
 - Cost: annotations get longer, `Column` has two type parameters wherever it is named, value objects declare `Col[...]` fields, and an increment of a part of a value object goes through its path (`Wallet.balance.path(Money.amount).add(n)`). `Order.total.amount` cannot be typed by a generic column.
 
 **Creation syntax and constructor types**
 - Decision: entities inherit the `Entity` base class, and creation is its keyword constructor (`Order(number=..., total=...)`), like events and values; there is no `new`. Modification is a single `.set`. "Only one way" applies per operation. Creation and modification are different operations (ADR-0003).
 - Rationale: a missing required field is the most common mistake when creating an entity, so under "correctness first" it must be caught statically. The alternative of unifying creation into the operation syntax as well, `Order(Order.sku.to(...), …)`, was rejected because it pushes this check down to runtime. A separate classmethod `new` can only be typed by copying the constructor's signature, so the plain constructor would type-check next to it; dropping `new` removes the second way instead of detecting it.
 - Order of attempts to get the types: step 1 holds (spike 0001), so steps 2 and 3 are not needed.
-  1. **Chosen.** The descriptor's `__set__(self, instance: Never, value: T)`: the constructor synthesised through `dataclass_transform(kw_only_default=True, frozen_default=True, ...)` on `Entity` takes each parameter type from the value of `__set__`, and assignment is blocked (pyright `reportAttributeAccessIssue`, mypy `misc` and `arg-type`). Field specifiers declare `init: Literal[False]` for generated keys, `version_column()`, server defaults and relations, so they are not parameters.
+  1. **Chosen.** The descriptor's `__set__(self, instance: Never, value: T)`: the constructor synthesised through `dataclass_transform(kw_only_default=True, frozen_default=True, ...)` on `Entity` takes each parameter type from the value of `__set__`, and assignment is blocked (pyright `reportAttributeAccessIssue`, mypy `misc` and `arg-type`). Field specifiers declare `init: Literal[False]` for generated keys, `version_column()`, server defaults, relations and the parent key of an owned child (`parent_fk`), so they are not parameters.
   2. Typed creation functions in a generated **real Python module**.
   3. Runtime checks only (last resort).
 - Generating `.pyi` stubs was rejected. A stub cannot overlay just the constructor; it replaces the types of the whole module, so until you add a field and regenerate, the editor shows the old shape.
 - Entities are hashable at the type level (`frozen_default=True`; without it pyright and mypy disagree on `{order}`). The runtime rule is a provisional working rule until spike 9.4 (#5) confirms or changes it (#54): equality compares the snapshot's values (columns and loaded relations, including what is loaded), the hash is the entity type plus the primary key; refs raise `UnloadedReference`, a new entity with an `identity` key has no hash before commit (`UsageError`), a chain view compares its latest state, and a moved alias raises `MovedSnapshotAccess` (ADR-0003 Decision 4). Known concerns: a stub and a snapshot with loaded relations can be unequal although they hold the same values, and a new `identity` entity cannot be a set member or dict key before commit.
-- Open: `Order.stub(...)` keywords are not type-checked (#50), and how an owned child gets its parent key (§4.7) is not decided (#49).
+- **The key of an owned child is set by the parent** (#49): the child declares it with its own field specifier `parent_fk(lambda: Order)` (working name, fixed in #9), it is not a constructor parameter, and `Order.items.add(Item(...))` fills it. A child of a relation that is not `owned` keeps `fk(lambda: Order)`, an ordinary required parameter. A flag on `fk` (`fk(..., parent=True)`) was rejected: it would make one specifier mean two things, so the name differs ("configuration never changes meaning"). Rationale: in spike 0002 every owned child passed its parent's key by hand, and a child added to one parent with another parent's key was accepted by both checkers; without the parameter a new child cannot be created with another parent's key ("remove rather than detect"). Confirmed under both checkers by [spike 0006](../spikes/0006-parent-fk-and-column-operands.md).
+- Open: `Order.stub(...)` keywords are not type-checked (#50); reading the parent key of an owned child before it is added (#76); owned children of a new root and `add` on a relation that is not `owned` (#60); how `owned=True` and `parent_fk` are kept consistent, the final name of `parent_fk`, and moving an existing child to another parent, which still type-checks (spike 0006 O9) (#9).
 
 **Dependent loads: declarative only, no generators**
 - Decision: additional data needed is declared with `Load.when` (column expression) or `Load.after` (typed pure function). There is no way to request data with `yield` inside a use case.
@@ -971,7 +989,7 @@ On highly contended tables, serialization failures and retries increase. Two kin
 - Cost: longer than assignment syntax. We chose "only one way" and type safety over familiarity.
 
 **Aggregate boundaries: `aggregate_root` and `owned`**
-- Decision: aggregate boundaries are declared with `class Order(Entity, table="orders", aggregate_root=True)` and `one_to_many(..., owned=True)`. One declaration is used in three places: ① changes to `owned` children bump the root `version`, ② sequence numbers of `@event(aggregate=...)`, ③ module boundary checks.
+- Decision: aggregate boundaries are declared with `class Order(Entity, table="orders", aggregate_root=True)` and `one_to_many(..., owned=True)`. One declaration is used in three places: ① changes to `owned` children bump the root `version`, ② sequence numbers of `@event(aggregate=...)`, ③ module boundary checks. The child side of an `owned` relation declares its key with `parent_fk` (§4.2); how the two declarations are kept consistent is open (#9).
 - Rationale: when an edit screen handles an order and its items together, a change to only the items must still be caught by the optimistic lock across requests (JPA `OPTIMISTIC_FORCE_INCREMENT`). But applying this to every FK child would mean that merely adding a comment to a post updates the post row, which quickly becomes a hot row under the SERIALIZABLE default. So it is limited to children that belong to the aggregate.
 
 **Partial loads of large aggregates**
@@ -1154,7 +1172,7 @@ On highly contended tables, serialization failures and retries increase. Two kin
 Over five rounds of review, the comments moved steadily down into implementation details. The remaining questions cannot be answered by documents; only experiments can answer them. In particular, with SSI interactions, both reviewers and the designer repeated the same kind of mistake on paper. So the following four experiments come before implementation.
 
 ### 9.1 Type stub spike (top priority)
-The whole syntax of §4 depends on this. Without an implementation, run the pass and fail files of §11.8 through pyright and mypy with stubs alone. Result: [spike 0001](../spikes/0001-type-surface.md) (independently reproduced in three rounds; the probes added after round 3 are recorded as not reproduced), ADR-0003, ADR-0004.
+The whole syntax of §4 depends on this. Without an implementation, run the pass and fail files of §11.8 through pyright and mypy with stubs alone. Result: [spike 0001](../spikes/0001-type-surface.md) (independently reproduced in three rounds; the probes added after round 3 are recorded as not reproduced), ADR-0003, ADR-0004. Follow-up: [spike 0006](../spikes/0006-parent-fk-and-column-operands.md) (independently reproduced) confirms the parent-set key of owned children (#49) and the comparison operands (#51).
 - [x] `Col[T]`: class access `Column[T]`, instance access `T` - holds; class access is now `Column[Owner, T]` (ADR-0004)
 - [x] Constructor: does `__set__(self, instance: Never, value: T)` give constructor parameter types while blocking assignment? If not, typed creation functions in a generated module - holds at step 1, on an `Entity` base class; creation is `Order(...)` (ADR-0003)
 - [x] `with chain(a, b) as (c, a, b)`: does TypeVarTuple preserve the type of each name? - holds
@@ -1185,7 +1203,7 @@ Each was chosen to test a different part of the design. If something does not tr
 | # | Use case | What it tests | Result (spike 0002) |
 |---|---|---|---|
 | 1 | Payment | Idempotency key, run ID | Not expressible: a key reused with other arguments gets the stored result |
-| 2 | Refund | Dependent loads (`Load.when`/`after`) | Expressed, awkward: `Load.when` with a column-to-column `match` is a type error (#51); dependent-load parameters must be passed to `bind` unless given a default |
+| 2 | Refund | Dependent loads (`Load.when`/`after`) | Expressed, awkward: `Load.when` with a column-to-column `match` is a type error (#51; allowed since spike 0006); dependent-load parameters must be passed to `bind` unless given a default |
 | 3 | Payment after applying a coupon | `chain` | Expressed, awkward: `chain` as written; "used by this customer?" over-reads a relation |
 | 4 | Stock reservation | Hot rows, pessimistic lock profile | Expressed, awkward: the stock rows cannot be declared (the caller pre-reads); `lock="for_update"` still ends in 40001 (ADR-0005) |
 | 5 | Seat reservation | write skew, SERIALIZABLE | Expressed, awkward: SERIALIZABLE covers the write skew; availability reads over-read whole relations |
@@ -1208,7 +1226,7 @@ Each was chosen to test a different part of the design. If something does not tr
 Started as a proposal reflecting the comment that the scope is too broad; decided by the maintainer on 2026-11-26 in #6, from the verdicts of §9.1-9.4 and the recommendations on the decision issues they produced. Phase 1 is cut in two at the first working `app.run`. Where a part depends on a decision issue that is still open, it follows the decision of that issue.
 - **Phase 1a - Core execution path**: pure use cases and the execution engine, PostgreSQL dialect, run ID (#9-#22), then the release pipeline and a working 0.0.1 (#44, #30).
   - Exit: use cases 6 (order merge, delete of a root), 8 (transfer, insert of a new root) and 9 (profile edit) of [spike 0002](../spikes/0002-use-cases-on-paper.md) pass as integration tests on PostgreSQL in one load batch and one commit batch, SERIALIZABLE with retry and a run ID.
-  - Before the build issues they gate: the type spike for #49 and #51; the decisions #48, #54, #57, #58, #59, #60, #61 and #63, with a separate type spike for the shapes of #48, #57, #59 and #60, and the ADRs they call for (one of them for #61's run budget); ADR-0007 after #65; the cleanup cost of the run-ID tables (#72) before #63 fixes their schema. What these decisions add to the build issues follows the decision of each.
+  - Before the build issues they gate: the type spike for #49 and #51 (done: [spike 0006](../spikes/0006-parent-fk-and-column-operands.md)); the decisions #48, #54, #57, #58, #59, #60, #61 and #63, with a separate type spike for the shapes of #48, #57, #59 and #60, and the ADRs they call for (one of them for #61's run budget); ADR-0007 after #65; the cleanup cost of the run-ID tables (#72) before #63 fixes their schema. What these decisions add to the build issues follows the decision of each.
   - `expected_version`, `VersionMismatch` and the root `version` bump on `owned` changes are part of #11, #13, #15 and #17. Until the outbox lands (#23), a use case that emits events is rejected, never silently dropped; whether at seal or at run time is decided in #21.
 - **Phase 1b - Events, queries and tooling**: inline projections and the outbox log (#23), Query path (TypedSQL, #24), schema tooling (optional extra, #25, CLI #26), the test kit (#27), the §9.5 measurements (#28) and documentation examples as tests (#29). Exit: adoption step 3 (§6).
   - Also in 1b: the set-load implementation (following #59), the cleanup cost of the outbox log (#73) before #23, and the classification of `53200` under SSI load (#74; it gates nothing - until then it is not retried and surfaces as `DatabaseError`).
@@ -1660,6 +1678,9 @@ with chain(order, wallet) as (c, o2, w2):
     assert_type(o2, Order)
     assert_type(w2, Wallet)
 new = Order(number="A-1", total=money, user_id=uid)              # required-field check
+item = Item(sku="A", price=money, position=1)                    # no order_id: the parent sets it
+assert_type(order.set(Order.items.add(item)), Changes)
+assert_type(Wallet.user_id == Order.user_id, Pred[Wallet | Order])  # a predicate over both owners
 
 # tests/typing/fail_misuse.py — every line must be a type error with the named codes [pyright rule, mypy code]
 # fmt: off
@@ -1671,12 +1692,16 @@ order.items.append(item)                      # expect-error[reportAttributeAcce
 apply_coupon(o, c) + pay(o, w)                # expect-error[reportOperatorIssue, reportUnusedExpression, operator]: + not allowed between StepResults
 orders.by_number(42)                          # expect-error[reportArgumentType, arg-type]: Finder[Order, str]
 Order(number="A-1")                           # expect-error[reportCallIssue, call-arg]: required fields total, user_id missing
+Item(order_id=order.id, sku="A", price=money, position=1)  # expect-error[reportCallIssue, call-arg]: the parent sets an owned child's key
+assert Order.total.path(Money.amount) >= 0    # expect-error[reportOperatorIssue, operator]: a value is exactly T, no widening
+Order.where(Order.user_id == Wallet.user_id)  # expect-error[reportArgumentType, arg-type]: a predicate over Order | Wallet
 # fmt: on
 ```
 
 - `tools/typetests.py` runs both checkers and checks every marked line: each checker must report an error there, and every error it reports on that line must carry one of the listed codes (pyright rules start with `report`, the others are mypy codes). Without the codes, a line that fails for an unrelated reason (a misspelled name) would pass.
-- The codes above are the ones spike 0001 observed (§9.1). Some lines carry more than one code per checker: mypy reports both `misc` (frozen) and `arg-type` (the `Never` instance of `__set__`) on the immutability line, and pyright strict adds `reportUnknownMemberType` to the `append` line and `reportUnusedExpression` to the bare `+` expression (as `_ = ...` it would be `reportUnknownVariableType` instead).
+- The codes above are the ones spike 0001 observed (§9.1), and spike 0006 for the parent-key and comparison lines. Some lines carry more than one code per checker: mypy reports both `misc` (frozen) and `arg-type` (the `Never` instance of `__set__`) on the immutability line, and pyright strict adds `reportUnknownMemberType` to the `append` line and `reportUnusedExpression` to the bare `+` expression (as `_ = ...` it would be `reportUnknownVariableType` instead).
 - A marker makes the line long; `ruff format` would wrap the statement and move the marker off the line that errors, so fail files fence their misuse block with `# fmt: off` / `# fmt: on`.
+- A rejected comparison stands in an `assert` statement. pyright strict adds another code to every other use of an expression that failed to type (`reportUnusedExpression` on a bare expression, `reportUnknownVariableType` on an assignment, `reportUnknownArgumentType` on a call argument); in an `assert` both checkers report the operator code alone, and an accepted comparison reports nothing, so the line fails (spike 0006).
 
 ### 11.9 Compatibility suite
 

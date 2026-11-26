@@ -4,7 +4,8 @@
 - Date: 2026-11-25
 - Related: design sections 4.2, 4.7, 4.8, 4.12, 8.2 ("Creation syntax and constructor types",
   "Aggregate boundaries"), 9.1, 10.3, 10.8, 11.8, 11.11; ADR-0002; issue #2; spike 0001
-  (`docs/spikes/0001-type-surface.md`, items 0 and 2, F2, P-B, P-C)
+  (`docs/spikes/0001-type-surface.md`, items 0 and 2, F2, P-B, P-C); #49 and spike 0006
+  (`docs/spikes/0006-parent-fk-and-column-operands.md`, part A)
 
 The bar for this document: the maintainer reads it and is convinced. Keep it short.
 
@@ -43,6 +44,11 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
 2. **The creation syntax is the plain keyword constructor `Order(...)`; there is no `new`.** This
    matches events (`OrderPaid(...)`) and values (`Money(...)`), needs no runtime rule against a
    second creation path, and ADR-0002's ID-source rule applies to `Order(...)` unchanged.
+   Generated keys, `version_column()`, server defaults, relations and the parent key of an owned
+   child are not parameters (`init: Literal[False]` on their field specifiers). The parent key is
+   declared with `parent_fk(lambda: Order)` (working name, fixed in #9) and set by the parent,
+   `Order.items.add(Item(...))`; a child of a relation that is not `owned` keeps `fk`, a required
+   parameter (#49, spike 0006).
 3. **Equality and hashing - type level (decided).** `frozen_default=True`, so both checkers treat
    entities as hashable (spike 0001 P-B: without it pyright and mypy disagree on `{order}`).
 4. **Equality and hashing - runtime (provisional working rule).** Set without an implementation or
@@ -67,8 +73,12 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
   `set` (F2; the other names are untested); class creation rejects all of them at runtime.
 - `Order.stub(...)` keywords are not type-checked (a "same fields, all optional" signature cannot be
   derived from the constructor) - open, #50.
-- Owned children created without the parent key (4.7 `Order.items.add(Item(sku=..., ...))`) are a
-  type error while the FK field is a required parameter - the rule for the parent key is open, #49.
+- Owned children are created without the parent key (4.7 `Order.items.add(Item(sku=..., ...))`):
+  passing it is a type error in both checkers (spike 0006), so a new child cannot be created with
+  another parent's key. Reading the key before the child is added is open (#76), and so are owned
+  children of a new root and `add` on a relation that is not `owned` (#60). Moving an existing
+  child to another parent still type-checks (`Item.order_id.to(...)`, spike 0006 O9) and, with
+  how `owned=True` and `parent_fk` are kept consistent, is open (#9).
 - Section 10.8 generates a slots class per entity at seal; with a base class this needs a metaclass
   `__new__` (or a separate snapshot class), since `__init_subclass__` cannot add `__slots__`.
 - With `table=` required on every subclass, entity inheritance and shared-column mixins are not
@@ -99,3 +109,6 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
 - 2026-11-25 - at the maintainer's request the runtime equality/hashing rule became a provisional
   working rule (Decision 3 split into the decided type level, Decision 3, and the provisional
   runtime rule, Decision 4, with its known concerns; #5, #54). The direction is unchanged.
+- 2026-11-26 - amended in place (#49, spike 0006): the parent key of an owned child (`parent_fk`)
+  joins the fields that are not constructor parameters in Decision 2, and the Consequence that
+  called the rule open states it. The direction is unchanged.

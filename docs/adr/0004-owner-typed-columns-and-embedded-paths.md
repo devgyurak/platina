@@ -4,7 +4,8 @@
 - Date: 2026-11-25
 - Related: design sections 4.2 (`Money`, `Meta.checks`), 4.3 (query, Finder), 4.4, 4.5, 4.7,
   8.2 ("Field type surface"), 9.1, 11.8; ADR-0003; issue #2; spike 0001
-  (`docs/spikes/0001-type-surface.md`, item 4, F1, F3, P-A, P-C, L6)
+  (`docs/spikes/0001-type-surface.md`, item 4, F1, F3, P-A, P-C, L6); #51 and spike 0006
+  (`docs/spikes/0006-parent-fk-and-column-operands.md`, part B)
 
 The bar for this document: the maintainer reads it and is convinced. Keep it short.
 
@@ -91,13 +92,21 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
   it falls back to `Col.__get__`'s instance overload, reads the column as its value and rejects the
   value, not the owner (which is why its message names the instance type, `incompatible type
   "Decimal"; expected "Column[Money, Never]"`; spike 0001, column-as-value follow-up and round 3).
-- **Constraint:** no parameter takes both a column and a value (`T | Column[O, T]`) until both
-  checkers have been probed on it (#51). With such a parameter mypy accepts another entity's
-  column and pyright rejects it; narrowing the instance overload to `instance: Entity` makes mypy
-  reject it too, but breaks instance access on `@value` / `@event` classes, which have no base.
-- Comparisons on a column take exactly `T` in the spike's stubs, so 4.2's check is written
-  `>= Decimal(0)` and 4.7's column-to-column `Load.when(match=Wallet.user_id == Order.user_id)` is
-  rejected by both checkers; which operand types are accepted is open (spike L5, #51).
+- **Constraint:** no parameter takes both a column and a value in one union type
+  (`T | Column[O, T]`). With such a parameter mypy accepts another entity's column and pyright
+  rejects it; narrowing the instance overload to `instance: Entity` makes mypy reject it too, but
+  breaks instance access on `@value` / `@event` classes, which have no base. Where an operation
+  takes either, the two forms are separate overloads, which both checkers resolve the same way
+  (the comparison operators, #51, spike 0006).
+- Comparisons on a column take a value of exactly `T` (no numeric widening, so 4.2's check is
+  written `>= Decimal(0)`), or a column of the same value type up to nullability through a
+  separate overload, which gives a predicate over both owners, `Pred[O | O2]` (#51). 4.7's
+  `Load.when(match=Wallet.user_id == Order.user_id)` type-checks (outside `Annotated`; inside it
+  pyright only), and `Order.where(...)` rejects a predicate over two owners in both checkers. The
+  exceptions are the comparison gaps of design 8.2 "Field type surface" (open, #9; `==` with a
+  wrong value type is `bool` until a predicate is required), and the typing spec's `int` to
+  `float` promotion applies to a `float` column. The column-as-value fallback does not occur there:
+  mypy resolves a column on the right to a column overload (spike 0006, O4).
 
 ## Alternatives considered
 - A getter, `Order.total.path(lambda m: m.amount)` (spike item 4 b2; this ADR's first draft): holds
@@ -136,3 +145,7 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
   rejects the column read as a value), and the constraint that no parameter takes both a column and
   a value before both checkers are probed (#51). Source: spike 0001 round 3 and the column-as-value
   follow-up.
+- 2026-11-26 - amended in place after #51's decision and spike 0006, without changing the
+  direction: the constraint now forbids only a union parameter (`T | Column[O, T]`) and names
+  separate overloads as the shape both checkers agree on; the comparison operands are stated
+  (value exactly `T`, column of the same value type up to nullability, `Pred[O | O2]`).

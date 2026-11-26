@@ -84,6 +84,26 @@ All notable changes are documented here. Format: [Keep a Changelog](https://keep
   tooling, #23-#29); `platina pull` and migration fidelity move to Phase 2 (#71, #70); the
   cleanup-cost measurement is split (#72, #73, #32); 53200 gets its own issue (#74). Parts that
   depend on open decision issues follow those issues.
+- Spike 0006 (#49, #51; the type spike that design 9.6 puts before Phase 1a's build issues):
+  write-up `docs/spikes/0006-parent-fk-and-column-operands.md`, independently reproduced by
+  type-reviewer; both decisions hold under pyright and mypy.
+  - The key of an owned child is declared with `parent_fk(lambda: Order)` (working name, fixed in
+    #9) and set by `Order.items.add(...)`; it is not a constructor parameter, so a new child
+    cannot be created with another parent's key. A non-owned child keeps `fk`, a required
+    parameter.
+    Design 4.2 (with an `Item` declaration), 4.4, 4.7 and 8.2 "Creation syntax", ADR-0003.
+  - Comparison operands: a value is exactly `T` (no numeric widening); two columns of the same
+    value type, up to nullability, compare through an overload and give `Pred[O | O2]`, which
+    `Order.where(...)` still rejects. Design 4.7, 8.2 "Field type surface" and 11.8 (new misuse
+    lines and the `assert` form of a rejected comparison); ADR-0004's constraint now forbids only
+    a `T | Column[O, T]` union parameter.
+  - Left open: reading the key before `add` (#76, new), owned children of a new root and `add` on
+    a non-owned relation (#60); for #9 how `owned` and `parent_fk` stay consistent, the final
+    name, moving an existing child to another parent (still type-checks), and the comparison gaps
+    of design 8.2 (`==` with a wrong value type is `bool`, `== None`, ordering against `None` and
+    on an enum column, comparisons on an embedded value column - a row comparison or only through
+    `path(...)` -, a column in a set, a numeric cast); two-owner predicates in queries (#52).
+    The `type-tests` skill names the spike's stub as the reference for these two shapes.
 
 ### Changed
 - Entity syntax (ADR-0003, accepted): entities inherit `Entity` with table options as class
