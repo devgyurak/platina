@@ -69,7 +69,7 @@ listed by the `docs-sync` rule updated, the GitHub issue closed by the PR.
 ADRs are lightweight: one is needed only for an expensive-to-reverse decision the design document
 does not settle, and it is accepted when the maintainer reads it and is convinced (`write-adr`).
 
-Tracking: every roadmap item is a GitHub issue (#1-#74 so far; #47, #53, #56, #62, #66, #67, #68 and #69 are pull requests) in a milestone (`Phase 0 - Experiments`, `Phase 1a - Core execution path`, `Phase 1b - Events, queries and tooling`, `Phase 2 - Event pipeline`, `Later`;
+Tracking: every roadmap item is a GitHub issue (#1-#75 so far; #47, #53, #56, #62, #66, #67, #68, #69 and #75 are pull requests) in a milestone (`Phase 0 - Experiments`, `Phase 1a - Core execution path`, `Phase 1b - Events, queries and tooling`, `Phase 2 - Event pipeline`, `Later`;
 the phases follow design section 9.6, decided in #6), with its design sections,
 scope checklist and dependencies, labelled by type (`feature`, `spike`, `test`, `ci`,
 `documentation`) and area (`area:*`). `needs-decision` marks issues waiting on the maintainer,
