@@ -477,11 +477,17 @@ def a6(port: int) -> None:
 def _q(s: Session, sql: str, params: tuple[Any, ...] = ()) -> str:
     """Run one statement without logging it; "ok" or "<SQLSTATE> <message> | <detail>"."""
     try:
-        s.conn.execute(sql, params)  # type: ignore[arg-type]
+        cur = s.conn.execute(sql, params)  # type: ignore[arg-type]
+        if sql == "COMMIT" and cur.statusmessage == "ROLLBACK":
+            # the transaction was already aborted by an earlier statement; nothing committed
+            return "ROLLBACK (aborted earlier)"
         return "ok"
     except psycopg.Error as exc:
         d = exc.diag
         return f"{d.sqlstate} {d.message_primary} | {d.message_detail}"
+
+
+_STMT_ERRORS: list[str] = []  # statement errors of the current A7 repetition
 
 
 FK_DDL = (
@@ -533,7 +539,7 @@ def _a7_key(port: int, key: str, reps: int) -> None:
             ss, obs = open_sessions(port, n)
             for s in ss:
                 _q(s, "BEGIN ISOLATION LEVEL SERIALIZABLE")
-            errs: list[str] = []
+            _STMT_ERRORS.clear()
             try:
                 plan(ss)
             finally:
@@ -541,13 +547,13 @@ def _a7_key(port: int, key: str, reps: int) -> None:
                 for s in reversed(ss):
                     r = _q(s, "COMMIT")
                     outcomes.append(f"{s.name} COMMIT: {r}")
-                    if r != "ok":
-                        errs.append(r)
                 close_all(ss, obs)
-            failed = any(o.split(": ", 1)[1] != "ok" for o in outcomes)
+            # a rep fails if any statement or any COMMIT failed (reproduction round 3 found that
+            # the first version counted COMMIT failures only)
+            failed = bool(_STMT_ERRORS) or any(o.split(": ", 1)[1] != "ok" for o in outcomes)
             fails += failed
             log(f"  rep {rep}: " + "; ".join(outcomes))
-        log(f"  => {name}: {fails}/{reps} reps with a failed commit")
+        log(f"  => {name}: {fails}/{reps} reps with a failed statement or commit")
 
     def p1(ss: list[Session]) -> None:  # each: parent + its child; commit S3, S2, S1
         for s in ss:
@@ -555,6 +561,7 @@ def _a7_key(port: int, key: str, reps: int) -> None:
             for sql, prm in ((INS_P, (pid,)), (INS_C, (new_key(), pid))):
                 r = _q(s, sql, prm)
                 if r != "ok":
+                    _STMT_ERRORS.append(r)
                     log(f"    {s.name}: {sql.split(' (')[0]} -> {r}")
 
     def p2(ss: list[Session]) -> None:  # child of own recent parent, then new parent (phased)
@@ -565,10 +572,12 @@ def _a7_key(port: int, key: str, reps: int) -> None:
         for s, rp in zip(ss, recents, strict=True):
             r = _q(s, INS_C, (new_key(), rp))
             if r != "ok":
+                _STMT_ERRORS.append(r)
                 log(f"    {s.name}: child -> {r}")
         for s in ss:
             r = _q(s, INS_P, (new_key(),))
             if r != "ok":
+                _STMT_ERRORS.append(r)
                 log(f"    {s.name}: parent -> {r}")
 
     def p3(ss: list[Session]) -> None:  # both parents first, then both children
@@ -576,10 +585,12 @@ def _a7_key(port: int, key: str, reps: int) -> None:
         for s, pid in zip(ss, pids, strict=True):
             r = _q(s, INS_P, (pid,))
             if r != "ok":
+                _STMT_ERRORS.append(r)
                 log(f"    {s.name}: parent -> {r}")
         for s, pid in zip(ss, pids, strict=True):
             r = _q(s, INS_C, (new_key(), pid))
             if r != "ok":
+                _STMT_ERRORS.append(r)
                 log(f"    {s.name}: child -> {r}")
 
     log(

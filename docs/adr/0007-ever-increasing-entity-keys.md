@@ -29,13 +29,27 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
     of attempts failed (reproduction 65 %; its own probe without retries 74 %) and about 20 % of
     commands ended in `RetryExhausted` with uuid7 keys and recent reads; 0 % with uuid7 and old
     reads; about 0.1 % with uuid4 keys.
-- **Scope of C3** - a worst case, not an application rate: every command read a row certain to
-  be on the rightmost leaf (the order it inserted one command earlier), 32 workers inserted with
-  no pause, the table had 100,000 rows and no foreign keys (an FK check reads the parent key; not
-  measured), and the pattern needs the same command to read the right edge **and** insert into
-  the same index. A read conflicts only while its row is within about one leaf's worth of the
-  newest inserts into that index; how fast that window closes as rows age was not measured.
-- The conflicting transactions in A6 and C3 touch disjoint rows: the failures are false
+- **Scope of C3** - a worst case, not an application rate: every command read a row certain to be on
+  the rightmost leaf (the order it inserted one command earlier), 32 workers inserted with no pause,
+  the table had 100,000 rows and no foreign keys, and the pattern needs the same command to read the
+  right edge **and** insert into the same index. A read conflicts only while its row is within about
+  one leaf's worth of the newest inserts into that index; how fast that window closes as rows age
+  was not measured.
+- **Foreign keys reach the same edge without any read in the use case** (A7, fixed
+  interleavings, added after the first version of this ADR; reproduced in round 3): a child
+  INSERT's FK check (`SELECT 1 FROM ONLY <parent> x WHERE id = $1 FOR KEY SHARE OF x`, with the
+  transaction snapshot) takes an SIRead lock on the parent's primary-key leaf - the rightmost one
+  for a new or recent uuid7 parent. Three sessions that each insert a parent and its child, or
+  two that each insert a child of their own just-committed parent and then a new parent, fail
+  with a pivot 40001 at COMMIT in 10/10 pinned repetitions with uuid7 parents and 0/10 with uuid4
+  parents (100,000 or 1,000,000 parents; the child's key generator does not matter); inserting
+  both parents before both children commits with either. This holds while the planner reads the
+  parent by an index scan: on a small or empty **analyzed** parent (up to about 400 single-column
+  rows in the reproducer's probe) the check is a sequential scan with a relation-level lock, and
+  every order fails with uuid4 parents too - the small-table case of spike 0003 item 4b, which no
+  key generator fixes. Creating an aggregate root with owned children is the most common write,
+  so the foreign-key case may matter more than C3's read-then-insert; its rate was not measured.
+- The conflicting transactions in A6, A7 and C3 touch disjoint rows: the failures are false
   conflicts, retried (safe by design 8.3) and, under sustained concurrency, ending in
   `RetryExhausted` - a command failure the caller sees, caused by the key generator. (Spike
   0003's mixed workload D also showed SERIALIZABLE-only failures of a command that reads a
@@ -49,7 +63,7 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
   the pattern is in real use cases. REPEATABLE READ is not affected (it has no SSI).
 
 ## Decision
-Proposed, for the maintainer to decide **after** the two measurements of point 4:
+Proposed, for the maintainer to decide **after** the measurements of point 4 (#65):
 1. **The default entity key becomes a random UUID (v4), still client-generated**: `pk()` means
    `pk(generated="uuid4")`; `generated="uuid7"` and `generated="identity"` stay available as
    explicit choices, documented as "ever-increasing: under SERIALIZABLE, commands that read
@@ -63,12 +77,13 @@ Proposed, for the maintainer to decide **after** the two measurements of point 4
 3. Indexes on other ever-increasing columns (timestamps, sequences; e.g. 4.2's
    `Index(user_id, created_at.desc())`) keep the right-edge pattern; 7.3 documents it, and the
    per-use-case retry metric makes it visible. This ADR cannot remove it.
-4. **Before acceptance**, two small durable-profile measurements (a new 9.5 item, #65): uuid4 vs
-   uuid7 insert rate and WAL bytes per insert with the index at about 1x and 10x
-   `shared_buffers`; and the conflict window - C3 with the "recent" row aged by N inserts, as a
-   curve. A large uuid4 cost, or a window that closes within a few inserts, strengthens the
-   alternative "keep uuid7 and document". The decision should come before `pk()` is implemented
-   (#9, #12), while reversing it is cheap.
+4. **Before acceptance**, three durable-profile measurements (a 9.5 item, #65): uuid4 vs uuid7
+   insert rate and WAL bytes per insert with the index at about 1x and 10x `shared_buffers`; the
+   conflict window - C3 with the "recent" row aged by N inserts, as a curve; and a "create a parent
+   and its children" load with a real foreign key (A7 under concurrency), uuid7 vs uuid4: 40001 per
+   attempt and the `RetryExhausted` share of commands. A large uuid4 cost, or a window that closes
+   within a few inserts, strengthens the alternative "keep uuid7 and document". The decision should
+   come before `pk()` is implemented (#9, #12), while reversing it is cheap.
 
 ## Consequences
 - Commands no longer conflict through the primary key's right edge by default (C3: 65-69 % ->
@@ -113,3 +128,8 @@ Proposed, for the maintainer to decide **after** the two measurements of point 4
   key added as alternatives; Related corrected (8.3, ADR-0003, #58).
 - 2026-11-26 - renumbered from 0006 to 0007: develop gained ADR-0006 (exception fields) while this
   ADR was proposed on the spike branch; no content change.
+- 2026-11-26 - after spike 0003's A7 and its reproduction (round 3): Context gains the foreign-key
+  case (a child's FK check reads the parent's primary-key leaf; uuid7 parents 10/10 vs uuid4 0/10
+  in two orders, while the parent is read by an index scan) and drops "no foreign keys, not
+  measured" from C3's scope; Decision 4 gains a third measurement (the rate of the foreign-key
+  case). The direction is unchanged.

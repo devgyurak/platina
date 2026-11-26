@@ -460,6 +460,10 @@ were seen, and are recorded here instead of being folded silently into the secti
   both children, COMMIT S2, S1). `uv run python spikes/0003-ssi-internal-tables/interleave.py
   --port 26432 A7` (not in the default scenario list). The probe's numbers were not used as
   evidence; A7 measured them again.
+- **2026-11-26, A7 failure count corrected** after reproduction round 3: a repetition now counts
+  as failed when any statement or any COMMIT fails, and a COMMIT that the server answers with
+  `ROLLBACK` (an earlier statement had aborted the transaction) is reported as such. Rerun: same
+  outcomes (no statement had failed).
 
 ## Observations
 
@@ -572,6 +576,20 @@ any other read. Outcomes, 10 pinned repetitions each:
 So creating a parent and its children - an aggregate root with owned children, the most common
 write - is the "read the right edge and insert into it" pattern of A6/C3 through the FK check,
 without any read in the use case. Rates were not measured.
+
+**Conditions** (from reproduction round 3, which varied what A7 fixed): the table above is the
+**index-scan case** - the FK check (`SELECT 1 FROM ONLY <parent> x WHERE id = $1 FOR KEY SHARE OF
+x`, run with the transaction snapshot) reads the parent's primary-key index when the planner
+picks an index scan, as it did for 100,000 and 1,000,000 parents and for never-analyzed parents
+of any size. For a small or empty **analyzed** parent table (up to about 400 single-column rows in
+the reproducer's probe) the check is a sequential scan with a relation-level SIRead lock on the
+parent heap - the item 4b mechanism - and then uuid4 parent keys and the parents-first order P3
+fail as well (10/10 each in the reproducer's probe). Only the parent's key generator matters
+(child keys from the other generator gave the same outcomes). uuid4's 0/10 at 100,000 parents
+means the sessions landed on different leaves, not that the structure cannot form. The first A7
+run counted only failed COMMITs (a statement error leaves an aborted transaction whose COMMIT
+returns `ROLLBACK` without an error); no statement failed in any run, and the rerun with the
+corrected count (2026-11-26) gave the same table.
 
 ### B. Existence under load (fast)
 `uv run python spikes/0003-ssi-internal-tables/load.py exist --port 26432` - 16 workers, 2 s
@@ -746,7 +764,8 @@ SER/RR TPS, ratio of medians (paired ratios per block): uniform 0.954 (0.89-1.14
 ## Verdict
 
 Items 1, 2, 3 (fencing), 4a and 4b rest on load-independent observations (A, B), reproduced in
-round 1. The rate verdicts (item 3's projection rates, item 5, and the rate halves of the
+round 1; A7 (foreign keys, post hoc) was reproduced in round 3 (agree for the configuration A7
+fixed, partly overall: the plan condition added to A7). The rate verdicts (item 3's projection rates, item 5, and the rate halves of the
 off-checklist observations) come from the C and D reruns on a quiet host, reproduced in round 2.
 Both rounds agreed with every verdict.
 
@@ -776,6 +795,12 @@ Both rounds agreed with every verdict.
   command also failed only under SERIALIZABLE (27 % vs 0 % at 64 workers / Zipf), but through its
   range read on the `(user_id, id)` index - a per-user right edge plus page granularity, partly
   true conflicts - which a uuid4 primary key would not change (architect review of ADR-0007).
+- **Foreign keys (A7, post hoc, reproduced in round 3):** a child INSERT's FK check takes an
+  SIRead lock on the parent's primary-key leaf, so with uuid7 parents "create a parent and its
+  children" by unrelated commands fails as a pivot 40001 (10/10 in two orders; 0/10 when both
+  parents are inserted before both children, and 0/10 with uuid4 parents) - while the parent is
+  read by an index scan. On a small or empty analyzed parent the check takes a relation lock and
+  every order fails with uuid4 as well. Rates not measured (#65).
 - **Snapshot aging while waiting on a claim:** the claim INSERT takes the snapshot and an xid
   **before** it waits (A3: `backend_xmin`/`backend_xid` set while waiting, none after `BEGIN` or
   `SET LOCAL`); after the wait the transaction reads pre-wait values and its UPDATE of a row
@@ -835,8 +860,9 @@ in design 7.3, 8.3 and 9.2, EN + KO; item 4 is a `Proposed` ADR, reviewed by the
    entities (4.2) makes "read a recent row by PK + INSERT into the same table" a false-conflict
    pattern under SERIALIZABLE (A6; C3 65-69 % of attempts in a worst case, against ~0.1 % for
    uuid4). The ADR proposes a uuid4 default with uuid7 / identity as explicit choices, to be
-   decided after two measurements added to design 9.5 (uuid4's insert / WAL cost, and the
-   conflict window); keeping uuid7 and documenting the cost is its main alternative.
+   decided after measurements added to design 9.5 and #65 (uuid4's insert / WAL cost, the
+   conflict window, and the rate of the foreign-key case A7); keeping uuid7 and documenting the
+   cost is its main alternative.
 5. Open question for the runner (#22/#23): whether 53200 from the SSI conflict pool is
    classified as retryable, surfaced as a distinct error, or prevented by sizing
    (`max_connections` / `max_pred_locks_per_transaction`); not settled by this spike.
@@ -1071,3 +1097,61 @@ No verdict disagreed with. Two corrections requested, both made: (1) the D text 
 
 Output: `spikes/0003-ssi-internal-tables/results/repro2/` (`load_rates.log`, `bench.log`, `code/results/load_rates.jsonl`, `code/results/bench.jsonl`, `order64.log`, `order32.log`, `orderz64.log`, `order{64,32,z64}/results/bench.jsonl`, `probe/probe.py`, `probe/probe.log`; git-ignored).
 
+
+### Round 3: A7 (foreign-key checks, fast profile)
+
+- **Who:** pg-researcher, working independently; it had not run A7 before. It read the Question, Method section A, the change record's "A7 added (post hoc)" entry and the A7 code (`a7`, `_a7_key`, `run_case`), ran the copy and its own probe, and wrote its numbers down before reading the A7 Observations, the Verdict and the Reproduction section.
+- **Date:** 2026-11-26, 11:16 to 11:21 local time (KST).
+- **Versions observed:** `PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2) on aarch64-unknown-linux-gnu, compiled by gcc (Debian 14.2.0-19) 14.2.0, 64-bit` (container `platina-postgres-1`, port 26432); psycopg 3.3.9, libpq 180006; Python 3.14.7. Branch `docs/spike-0003-ssi-internal-tables`, started at `32a0071` with A7 uncommitted; the author committed it as `e73a513` during the round, and the copied `interleave.py` has the committed file's SHA-256. `SHOW`: `max_pred_locks_per_transaction = 64`, `max_pred_locks_per_relation = -2`, `max_pred_locks_per_page = 2`, `default_transaction_isolation = read committed`, `synchronous_commit = on`, `fsync = off`.
+- **Host:** no other client on the fast database at the start or the end; load average 16.36 / 15.56 / 9.97 at 11:21 (existence only). Port 26433 not used.
+
+**What was run**
+1. The spike code copied to `spikes/0003-ssi-internal-tables/results/repro3/code/`, then `uv run python <copy>/interleave.py --port 26432 A7`.
+2. Own probe `results/repro3/probe/fkprobe.py`: tables `r3_par(id uuid pk)`, `r3_chi(id uuid pk, par uuid not null references r3_par)` and a no-FK control `r3_chi_nofk`; `pageinspect` (`bt_page_stats`) to classify the locked index pages (dropped afterwards). Per configuration: the lock observation for a parent new in the same transaction, committed just before, or old - each through the FK, into the no-FK control, and as the explicit query `RI_FKey_check` builds (`SELECT 1 FROM ONLY r3_par x WHERE id = $1 FOR KEY SHARE OF x`); and the orders P1, P2, P3, implemented independently, 10 pinned repetitions each, statement and COMMIT errors recorded separately. Configurations: `main` (same generator for parent and child keys, uuid7 then uuid4, 100,000 parents, plus an order P2-old with children of old parents), `mixed` (uuid7 parents with uuid4 children and the reverse), `sizes` (0, 200 and 1,000,000 parents, each key type).
+3. `probe/sizeplan.py`: the generic plan of the RI query (`EXPLAIN (GENERIC_PLAN)`) and the FK check's SIRead rows for 0 to 100,000 parents, analyzed and never analyzed.
+4. `probe/commit_after_error.py`: what `COMMIT` returns in autocommit mode after a statement of the transaction failed.
+
+**Method vs code.** The code does what the change record says, with two differences: (1) `run_case` counted a repetition as failed only if `COMMIT` raised; after a failed statement the transaction is aborted and `COMMIT` succeeds with tag `ROLLBACK` (`COMMIT raised nothing; statusmessage = ROLLBACK`), so a statement-level 40001 would have been printed but counted as "ok" - no statement raised in any run of this round, so the totals were unaffected (corrected afterwards by the author, see the change record); (2) in the lock observation the "committed just before" parent is committed once, before the "own" case, so it is not the newest parent - both lie on the same rightmost leaf, so the observation is unaffected.
+
+**Observations: spike code (copy)**
+
+| Parent | uuid7 | uuid4 |
+|---|---|---|
+| new, same transaction | `page fk_parent_pkey page=387` | `page fk_parent_pkey page=251` |
+| committed just before | `page fk_parent_pkey page=387` + `tuple fk_parent page=636 tuple=149` | `page fk_parent_pkey page=172` + `tuple fk_parent page=636 tuple=149` |
+| old | `page fk_parent_pkey page=312` + `tuple fk_parent page=512 tuple=147` | `page fk_parent_pkey page=495` + `tuple fk_parent page=415 tuple=40` |
+
+| Order | uuid7 | uuid4 |
+|---|---|---|
+| P1 | 10/10: S2 COMMIT failed every time, S3 and S1 committed | 0/10 |
+| P2 | 10/10: S1 COMMIT failed every time | 0/10 |
+| P3 | 0/10 | 0/10 |
+
+Every failure at COMMIT, verbatim: `40001 could not serialize access due to read/write dependencies among transactions | Reason code: Canceled on identification as a pivot, during commit attempt.`
+
+**Observations: own probe**
+- **The locks come from the FK check:** the FK child INSERT and the explicit `FOR KEY SHARE` query take the same SIRead rows; the no-FK control takes none. uuid7 at 100,000 rows: the index page for a new or just-committed parent is the rightmost leaf (`page=387`, `rightmost=yes`), for an old parent an inner leaf; at 1,000,000 rows the same on `page=3852`; uuid4 never the rightmost leaf. A parent inserted by the same transaction gets no heap tuple lock, only the index page (`PredicateLockTID` in `src/backend/storage/lmgr/predicate.c`, REL_18_STABLE: "If we wrote it; we already have a write lock" -> return). The check runs with the transaction snapshot (`RI_FKey_check` calls `ri_PerformCheck(..., detectNewRows = false ...)` for a non-partitioned parent, `src/backend/utils/adt/ri_triggers.c`).
+- **Main, 100,000 parents:** uuid7 P1 10/10 (S2), P2 10/10 (S1), P3 0/10, P2-old 0/10 (the sessions locked different inner leaves); uuid4 0/10 in every order. Same message and reason code; all at COMMIT; no statement errors.
+- **Child keys do not matter:** uuid7 parents with uuid4 children 10/10, 10/10, 0/10; uuid4 parents with uuid7 children 0/10, 0/10, 0/10; the child's own primary key takes no SIRead lock.
+- **1,000,000 parents:** as at 100,000 (uuid7 10/10, 10/10, 0/10; uuid4 0/10 everywhere).
+- **Small analyzed parent tables change the lock and the outcome:** with 0 or 200 parents after `VACUUM ANALYZE` the FK check takes `relation r3_par` (a relation-level SIRead lock on the parent heap) and no index page lock; then:
+
+  | Parents | Keys | P1 | P2 | P3 |
+  |---|---|---|---|---|
+  | 0 | uuid7 | 10/10 (S2 and S1 fail every rep) | 10/10 (S1) | **10/10** (S1) |
+  | 0 | uuid4 | 10/10 (S2 and S1) | **10/10** (S1) | **10/10** (S1) |
+  | 200 | uuid7 | 10/10 (S2 and S1) | 10/10 (S1) | **10/10** (S1) |
+  | 200 | uuid4 | 10/10 (S2 and S1) | **10/10** (S1) | **10/10** (S1) |
+
+  Every failure the same pivot 40001 at COMMIT.
+- **The cause is the plan, not the size** (`sizeplan.py`): analyzed, 0 / 50 / 200 / 400 parents (relpages 0-3): generic plan `LockRows -> Seq Scan on r3_par x`, SIRead `relation r3_par`; analyzed, 1,000 parents and more (relpages 6+): `Index Scan using r3_par_pkey`, index page + heap tuple; never analyzed (`reltuples = -1`), every size from 0 to 100,000: Index Scan. The switching point (between 400 and 1,000 rows here) depends on row width and cost settings.
+- **Why P3 commits under an index scan (inference, consistent with the data):** the check reads only its own key's heap tuple, so it never meets the other session's earlier uncommitted insert on the same leaf; under a sequential scan it visits that tuple (`HeapCheckForSerializableConflictOut`), which records an edge both ways, and P3 fails 10/10.
+
+**Differences from the write-up's A7 Observations**
+- Locks: identical page numbers for a new or just-committed uuid7 parent (`page=387`, `tuple fk_parent page=636 tuple=149`); old-parent and uuid4 pages differ (random keys), with the same classification in every case.
+- Outcomes: identical in every cell, with the same SQLSTATE, message and reason code.
+- Not in the write-up (added since): the plan condition - the claim holds while the RI query uses an index scan; on an analyzed parent of a few heap pages it is a sequential scan with a relation lock, and uuid4 parents and P3 fail 10/10 too (item 4b's mechanism through the FK check). uuid4's 0/10 at 100,000 parents is the sessions landing on different leaves (508 here), not a structural absence. And the COMMIT-only count.
+
+**Statement:** agree for the configuration A7 fixed; partly overall. Agree with every A7 observation at 100,000 parents (FK check locks the parent's primary-key leaf, the rightmost for new or recent uuid7 parents; uuid7 P1 and P2 fail 10/10 with a pivot 40001 at COMMIT; P3 and all uuid4 orders commit; child keys and 1,000,000 parents change nothing). Partly, because any conclusion that uuid4 parent keys or the parents-first order avoid the conflict needs the condition "the parent is read by an index scan". Requested: state the plan and size condition next to the A7 table and in any ADR text that leans on A7; fix or note the COMMIT-only count. (Both done: A7 Observations "Conditions", the change record, ADR-0007.)
+
+Output: `spikes/0003-ssi-internal-tables/results/repro3/` (`a7_run1.txt`, `code/results/interleave.txt`, `probe/fkprobe.py`, `probe/out_main.txt`, `probe/out_mixed.txt`, `probe/out_sizes.txt`, `probe/sizeplan.py`, `probe/out_sizeplan.txt`, `probe/commit_after_error.py`; git-ignored).

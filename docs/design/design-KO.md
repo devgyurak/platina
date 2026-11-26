@@ -1,4 +1,4 @@
-<!-- i18n: source=docs/design/design.md source-sha256=b052ae15bfe1 translation-sha256=86ee41d17b03 -->
+<!-- i18n: source=docs/design/design.md source-sha256=e0bb9889353a translation-sha256=f672e6500004 -->
 # Platina 설계 문서
 
 > **Platina**: 백금(platinum)의 옛 스페인어 이름. 백금이 산에도 녹지 않고 반응하지 않듯, 도메인 코드는 DB와 반응하지 않는다.
@@ -863,7 +863,7 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
 외부 결과가 쓰기를 결정하는 흐름은 process 핸들러와 여러 유스케이스로 쪼개진다. JPA의 메서드 하나가 이벤트 흐름이 되는 비용은 그대로 남는다.
 
 ### 7.3 SERIALIZABLE 기본값의 비용
-경합이 심한 테이블에서는 직렬화 실패와 재시도가 늘어난다. 여기서 두 종류의 40001은 성격이 다르다. SSI의 읽기/쓰기 의존성 실패(write skew 상황)는 `isolation=REPEATABLE_READ` + `version`으로 벗어날 수 있지만, 그러면 write skew를 막지 못한다. 핫 로우에서 생기는 같은 행의 쓰기 충돌("could not serialize access due to concurrent update")은 벗어날 수 없다. REPEATABLE READ와 SERIALIZABLE에서는 동시에 실행되는 Command가 트랜잭션의 스냅샷 이후 그 행을 갱신하고 커밋했다면 `lock="for_update"`도, 읽지 않는 증감(blind increment, `.add(n)`)도 이를 피하지 못한다. 그런 쓰기 쪽은 각각 대기하다 한 번 실패하고 재시도된다(스파이크 0002, 재현됨; [ADR-0005](../adr/0005-hot-rows-under-serializable.md)). 스파이크 0003(§9.2)이 핫 로우 한 행에서 이를 측정했다. `lock="for_update"`는 읽지 않는 증감만큼 자주 실패하고(워커 8 / 32 / 64에서 시도의 약 31-41 / 75-78 / 90 %) 실패 지점만 로드 문장으로 옮기므로, 탈출구가 아니라 "fail early"로 본다. `lock=`을 남길지, 그리고 실제로 뜨거운 행에 설계가 어떤 방식을 택할지(후보는 ADR-0005에 있다)는 #64에서 정한다. inline 프로젝션이 만드는 핫 로우는 키 규칙(§4.10)으로 대부분 막지만, 엔티티 ID 키도 뜨거울 수 있다. [스파이크 0003](../spikes/0003-ssi-internal-tables.md)에서 측정한 결과(§9.2): 균등 접근에서 SERIALIZABLE은 REPEATABLE READ 처리량의 약 10 % 이내이고 커밋당 시도는 1.007회 이하다. 편중 접근의 재시도는 대부분 두 수준이 함께 겪는 같은 행 충돌이고, SERIALIZABLE이 0-17 % 느렸다. 찾아낸 거짓 충돌의 주된 원인은 둘이다. 플래너가 순차 스캔으로 처리하는 읽기는 릴레이션 단위 잠금을 걸고(작은 테이블), 계속 커지는 키는 최근 행의 읽기와 새 INSERT를 같은 인덱스 페이지에 모은다([ADR-0007](../adr/0007-ever-increasing-entity-keys.md), Proposed).
+경합이 심한 테이블에서는 직렬화 실패와 재시도가 늘어난다. 여기서 두 종류의 40001은 성격이 다르다. SSI의 읽기/쓰기 의존성 실패(write skew 상황)는 `isolation=REPEATABLE_READ` + `version`으로 벗어날 수 있지만, 그러면 write skew를 막지 못한다. 핫 로우에서 생기는 같은 행의 쓰기 충돌("could not serialize access due to concurrent update")은 벗어날 수 없다. REPEATABLE READ와 SERIALIZABLE에서는 동시에 실행되는 Command가 트랜잭션의 스냅샷 이후 그 행을 갱신하고 커밋했다면 `lock="for_update"`도, 읽지 않는 증감(blind increment, `.add(n)`)도 이를 피하지 못한다. 그런 쓰기 쪽은 각각 대기하다 한 번 실패하고 재시도된다(스파이크 0002, 재현됨; [ADR-0005](../adr/0005-hot-rows-under-serializable.md)). 스파이크 0003(§9.2)이 핫 로우 한 행에서 이를 측정했다. `lock="for_update"`는 읽지 않는 증감만큼 자주 실패하고(워커 8 / 32 / 64에서 시도의 약 31-41 / 75-78 / 90 %) 실패 지점만 로드 문장으로 옮기므로, 탈출구가 아니라 "fail early"로 본다. `lock=`을 남길지, 그리고 실제로 뜨거운 행에 설계가 어떤 방식을 택할지(후보는 ADR-0005에 있다)는 #64에서 정한다. inline 프로젝션이 만드는 핫 로우는 키 규칙(§4.10)으로 대부분 막지만, 엔티티 ID 키도 뜨거울 수 있다. [스파이크 0003](../spikes/0003-ssi-internal-tables.md)에서 측정한 결과(§9.2): 균등 접근에서 SERIALIZABLE은 REPEATABLE READ 처리량의 약 10 % 이내이고 커밋당 시도는 1.007회 이하다. 편중 접근의 재시도는 대부분 두 수준이 함께 겪는 같은 행 충돌이고, SERIALIZABLE이 0-17 % 느렸다. 찾아낸 거짓 충돌의 주된 원인은 둘이다. 플래너가 순차 스캔으로 처리하는 읽기는 릴레이션 단위 잠금을 걸고(작은 테이블), 계속 커지는 키는 최근 행의 읽기(부모의 기본 키 인덱스를 읽는 새 자식의 외래 키 검사 포함)와 새 INSERT를 같은 인덱스 페이지에 모은다([ADR-0007](../adr/0007-ever-increasing-entity-keys.md), Proposed).
 
 ### 7.4 대량 쓰기의 남은 문제
 - 집합 기반 갱신은 `@invariant`가 없는 필드에만 허용
@@ -1163,7 +1163,7 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
 - [x] `StepResult`끼리 `+`가 에러인가, Finder 인자 타입 - 성립
 
 ### 9.2 SSI 동시성 실험
-실제 PostgreSQL에서 동시 실행으로 거짓 충돌(직렬화 실패) 비율을 잰다. 결과: [스파이크 0003](../spikes/0003-ssi-internal-tables.md)(두 차례 독립 재현); 계속 커지는 엔티티 키: [ADR-0007](../adr/0007-ever-increasing-entity-keys.md)(Proposed).
+실제 PostgreSQL에서 동시 실행으로 거짓 충돌(직렬화 실패) 비율을 잰다. 결과: [스파이크 0003](../spikes/0003-ssi-internal-tables.md)(세 차례 독립 재현); 계속 커지는 엔티티 키: [ADR-0007](../adr/0007-ever-increasing-entity-keys.md)(Proposed).
 - [x] 실행 ID `run_claim` INSERT(uuid7)만으로는 거짓 충돌이 생기지 않는가 (INSERT의 유니크 검사가 읽기 잠금을 만들지 않는다는 가정) - 성립: 내부 테이블에 읽기 잠금이 없고(재사용·경합 키 포함), 부하에서 직렬화 실패가 없다
 - [x] 대조군: "조회 후 INSERT", "INSERT 후 UPDATE" 방식에서 실제로 충돌이 나는가 (규칙의 근거 확인) - 부분 성립: 조회 후 INSERT는 시도의 72-78 %가 실패하고, INSERT 후 UPDATE는 같은 기제로 충돌하지만 시도의 약 0.1 % 이하다
 - [x] 작업 ID를 실행 ID로 쓴 `run_claim` 펜싱(동시 완료 시 대기·23505 거동), inline 프로젝션의 재시도율 - 성립: 두 번째 claim은 기다렸다가 상대가 커밋하면 23505, 롤백하면 진행한다(`run_claim`을 읽지 않는 한); 서로 겹치지 않는 프로젝션 키는 재시도를 늘리지 않고, 인기 키는 늘린다(Zipf에서 시도의 약 27 %, 키 하나면 80 %)
@@ -1202,7 +1202,7 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
 - [ ] `.set(Column.to(...))`의 장황함이 실사용에서 수용 가능한지
 - [ ] 실행 ID·작업 테이블의 쓰기 증폭과 정리 비용
 - [ ] seal 시간 (유스케이스 수백 개 규모)
-- [ ] 엔티티 키 생성기([ADR-0007](../adr/0007-ever-increasing-entity-keys.md), 결정 전에; #65): 기본 키 인덱스가 `shared_buffers`의 약 1배와 10배일 때 uuid4와 uuid7의 INSERT 속도와 INSERT당 WAL 바이트; 계속 커지는 키의 거짓 충돌 창(스파이크 0003 C3에서 읽는 행을 INSERT N건만큼 묵혀 가며)
+- [ ] 엔티티 키 생성기([ADR-0007](../adr/0007-ever-increasing-entity-keys.md), 결정 전에; #65): 기본 키 인덱스가 `shared_buffers`의 약 1배와 10배일 때 uuid4와 uuid7의 INSERT 속도와 INSERT당 WAL 바이트; 계속 커지는 키의 거짓 충돌 창(스파이크 0003 C3에서 읽는 행을 INSERT N건만큼 묵혀 가며); 실제 외래 키가 있는 "부모와 자식 생성" 부하(스파이크 0003 A7을 동시 실행으로)에서 uuid7과 uuid4의 40001 비율과 `RetryExhausted` 비율
 
 ### 9.6 1차 범위 제안 (미결정)
 범위가 넓다는 지적을 반영한 제안이다. 실험 결과를 보고 확정한다.
