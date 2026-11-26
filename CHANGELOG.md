@@ -79,6 +79,11 @@ All notable changes are documented here. Format: [Keep a Changelog](https://keep
     `review-change`, `architecture-guard` and `commit` skills follow.
 - GitHub organization icon in `docs/assets/` (see its README): a hallmark-style plate with a
   "Pt" ligature, platinum `#E5E4E2` on graphite `#15171B`, as SVG master and 1024 / 500 px PNGs.
+- Phase 1 scope decided (#6, maintainer, 2026-11-26): design 9.6 splits Phase 1 at the first
+  working `app.run` into 1a (core execution path, #9-#22, release) and 1b (events, queries and
+  tooling, #23-#29); `platina pull` and migration fidelity move to Phase 2 (#71, #70); the
+  cleanup-cost measurement is split (#72, #73, #32); 53200 gets its own issue (#74). Parts that
+  depend on open decision issues follow those issues.
 
 ### Changed
 - Entity syntax (ADR-0003, accepted): entities inherit `Entity` with table options as class

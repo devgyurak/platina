@@ -62,8 +62,8 @@ changes a decision, edits the design or writes an ADR.
 Docs move with the code: the `docs-sync` rule maps every kind of change to the documents that
 must be updated in the same change, and `arch-guardian` reports misses as MAJOR findings.
 
-Work is tracked on GitHub: one milestone per phase (`Phase 0 - Experiments`, `Phase 1 - Core execution path`, `Phase 2 - Event pipeline`, `Later`; the Phase 1/2 split is
-the proposal of design section 9.6 until issue #6 decides it), one issue per roadmap item with its
+Work is tracked on GitHub: one milestone per phase (`Phase 0 - Experiments`, `Phase 1a - Core execution path`, `Phase 1b - Events, queries and tooling`, `Phase 2 - Event pipeline`, `Later`; the
+phases are those of design section 9.6, decided in issue #6), one issue per roadmap item with its
 design sections, scope checklist and dependencies, labels for type (`feature`, `spike`, `test`,
 `ci`, `documentation`), area (`area:*`) and process (`needs-decision`, `blocked`). PRs close
 their issue with `Closes #N`.
@@ -154,8 +154,8 @@ uv run python -m tools.guards --changed
 
 ## 8. GitHub setup (maintainer, one-time)
 
-**Current state (2026-11-25):** done. `develop` is the default branch, both rulesets are active,
-and the milestones, labels and roadmap issues (#1-#69; #47, #53, #56, #62, #66, #67, #68 and #69 are pull requests) exist. The local pre-push hook
+**Current state (2026-11-26):** done. `develop` is the default branch, both rulesets are active,
+and the milestones, labels and roadmap issues (#1-#75; #47, #53, #56, #62, #66, #67, #68, #69 and #75 are pull requests) exist. The local pre-push hook
 (`make hooks-install`) stays as a second line of defence. Agents change GitHub settings,
 milestones and labels only when the maintainer asks.
 
@@ -167,15 +167,15 @@ milestones and labels only when the maintainer asks.
       "main accepts PRs from develop only" (`.github/workflows/branch-policy.yml`) and
       "lint, types, guards, unit, type tests (py3.14)" / "(py3.15)" and "unit tests, free-threaded (py3.14t)" (`ci.yml`), no force push,
       no deletion. A renamed CI job must be renamed in the ruleset too.
-- [x] Milestones: `Phase 0 - Experiments`, `Phase 1 - Core execution path`, `Phase 2 - Event pipeline`, `Later`.
+- [x] Milestones: `Phase 0 - Experiments`, `Phase 1a - Core execution path`, `Phase 1b - Events, queries and tooling`, `Phase 2 - Event pipeline`, `Later` (Phase 1 split by #6 on 2026-11-26).
 - [x] Labels: `feature`, `spike`, `test`, `ci`, `documentation`, `needs-decision`, `blocked`,
       `area:core`, `area:sql`, `area:app`, `area:runners`, `area:drivers`, `area:outbox`,
       `area:migrate`, `area:codegen`, `area:testing`, `area:integrations`, `area:cli`,
       `area:tooling`.
-- [x] Roadmap issues #1-#69: the design section 9 experiments, then every package and feature of
+- [x] Roadmap issues #1-#75: the design section 9 experiments, then every package and feature of
       design sections 3-11 with dependencies (#1 tracks this setup; #48-#52, #54 and #55 come from
-      spike 0001, #57-#61 from spike 0002, #63 from spike 0004, #64-#65 from spike 0003; #47, #53,
-      #56, #62, #66, #67, #68 and #69 are pull requests).
+      spike 0001, #57-#61 from spike 0002, #63 from spike 0004, #64-#65 from spike 0003, #70-#74 from the
+      Phase 1 scope decision #6; #47, #53, #56, #62, #66, #67, #68, #69 and #75 are pull requests).
 - [x] Decide ADR-0001 (assembly package and seal) and ADR-0002 (new IDs from an injected
       source) before the first implementation - both accepted.
 

@@ -1,4 +1,4 @@
-<!-- i18n: source=docs/design/design.md source-sha256=7c5901ce7a4b translation-sha256=e009f2cd65d3 -->
+<!-- i18n: source=docs/design/design.md source-sha256=73182f307d69 translation-sha256=b379f7bc36c4 -->
 # Platina 설계 문서
 
 > **Platina**: 백금(platinum)의 옛 스페인어 이름. 백금이 산에도 녹지 않고 반응하지 않듯, 도메인 코드는 DB와 반응하지 않는다.
@@ -31,7 +31,7 @@
 | 프로젝션 | 기본 **inline**. `into`·`key`를 선언하고 본문은 필드 연산만. inline 키는 엔티티 ID만(날짜·상수 키는 async 또는 사유 opt-in), 재시도율 메트릭 |
 | 정체성 | 커밋됐는가 = **실행 ID**, 소비 진행 = **xid**, 복제 = **LSN**, 순서 = **version**. 토큰 = (xid, LSN) |
 | outbox·소비 | **추가 전용 이벤트 로그**(xid 워터마크). 프로젝션은 직렬 소비자(체크포인트와 효과를 한 트랜잭션), `then`·`@process`는 2계층 작업 파이프라인(짧은 리스, 유니크 INSERT 펜싱, 집계별 순서, dead-letter). `@process`는 서술을 돌려줌 |
-| 마이그레이션 | 엔티티 레지스트리 → SQLAlchemy `MetaData` → Alembic autogenerate (선택 extra). 충실도: 부분적으로 성립([스파이크 0004](../spikes/0004-alembic-round-trip.md)). Platina가 rename 재작성과 트리거 연산을 더하고, 남은 선택은 #25 |
+| 마이그레이션 | 엔티티 레지스트리 → SQLAlchemy `MetaData` → Alembic autogenerate (선택 extra). 충실도: 부분적으로 성립([스파이크 0004](../spikes/0004-alembic-round-trip.md)). Platina가 rename 재작성(#70)과 트리거 연산을 더하고, 남은 선택은 #25와 #70 |
 | 코드젠 | 임시 DB로 타입 추론, **생성물은 커밋** (CI·배포에 DB 불필요) |
 | 비동기 | anyio API로 작성, 백엔드는 asyncio(+uvloop). trio 미지원 |
 | free-threaded | 코어는 3.14t CI 대상, 드라이버 공식 지원은 psycopg 휠 출시 후 |
@@ -1106,7 +1106,7 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
 **스키마 도구: SQLAlchemy Core + Alembic 혼합 (선택 extra)**
 - 결정: 쿼리 컴파일러와 실행 엔진은 독립으로 유지하고, **DDL 생성·카탈로그 리플렉션·마이그레이션은 SQLAlchemy Core와 Alembic에 맡긴다.** 엔티티 레지스트리를 SQLAlchemy `MetaData`로 변환해 Alembic autogenerate를 쓴다. 이 기능은 `platina migrate`·`pull`·drift 검사 때만 필요하므로 `platina[migrate]` 선택 extra로 두어, 런타임 코어는 SQLAlchemy에 의존하지 않는다.
 - 변천: 처음에는 "Alembic은 SQLAlchemy 메타데이터에 묶여 독립 ORM에 맞지 않는다"며 마이그레이션 도구를 자체 구현하기로 했다. 그런데 Core를 쓰지 않는 근거(§8.1)가 틀렸고, Core가 실제로 아껴 주는 작업이 쿼리 컴파일이 아니라 DDL·리플렉션·마이그레이션이라는 점이 드러나 결정을 뒤집었다. MySQL을 붙일 때도 이쪽 작업을 공짜로 얻는다.
-- 위험: 변환의 충실도. Alembic autogenerate가 약한 지점이 이 설계의 기능과 겹친다. ① `renamed_from` 힌트(autogenerate는 rename을 감지하지 못함 → `process_revision_directives` 훅으로 drop+add를 rename으로 바꾸는 방안), ② 람다로 선언한 `Check`, ③ `version` 트리거(Alembic은 트리거를 다루지 않음 → 서드파티 PG 객체 지원 검토), ④ 표현식·부분 인덱스, ⑤ 프레임워크 내부 테이블(특히 파티션). 이 다섯 가지가 왕복되는지가 스파이크 항목이다(§9). 결과([스파이크 0004](../spikes/0004-alembic-round-trip.md), §9.3): 컬럼, 테이블, 외래 키, 복합 유니크 키, 표현식 인덱스는 왕복된다. ①은 다운그레이드까지 만들고(Alembic이 만드는 rename의 역연산은 rename을 잃는다) rename을 맨 앞에 두는 재작성이 있을 때 컬럼에서만 동작하며, 테이블 rename은 테이블 이름에서 파생된 이름을 남기고, 어떤 rename이든 PostgreSQL 18의 NOT NULL 제약 이름을 남긴다. ②와 ④: CHECK나 부분 인덱스의 변경은 이름이 식과 함께 바뀔 때만 감지된다(CHECK는 Alembic의 opt-in 플러그인 `checkconstraint_byname`도 있어야 한다). 표현식 인덱스는 거짓 차이를 내지 않는다. ③은 서드파티 패키지 없이 Alembic 자체의 확장 지점(사용자 정의 연산과 비교자 플러그인)으로 동작하며, drift는 트리거 이름과 함수 본문으로만 감지한다. ⑤는 왕복되지 않는다: 마이그레이션 밖에서 만든 파티션(파티셔닝은 실험을 위해 가정한 것이고 결정된 것이 아니다)은 drop 대상으로 제안되고 다운그레이드는 이를 다시 만들지 못하며, 파티션 방식과 `xid8` 컬럼은 비교되지 않는다. 같은 리플렉션 공백(`xid8`, CHECK 본문, 부분 인덱스 조건식, NOT NULL 이름)은 `migrate`뿐 아니라 `platina pull`과 drift 비교도 제한한다. 이로써 남는 선택 중 이름 규칙과 인덱스가 걸린 컬럼의 rename은 #25에서, 내부 테이블을 만들고 마이그레이션하고 파티션할지는 #63에서 정한다.
+- 위험: 변환의 충실도. Alembic autogenerate가 약한 지점이 이 설계의 기능과 겹친다. ① `renamed_from` 힌트(autogenerate는 rename을 감지하지 못함 → `process_revision_directives` 훅으로 drop+add를 rename으로 바꾸는 방안), ② 람다로 선언한 `Check`, ③ `version` 트리거(Alembic은 트리거를 다루지 않음 → 서드파티 PG 객체 지원 검토), ④ 표현식·부분 인덱스, ⑤ 프레임워크 내부 테이블(특히 파티션). 이 다섯 가지가 왕복되는지가 스파이크 항목이다(§9). 결과([스파이크 0004](../spikes/0004-alembic-round-trip.md), §9.3): 컬럼, 테이블, 외래 키, 복합 유니크 키, 표현식 인덱스는 왕복된다. ①은 다운그레이드까지 만들고(Alembic이 만드는 rename의 역연산은 rename을 잃는다) rename을 맨 앞에 두는 재작성이 있을 때 컬럼에서만 동작하며, 테이블 rename은 테이블 이름에서 파생된 이름을 남기고, 어떤 rename이든 PostgreSQL 18의 NOT NULL 제약 이름을 남긴다. ②와 ④: CHECK나 부분 인덱스의 변경은 이름이 식과 함께 바뀔 때만 감지된다(CHECK는 Alembic의 opt-in 플러그인 `checkconstraint_byname`도 있어야 한다). 표현식 인덱스는 거짓 차이를 내지 않는다. ③은 서드파티 패키지 없이 Alembic 자체의 확장 지점(사용자 정의 연산과 비교자 플러그인)으로 동작하며, drift는 트리거 이름과 함수 본문으로만 감지한다. ⑤는 왕복되지 않는다: 마이그레이션 밖에서 만든 파티션(파티셔닝은 실험을 위해 가정한 것이고 결정된 것이 아니다)은 drop 대상으로 제안되고 다운그레이드는 이를 다시 만들지 못하며, 파티션 방식과 `xid8` 컬럼은 비교되지 않는다. 같은 리플렉션 공백(`xid8`, CHECK 본문, 부분 인덱스 조건식, NOT NULL 이름)은 `migrate`뿐 아니라 `platina pull`과 drift 비교도 제한한다. 이로써 남는 선택 중 이름 규칙은 #25에서, 인덱스가 걸린 컬럼의 rename과 나머지 충실도 문제는 #70(2차, §9.6)에서, 내부 테이블을 만들고 마이그레이션하고 파티션할지는 #63에서 정한다.
 - 근거(참고): Atlas는 코어가 Apache 2.0이지만 오픈코어이고 2025년 10월 v0.38에서 마이그레이션 린트를 유료 등급으로 옮겼다. sqldef는 SQL 파일 하나로 스키마를 관리하지만 Go 바이너리라 `pip install` 한 번으로 끝나는 경험을 깨뜨린다.
 
 **Pydantic 연동**
@@ -1172,7 +1172,7 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
 - [x] 핫 로우 한 행([ADR-0005](../adr/0005-hot-rows-under-serializable.md)): `lock="for_update"` 유무에 따른 재시도율, `RetryExhausted` 비율, `57014` 비율을 내구성 프로필에서 잰다 - 측정: 워커 8 / 32 / 64에서 시도의 약 31-41 / 75-78 / 90 %가 실패하고 커맨드의 7-10 / 35-41 / 64-69 %가 `RetryExhausted`로 끝나며, `lock="for_update"` 유무와 무관하다. 2초 타임아웃에서 `57014`는 없었다. 진짜 핫 로우를 위한 ADR-0005 후보들의 비교는 9.2에 포함되지 않으며, 이 측정을 기준선으로 쓰는 #64가 맡는다
 
 ### 9.3 MetaData → Alembic 왕복
-엔티티 레지스트리를 SQLAlchemy `MetaData`로 변환해 Alembic autogenerate가 다음을 손실 없이 왕복하는지 본다. 결과: [스파이크 0004](../spikes/0004-alembic-round-trip.md)(pg-researcher가 독립적으로 재현함) - 부분적으로 성립하며, 이 결과로 바뀐 결정은 없다. 남는 선택은 #25에서 정한다(§8.5).
+엔티티 레지스트리를 SQLAlchemy `MetaData`로 변환해 Alembic autogenerate가 다음을 손실 없이 왕복하는지 본다. 결과: [스파이크 0004](../spikes/0004-alembic-round-trip.md)(pg-researcher가 독립적으로 재현함) - 부분적으로 성립하며, 이 결과로 바뀐 결정은 없다. 남는 선택은 #25와 #70에서 정한다(§8.5, §9.6).
 - [x] `renamed_from` 힌트 (`process_revision_directives`로 drop+add → rename 변환) - 부분적으로 성립. 재작성이 다운그레이드를 직접 만들고 rename을 맨 앞에 두면 컬럼 rename은 왕복된다. 테이블 rename은 테이블 이름에서 파생된 이름(기본 키, 명명 규칙으로 이름 붙인 유니크 제약, PostgreSQL 18의 NOT NULL 제약)을 남긴다
 - [x] 람다로 선언한 `Check` - 부분적으로 성립. 테이블과 함께 만들어지지만, 기존 테이블에서의 변경은 Alembic의 opt-in `checkconstraint_byname`을 쓰고 이름이 식과 함께 바뀔 때만 감지된다
 - [x] `version` 트리거 - Alembic 자체의 확장 지점으로 성립. Alembic만으로는 트리거도 함수도 보지 못한다. `alembic_utils`는 읽어 보았으나 필요하지 않았다
@@ -1200,15 +1200,23 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
 - [ ] 불변 스냅샷 + `.set` 연산, 이동 표시·읽기 추적의 오버헤드
 - [ ] `Load.after`가 실제로 얼마나 자주 필요하고 왕복을 몇 단계 늘리는지
 - [ ] `.set(Column.to(...))`의 장황함이 실사용에서 수용 가능한지
-- [ ] 실행 ID·작업 테이블의 쓰기 증폭과 정리 비용
+- [ ] 실행 ID·작업 테이블의 쓰기 증폭과 정리 비용 (#6에서 나눔: 실행 ID 테이블 #72, outbox 로그 #73, 작업 테이블 #32)
 - [ ] seal 시간 (유스케이스 수백 개 규모)
 - [ ] 엔티티 키 생성기([ADR-0007](../adr/0007-ever-increasing-entity-keys.md), 결정 전에; #65): 기본 키 인덱스가 `shared_buffers`의 약 1배와 10배일 때 uuid4와 uuid7의 INSERT 속도와 INSERT당 WAL 바이트; 계속 커지는 키의 거짓 충돌 창(스파이크 0003 C3에서 읽는 행을 INSERT N건만큼 묵혀 가며); 실제 외래 키가 있는 "부모와 자식 생성" 부하(스파이크 0003 A7을 동시 실행으로)에서 uuid7과 uuid4의 40001 비율과 `RetryExhausted` 비율
 
-### 9.6 1차 범위 제안 (미결정)
-범위가 넓다는 지적을 반영한 제안이다. 실험 결과를 보고 확정한다.
-- **1차**: 순수 유스케이스와 실행 엔진, PostgreSQL 방언, 실행 ID, inline 프로젝션, Query 경로(TypedSQL), 스키마 도구(선택 extra)
-- **2차**: async 프로젝션, `then`·`@process`와 작업 파이프라인, 배치 유스케이스
+### 9.6 1차 범위 (결정됨, #6)
+범위가 넓다는 지적을 반영한 제안에서 출발했고, 메인테이너가 2026-11-26에 #6에서 §9.1-9.4의 판정과 그로부터 나온 결정 이슈의 권고를 보고 확정했다. 1차는 처음으로 동작하는 `app.run`을 기준으로 둘로 나눈다. 어떤 부분이 아직 열려 있는 결정 이슈에 달려 있으면 그 이슈의 결정을 따른다.
+- **Phase 1a - Core execution path**: 순수 유스케이스와 실행 엔진, PostgreSQL 방언, 실행 ID(#9-#22), 그다음 릴리스 파이프라인과 동작하는 0.0.1(#44, #30).
+  - 종료 조건: [스파이크 0002](../spikes/0002-use-cases-on-paper.md)의 유스케이스 6(주문 병합, 루트 삭제), 8(계좌 이체, 새 루트 INSERT), 9(프로필 편집)가 PostgreSQL 위 통합 테스트로 로드 배치 1회와 커밋 배치 1회 안에서, 재시도와 실행 ID를 갖춘 SERIALIZABLE로 통과한다.
+  - 그것이 막고 있는 구현 이슈보다 먼저: #49와 #51을 위한 타입 스파이크; 결정 #48, #54, #57, #58, #59, #60, #61, #63과 #48, #57, #59, #60의 형태를 위한 별도 타입 스파이크, 그리고 이 결정들이 요구하는 ADR(그중 하나는 #61의 실행 예산); #65 이후의 ADR-0007; #63이 스키마를 고정하기 전에 실행 ID 테이블의 정리 비용(#72). 이 결정들이 구현 이슈에 더하는 것은 각 결정을 따른다.
+  - `expected_version`, `VersionMismatch`, `owned` 변경 시 루트 `version` 증가는 #11, #13, #15, #17에 속한다. outbox가 들어오기 전(#23)까지 이벤트를 내는 유스케이스는 조용히 버리지 않고 거부한다. 시점(seal 또는 실행)은 #21에서 정한다.
+- **Phase 1b - Events, queries and tooling**: inline 프로젝션과 outbox 로그(#23), Query 경로(TypedSQL, #24), 스키마 도구(선택 extra, #25, CLI #26), 테스트 키트(#27), §9.5 측정(#28), 테스트로서의 문서 예제(#29). 종료 조건: 도입 3단계(§6).
+  - 1b에 함께 들어가는 것: 집합 로드 구현(#59를 따름), #23 전에 outbox 로그의 정리 비용(#73), SSI 부하에서 `53200`의 분류(#74. 아무것도 막지 않으며, 그때까지는 재시도하지 않고 `DatabaseError`로 드러난다).
+  - 1차의 스키마 도구([스파이크 0004](../spikes/0004-alembic-round-trip.md)): 왕복되는 것은 Alembic이 생성한다(생성, 컬럼 추가·삭제, 타입 변경, `version` 트리거). 제약·인덱스 이름 규칙은 1b에서, 첫 이름이 만들어지기 전에 정한다. Alembic이 보지 못하는 것은 shadow 스키마 카탈로그 diff가 보고한다. `platina migrate`를 쓰는 프로젝트에서는 `platina check`가 CI에서 이를 실행하며, Platina가 마이그레이션하지 않는 DB의 선언된 테이블도 검사할 수 있다. rename, 바뀐 CHECK나 부분 인덱스는 손으로 쓰는 마이그레이션이고 drift 보고가 이를 잡는다. 내부 테이블은 #63을 따른다.
+  - `platina gen`은 기존 DB를 스키마 소스로 받는다(#24).
+- **2차**: async 프로젝션, `then`·`@process`와 작업 파이프라인, 배치 유스케이스와 집합 변경(#33. 집합 단위 삭제와 `insert_all`은 #57과 #60의 결정에 따른다), 마이그레이션 충실도(rename, 파생 이름, CHECK·부분 인덱스 변경, #70), `platina pull`(#71). 1차에는 외부 세계와의 경계가 없다. 스파이크 0002의 유스케이스 넷에 필요한 `@process` 핸들러는 여기서 들어온다.
 - **이후**: MySQL·MariaDB 방언, saga 헬퍼, free-threaded 공식 지원
+- `platina pull`이 들어오기 전까지 도입 0단계(§6)는 조회 경로뿐이고, 손으로 쓴 엔티티는 drift 검사로 기존 스키마와 대조한다. §6은 최종 상태를 설명한다.
 
 ### 9.7 기타
 - [x] 이름 확정: Platina (§8.1)
