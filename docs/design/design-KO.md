@@ -1,4 +1,4 @@
-<!-- i18n: source=docs/design/design.md source-sha256=33d9fd3f95b6 translation-sha256=0a5958d52e36 -->
+<!-- i18n: source=docs/design/design.md source-sha256=9efd7caf5127 translation-sha256=dc934b589bfe -->
 # Platina 설계 문서
 
 > **Platina**: 백금(platinum)의 옛 스페인어 이름. 백금이 산에도 녹지 않고 반응하지 않듯, 도메인 코드는 DB와 반응하지 않는다.
@@ -892,7 +892,7 @@ ModuleBoundaryError: shop.catalog.usecases.restock 이 billing 모듈의 엔티�
 | 코어 (로드 계획, ChangeSet, SQL 컴파일) | **sans-IO**, 비동기 라이브러리 의존 없음 |
 | async 실행기 | **anyio** API로 작성 (취소 의미론·구조적 동시성) |
 | 백엔드 | **asyncio 전용**, uvloop은 사용자 선택 |
-| sync 실행기 | psycopg sync 연결 직접 사용, 1급 경로 |
+| sync 실행기 | sync psycopg 드라이버(`SyncPsycopgDriver`, ADR-0012)를 직접 구동, 1급 경로 |
 | 드라이버 | **psycopg 3.3+** 단일 |
 
 ### anyio를 쓰는 이유
@@ -902,8 +902,8 @@ ModuleBoundaryError: shop.catalog.usecases.restock 이 billing 모듈의 엔티�
 ```python
 async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResult:
     run_id = RunId.caller(idempotency_key) if idempotency_key else RunId.auto()
-    async with pool.connection() as conn:
-        return await drive_async(run_usecase(bound, run_id, policy, PG), conn)
+    async with driver.session() as session:                # 풀에서 얻은 autocommit 연결 (ADR-0012)
+        return await drive_async(run_usecase(bound, run_id, policy, PG), session)
     # 엔진(§10.5)이 명령을 내고, drive_async가 커밋 배치·롤백 구간에 shield를 건다
 ```
 
@@ -911,7 +911,7 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
 도메인 함수는 IO도 없고 제너레이터도 아니다(의존 로드는 선언으로 한다). 그래서 sync/async는 물론 어떤 색에도 물들지 않고, 유스케이스와 step은 평범한 함수로 `chain`에서 자유롭게 합성된다.
 
 ### 파이프라인
-로드 계획이 실행 전에 확정되므로 psycopg 파이프라인 모드로 계획의 각 단계를 한 번의 왕복에 보낸다. 식 형태 의존 로드(`Load.when`)는 같은 단계에 서브쿼리로 접히고, `Load.after`만 단계를 하나 더한다. 커밋 시 INSERT·UPDATE·outbox도 파이프라인으로 묶는다. 단, `COPY`는 파이프라인에서 지원되지 않으므로 대량 삽입은 별도 경로.
+로드 계획이 실행 전에 확정되므로 psycopg 파이프라인 모드로 계획의 각 단계를 한 번의 왕복에 보낸다. 식 형태 의존 로드(`Load.when`)는 같은 단계에 서브쿼리로 접히고, `Load.after`만 단계를 하나 더한다. 커밋 시 INSERT·UPDATE·outbox도 파이프라인으로 묶는다. 단, `COPY`는 파이프라인에서 지원되지 않으므로 대량 삽입은 별도 경로. 드라이버는 각 파이프라인을 autocommit 연결에서 실행하고 - 트랜잭션은 엔진 자신의 문장이 열고 커밋한다 - 모든 문장의 결과를 예외로 던지는 대신 데이터로 돌려준다([ADR-0012](../adr/0012-psycopg-driver-replies.md)).
 
 ---
 
@@ -1241,6 +1241,7 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
 
 **드라이버: psycopg 3.3+ 단일**
 - 근거: sync·async 인터페이스를 모두 제공하고(sync 실행기를 1급으로 유지하려면 필수), 파이프라인 모드·COPY·t-string을 지원한다. asyncpg는 빠르지만 async 전용이라 sync 실행기를 만들 수 없다.
+- 의존성: libpq를 번들하지 않은 `psycopg[pool]>=3.3`. 애플리케이션이 `psycopg[binary]`나 시스템 libpq 14+를 설치한다([ADR-0012](../adr/0012-psycopg-driver-replies.md)).
 
 **MySQL: 지원 계획 있음, 시점 미정**
 - 결정: 컴파일러의 방언 계층 위에 MySQL(및 MariaDB) 방언을 추가할 계획이다. 시점은 PostgreSQL 구현이 안정화된 뒤 정한다.
@@ -1386,9 +1387,10 @@ platina/
 │       └── postgresql/      # PG 방언 (MySQL은 나중에 여기 형제로)
 ├── app/                     # ── 껍데기 ── App, seal 조립, run/query (ADR-0001)
 ├── runners/                 # ── 껍데기 ──
-│   ├── async_.py            # anyio + psycopg AsyncConnection (원본)
+│   ├── async_.py            # anyio + 드라이버 AsyncSession (원본)
 │   └── sync_.py             # async_.py에서 자동 생성 (직접 수정 금지)
-├── drivers/psycopg/         # 연결 풀, 파이프라인, COPY, 타입 어댑터, SQLSTATE → 예외 매핑
+├── drivers/                 # 드라이버 계약(능력 Protocol, 문장 형태, 응답), SQLSTATE → 예외 매핑. psycopg 없음 (ADR-0012)
+│   └── psycopg/             # psycopg를 import하는 유일한 곳: 연결 풀, 파이프라인, COPY, 풀별 타입 어댑터
 ├── outbox/                  # 이벤트 로그, 소비자 체크포인트(xid 워터마크), 프로젝션·process·then 디스패처
 ├── migrate/                 # [extra] 레지스트리 → SQLAlchemy MetaData 변환, Alembic 연동, drift 검사
 ├── codegen/                 # TypedSQL 타입 추론, platina pull, import-linter 계약 생성
@@ -1416,7 +1418,7 @@ layers = [
 ]
 ```
 
-- import-linter는 우리 패키지 사이의 레이어만 검사한다. 영역마다 어떤 *외부* 모듈을 쓸 수 있는지는 `tools/guards/archlint.py`가 강제한다: 코어(`core`, `sql`)는 허용 목록에 있는 표준 라이브러리 모듈만 import하고(그래서 psycopg, anyio, asyncio, socket, threading, time, random, os, logging, sqlalchemy, alembic 등은 쓸 수 없다), `async`가 없으며, 시계나 난수 ID 함수를 부르지 않는다. psycopg는 `drivers`에서만, SQLAlchemy와 Alembic은 `migrate`(선택 extra)에서만 import한다.
+- import-linter는 우리 패키지 사이의 레이어만 검사한다. 영역마다 어떤 *외부* 모듈을 쓸 수 있는지는 `tools/guards/archlint.py`가 강제한다: 코어(`core`, `sql`)는 허용 목록에 있는 표준 라이브러리 모듈만 import하고(그래서 psycopg, anyio, asyncio, socket, threading, time, random, os, logging, sqlalchemy, alembic 등은 쓸 수 없다), `async`가 없으며, 시계나 난수 ID 함수를 부르지 않는다. psycopg는 `drivers.psycopg`에서만(`drivers`의 드라이버 계약과 SQLSTATE 매핑은 psycopg를 import하지 않는다, ADR-0012), SQLAlchemy와 Alembic은 `migrate`(선택 extra)에서만 import한다.
 - `time`까지 금지하는 이유: 백오프 대기조차 코어가 직접 하지 않고 `Sleep` 명령으로 요청한다. 덕분에 엔진 테스트가 실제 시간을 쓰지 않는다. 시간이나 우연에 따라 달라지는 값은 코어 안에서 만들지 않는다. 시계는 `Now` 파라미터로(§4.5), 지터용 난수는 엔진 인자로, 새 ID는 주입된 ID 소스에서 받는다(ADR-0002).
 
 ### 10.5 실행 엔진: sans-IO 상태 기계
@@ -1428,7 +1430,7 @@ layers = [
 @dataclass(frozen=True, slots=True)
 class Begin:    isolation: Isolation                     # 예산이 있으면 뒤에 set_config('statement_timeout', $1::text, true)가 붙고, 실행기가 남은 ms를 바인딩
 class Pipeline: statements: tuple[CompiledSQL, ...]; bounded = True     # 한 왕복으로 보낼 문장들
-class Copy:     table: str; columns: tuple[str, ...]; rows: Iterable[tuple]
+class Copy:     statement: CompiledSQL; rows: Sequence[tuple]; bounded = True  # COPY ... FROM STDIN, 어떤 파이프라인에도 넣지 않음 (ADR-0012)
 class CommitBatch: statements: tuple[CompiledSQL, ...]; bounded = True  # 쓰기·프로젝션·outbox·결과 기록·COMMIT·LSN 조회 (한 왕복)
 class StoredResult: run_id: RunId; bounded = False       # 별도 READ COMMITTED 트랜잭션에서 run_result(결과 + 핑거프린트) 조회
 class FreshLsn: bounded = False                          # pg_current_wal_insert_lsn() 조회
@@ -1501,7 +1503,7 @@ def replay(run_id, fp, pending):                            # 재생 경로. 마
 
 ```python
 # runners/async_.py  (껍데기: 명령을 IO로 바꾸는 루프. 사실을 보고할 뿐 아무것도 정하지 않는다)
-async def drive_async(gen, conn, deadline):
+async def drive_async(gen, session, deadline):
     reply = None
     while True:
         try:
@@ -1511,26 +1513,29 @@ async def drive_async(gen, conn, deadline):
         if cmd.bounded and deadline.reached(by=cmd_end(cmd)):  # 적용 여부는 Command가 정한다. Sleep은 now + seconds에 끝난다
             reply = DeadlineReached()
             continue
-        try:
-            if isinstance(cmd, (CommitBatch, Rollback)):
-                with anyio.CancelScope(shield=True):          # 커밋 배치·롤백은 취소로 끊기지 않음
-                    reply = await execute(conn, cmd, deadline.remaining_ms())   # set_config 자리에 바인딩
-            elif isinstance(cmd, Sleep):
-                reply = await anyio.sleep(cmd.seconds)
-            else:
-                reply = await execute(conn, cmd, deadline.remaining_ms())
-        except psycopg.Error as e:
-            reply = StatementFailed(index=failed_statement(cmd, e), error=map_sqlstate(e),   # 사실만 담는다.
-                                    deadline_passed=deadline.passed())                       # 분류는 엔진이 한다
+        if isinstance(cmd, (CommitBatch, Rollback)):
+            with anyio.CancelScope(shield=True):              # 커밋 배치·롤백은 취소로 끊기지 않음
+                reply = await execute(session, cmd, deadline.remaining_ms())   # set_config 자리에 바인딩
+        elif isinstance(cmd, Sleep):
+            reply = await anyio.sleep(cmd.seconds)
+        else:
+            reply = await execute(session, cmd, deadline.remaining_ms())
+        # execute()는 드라이버의 응답(Completed / Failed / Lost, ADR-0012)을 받아 사실만 넘기고,
+        # 분류는 엔진이 한다: Failed는 StatementFailed(index=reply.at,
+        # error=database_error(reply.fault, usecase=...), deadline_passed=deadline.passed())가 된다
 ```
 
+실행기 스케치에서 `execute`는 드라이버의 응답(ADR-0012)을 엔진의 사실로 옮기는 부분을 나타낸다. 드라이버는 문장 에러에 예외를 던지지 않으므로 실행기에는 `except psycopg.Error`가 없다. 엔진의 응답 타입(위의 `StatementFailed`)은 #17이 정하고, 두 루프도 #17이 작성한다.
+
 - **sync/async 의미가 100% 같다.** 둘 다 같은 엔진 제너레이터를 돌린다. 다른 건 루프의 `await`와 shield뿐이다.
+- **실행기는 드라이버 예외를 잡지 않는다.** 드라이버(`platina.drivers`)는 왕복 한 번에 응답 하나를 돌려준다. 모든 문장이 실행됐거나, 문장 *i*가 실패했거나(그 앞의 문장은 실행됐고 뒤의 문장은 실행되지 않았다), 연결이 끊겼거나 깨끗하지 않은 상태로 남아 닫혔다(결과가 있으면 그 문장이 실행됐다는 증거이고, 없으면 아무것도 증명하지 않는다). 엔진은 이 응답에서 커밋 결과를 읽으며, `COMMIT` 결과의 태그를 확인한다(중단된 트랜잭션에서 `COMMIT`은 `ROLLBACK`으로 답한다). 에러는 `platina.drivers.errors.database_error`가 매핑하고, 실행기가 여기에 유스케이스를 넘긴다([ADR-0012](../adr/0012-psycopg-driver-replies.md)).
 - **취소 지점이 명시적이다.** 엔진이 yield하는 곳만이 취소될 수 있는 곳이다.
 - **엔진을 DB 없이 테스트할 수 있다.** 미리 준비한 응답을 `send`하면 된다(§11.4).
 - 실행기 코드 자체는 psycopg와 같은 방식으로 `async_.py`를 원본으로 두고 `sync_.py`를 AST 변환으로 생성한다. 사람이 두 벌을 관리하지 않는다.
 
 ### 10.6 SQL 컴파일러: 불변 AST + 방언 능력
 
+- **컴파일된 문장은 `%s` 플레이스홀더로 바인딩하고**, 리터럴 `%`는 항상 `%%`로 쓴다. 드라이버가 빈 시퀀스라도 언제나 파라미터를 넘기므로 이스케이프 규칙이 하나로 유지된다([ADR-0012](../adr/0012-psycopg-driver-replies.md)).
 - **AST 노드는 `frozen=True, slots=True` dataclass.** 구조적 동등성과 해시가 기본이라, 바인드 값을 뺀 AST 자체가 컴파일 캐시 키가 된다. 사용자 정의 표현식도 노드 규칙만 지키면 자동으로 캐시에 참여한다.
 - **컴파일은 방언별 `match` 디스패치.** `PostgresCompiler`가 공통 `Compiler`를 상속하고, 다른 노드만 재정의한다.
 - **방언 차이는 if문이 아니라 전략으로.**
@@ -1637,12 +1642,13 @@ PlatinaError
 (사용자 도메인 예외는 감싸지 않고 그대로 전파)
 ```
 
-`IdempotencyKeyReuse`(#58)와 `RunTimeout`(#61)은 결정됐고, 각각 #22와 #17에서 `platina.core.errors`에 추가한다. `ForeignKeyViolation`(23503, 그리고 RESTRICT 외래 키에서 오는 23001)은 [ADR-0010](../adr/0010-writes-beyond-set.md)에서 결정했다. `UniqueViolation`, `CheckViolation`처럼 드라이버가 SQLSTATE로 타입을 정하는 `DatabaseError`이고, 재시도하지 않는다 - 유스케이스가 읽지 않은 행에 달려 있기 때문이다. owned가 아닌 행을 손으로 넘긴 키로 직접 쓰고, 삭제가 그런 행을 유스케이스에 맡기게 되면 흔해진다. PostgreSQL의 진단 정보는 참조하는 테이블과 제약을 알려 준다. 이 에러는 제약 이름이 #25의 이름 규칙을 따르면 참조하는 엔티티와 필드를(그렇지 않으면 테이블을) 알려 주고, 그 행들을 먼저 삭제하거나 다른 행을 가리키게 하라는 힌트를 준다. 엔진은 이 에러를 그것을 낸 psycopg 호출이 아니라 문장의 위치로 귀속시킨다(파이프라인에서는 뒤의 호출이 이를 낼 수 있다). #18에서 추가한다. 쓰기의 `UsageError`(새 엔티티에 대한 `.set`이나 `.delete()`, 로드한 스냅샷의 `insert`, owned 자식을 직접 씀, 만들고 끝내 삽입하지 않은 엔티티)는 `hint`를 가진 평범한 `UsageError`다(ADR-0010).
+`IdempotencyKeyReuse`(#58)와 `RunTimeout`(#61)은 결정됐고, 각각 #22와 #17에서 `platina.core.errors`에 추가한다. `ForeignKeyViolation`(23503, 그리고 RESTRICT 외래 키에서 오는 23001)은 [ADR-0010](../adr/0010-writes-beyond-set.md)에서 결정했다. `UniqueViolation`, `CheckViolation`처럼 드라이버가 SQLSTATE로 타입을 정하는 `DatabaseError`이고, 재시도하지 않는다 - 유스케이스가 읽지 않은 행에 달려 있기 때문이다. owned가 아닌 행을 손으로 넘긴 키로 직접 쓰고, 삭제가 그런 행을 유스케이스에 맡기게 되면 흔해진다. PostgreSQL의 진단 정보는 참조하는 테이블과 제약을 알려 준다. 이 에러는 제약 이름이 #25의 이름 규칙을 따르면 참조하는 엔티티와 필드를(그렇지 않으면 테이블을) 알려 주고, 그 행들을 먼저 삭제하거나 다른 행을 가리키게 하라는 힌트를 준다. 엔진은 이 에러를 그것을 낸 psycopg 호출이 아니라 문장의 위치로 귀속시킨다(파이프라인에서는 뒤의 호출이 이를 낼 수 있다). #18에서 추가하며, #18은 두 SQLSTATE를 모두 이 예외로 매핑하고 위의 힌트를 붙인다. 엔티티와 필드를 알려 주는 것은 #25의 제약 이름을 기다리고, 그때까지는 `Table:` 줄이 참조하는 테이블을 알려 준다([ADR-0012](../adr/0012-psycopg-driver-replies.md)). 쓰기의 `UsageError`(새 엔티티에 대한 `.set`이나 `.delete()`, 로드한 스냅샷의 `insert`, owned 자식을 직접 씀, 만들고 끝내 삽입하지 않은 엔티티)는 `hint`를 가진 평범한 `UsageError`다(ADR-0010).
 
 모든 예외는 메시지 외에 구조화된 필드(`usecase`, `entity`, `field`, `location`, `hint`, 그리고 추가 줄을 담는 `details`)를 가진다. CLI·IDE 연동이나 테스트 단언에서 문자열 파싱이 필요 없다. 필드의 타입, 생성자, 렌더링은 [ADR-0006](../adr/0006-exception-fields-and-rendering.md)이 정한다.
 
 - 메시지만 위치 인자이고, 필드는 키워드 전용이며 읽기 전용이다. `usecase: str | None`(유스케이스의 레지스트리 이름), `entity: type[object] | None`(엔티티 클래스), `field: str | None`(`entity` 기준 속성 경로, `"address.city"`), `location: SourceLocation | None`(`file`, `line`, `function`. `file`은 최상위 패키지 기준 경로이며 절대 경로가 아니다), `hint: str | None`(`Fix:`로 렌더링), 그리고 다섯 필드로 담을 수 없는 줄을 순서대로 담는 `details: tuple[tuple[str, str], ...]`.
-- `DatabaseError`는 필수 `sqlstate: str | None`을 더 가진다. 원본 드라이버 예외는 필드가 아니라 `__cause__`다.
+- 계층 밖에 내부 신호가 하나 있다. `platina.drivers.interface.SessionUnavailable`(연결을 얻을 수 없음: 풀이 닫힘, 시간 초과, 연결 거부)은 드라이버 fault를 담고 사용자에게 보이지 않는다. 드라이버나 세션을 여는 쪽(실행기, 풀을 여는 `App`)이 이를 `database_error(e.fault, usecase=...)`로 바꾼다([ADR-0012](../adr/0012-psycopg-driver-replies.md)).
+- `DatabaseError`는 필수 `sqlstate: str | None`을 더 가진다(파이프라인 안에서 연결이 끊긴 경우처럼 SQLSTATE가 없는 드라이버 에러는 `None`). 원본 드라이버 예외는 필드가 아니라 `__cause__`다. `UniqueViolation`과 `CheckViolation`은 이 값을 고정하고(`"23505"`, `"23514"`) `sqlstate`를 받지 않는다. `ForeignKeyViolation`은 둘 중 하나를 받는다(`Literal["23503", "23001"]`). `platina.drivers.errors.database_error`가 드라이버의 fault와 실행기가 넘긴 유스케이스로 이들을 만들고, `Constraint:` / `Table:` 상세 줄을 붙이며, 키 값이 들어 있는 서버의 `DETAIL` 텍스트는 절대 넣지 않는다([ADR-0012](../adr/0012-psycopg-driver-replies.md)).
 - 모든 예외는 `pickle`, `copy`, `deepcopy`를 거쳐도 모든 필드를 유지한다(`PlatinaError`의 `__reduce__` 하나로).
 
 ---

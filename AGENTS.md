@@ -9,8 +9,8 @@ database: use cases declare what they load, run as pure functions over immutable
 return changes as data; one place (`app.run` / `app.query`) does all I/O, SERIALIZABLE with
 automatic retry by default. Internally a sans-I/O engine yields commands that thin sync/async
 runners execute on psycopg 3.3+. Status: design settled; implementation has started with the core
-exception hierarchy (`platina.core.errors`) - the remaining experiments of design section 9 come
-before the rest of the prototype.
+exception hierarchy (`platina.core.errors`) and the psycopg driver (`platina.drivers`) - the
+remaining experiments of design section 9 come before the rest of the prototype.
 
 Read before non-trivial work: `docs/design/design.md` (philosophy, syntax, decision record,
 experiments, internal architecture, test strategy), `docs/architecture.md` (what exists now),
@@ -24,7 +24,7 @@ experiments, internal architecture, test strategy), `docs/architecture.md` (what
 | Git hooks | `make hooks-install` (pre-commit checks + pre-push refusal for `main` / `develop`) |
 | Fast gate | `make check` (ruff format check, ruff lint, pyright + mypy, import-linter, guards, agents-check, unit tests, type tests) |
 | Format | `make fmt` (ruff format + ruff check --fix) |
-| Free-threaded | `make test-unit-ft` (unit tests on CPython 3.14t in `.venv-ft`, each on 8 threads; fails if the GIL is on) |
+| Free-threaded | `make test-unit-ft` (unit tests on CPython 3.14t in `.venv-ft` without the `binary` group, each on 8 threads; fails if the GIL is on) |
 | Type tests | `make test-types` (`tests/typing/pass_*` / `fail_*` under pyright **and** mypy) |
 | Integration | `make test-int` (needs `make db-up`) |
 | Everything | `make check-all` (`check` + `test-unit-ft` + `test-int`) |
@@ -37,7 +37,7 @@ saying why (prefer the stack the design names; otherwise justify in the PR).
 1. **The core does no I/O.** `platina.core` and `platina.sql` import no driver, event loop,
    thread, clock, randomness or environment module and contain no `async`; the engine yields
    Commands and the runners execute them (`make guard`: A101/A105/A106).
-2. **Layering** is enforced (import-linter + guards). Only `platina.drivers` imports psycopg,
+2. **Layering** is enforced (import-linter + guards). Only `platina.drivers.psycopg` imports psycopg,
    only `platina.migrate` imports SQLAlchemy/Alembic, the shell writes against anyio.
 3. **Design invariants hold** (`design-invariants` rule): declared reads, pure use cases, changes
    as data, no implicit I/O, one way per operation, no option that changes meaning, remove rather

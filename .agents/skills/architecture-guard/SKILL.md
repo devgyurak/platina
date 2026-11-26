@@ -8,7 +8,7 @@ description: Run, interpret and extend the mechanical guards (import-linter laye
 | Tool | Command | Enforces |
 |---|---|---|
 | import-linter | `uv run lint-imports` | layer order between `platina` packages, `exhaustive` (every package placed) (`[tool.importlinter]` in pyproject.toml) |
-| tools/guards archlint | `uv run python -m tools.guards` | A101 core (`core`, `sql`) imports outside the `CORE_ALLOWED` allowlist; A102 psycopg outside `drivers`; A103 sqlalchemy/alembic outside `migrate`; A104 asyncio/trio/uvloop in the shell outside `drivers` (use anyio); A105 `async`/`await`/async comprehensions in the core; A106 `.now()`/`.today()`/`uuid4()`/`uuid7()`... (aliases included), `open()`, `print()`, `eval()`... in the core |
+| tools/guards archlint | `uv run python -m tools.guards` | A101 core (`core`, `sql`) imports outside the `CORE_ALLOWED` allowlist; A102 psycopg outside `drivers.psycopg`; A103 sqlalchemy/alembic outside `migrate`; A104 asyncio/trio/uvloop in the shell outside `drivers.psycopg` (use anyio); A105 `async`/`await`/async comprehensions in the core; A106 `.now()`/`.today()`/`uuid4()`/`uuid7()`... (aliases included), `open()`, `print()`, `eval()`... in the core |
 | tools/guards testlint | same | T101 control flow, T201-T206 Given/When/Then, T301 any `*.sleep()` |
 | tools/guards langlint | same | L101/L102 English-only (test data files exempt), L201-L204 translations (stale in both directions) |
 | tools/typetests | `uv run python -m tools.typetests` | `tests/typing/pass_*` clean and `fail_*` `# expect-error[<pyright rule>, <mypy code>]` lines rejected with the named codes, under pyright **and** mypy |

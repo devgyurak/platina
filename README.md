@@ -29,8 +29,10 @@ await app.run(pay.bind(order=Order.ref(order_id), wallet=wallets.by_user(user_id
 ## Status
 
 **Design settled, implementation just started.** Only the exception hierarchy
-(`platina.PlatinaError` and its subclasses) exists so far; the code above is the target syntax,
-not a working API. Four spikes are done: the type surface
+(`platina.PlatinaError` and its subclasses) and the internal psycopg driver exist so far; the
+code above is the target syntax, not a working API. Platina depends on `psycopg[pool]` without a
+bundled libpq: install `psycopg[binary]` next to it, or a system libpq 14+
+([ADR-0012](docs/adr/0012-psycopg-driver-replies.md)). Four spikes are done: the type surface
 ([`docs/spikes/0001-type-surface.md`](docs/spikes/0001-type-surface.md)), ten real use cases on
 paper ([`docs/spikes/0002-use-cases-on-paper.md`](docs/spikes/0002-use-cases-on-paper.md)), SSI
 concurrency ([`docs/spikes/0003-ssi-internal-tables.md`](docs/spikes/0003-ssi-internal-tables.md))
@@ -49,7 +51,7 @@ measurements of the design document come before the rest of the prototype.
 Requires [uv](https://docs.astral.sh/uv/) and, for integration tests, Docker.
 
 ```bash
-uv sync              # dependencies
+uv sync              # dependencies (libpq from psycopg-binary, the `binary` group)
 make check           # fast gate: lint, pyright + mypy, guards, unit and type tests
 make db-up           # PostgreSQL 18 on localhost:26432
 make check-all       # everything: + free-threaded unit tests and integration tests

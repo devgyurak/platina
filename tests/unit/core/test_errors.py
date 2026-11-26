@@ -13,6 +13,7 @@ from platina.core.errors import (
     ConcurrencyError,
     ConflictingWrites,
     DatabaseError,
+    ForeignKeyViolation,
     IntraUsecaseConflict,
     ModuleBoundaryError,
     MovedSnapshotAccess,
@@ -32,6 +33,8 @@ from tests.support.errors import (
     Copier,
     Order,
     deep_copy,
+    parameters,
+    parameters_without,
     pickle_round_trip,
     raise_database_error_from,
     shallow_copy,
@@ -61,6 +64,7 @@ PUBLIC_NAMES = [
     "DatabaseError",
     "UniqueViolation",
     "CheckViolation",
+    "ForeignKeyViolation",
 ]
 
 MESSAGE_ONLY_CLASSES = [
@@ -104,8 +108,9 @@ FULL_INSTANCES = [
     RetryExhausted("m", usecase="pay", hint="h"),
     VersionMismatch("m", usecase="edit", entity=Order),
     DatabaseError("m", sqlstate="22001", usecase="pay"),
-    UniqueViolation("m", sqlstate="23505", entity=Order, field="number"),
-    CheckViolation("m", sqlstate="23514", entity=Order, field="total"),
+    UniqueViolation("m", entity=Order, field="number"),
+    CheckViolation("m", entity=Order, field="total"),
+    ForeignKeyViolation("m", sqlstate="23503", entity=Order, field="customer_id"),
 ]  # fmt: skip
 
 # Design section 4.13, with the maintainer's decisions of 2026-11-25 (ADR-0006): the location
@@ -238,6 +243,7 @@ SECTION_4_13_EXAMPLES = [
         (DatabaseError, PlatinaError),
         (UniqueViolation, DatabaseError),
         (CheckViolation, DatabaseError),
+        (ForeignKeyViolation, DatabaseError),
     ],
 )
 def test_exception_class_has_the_parent_of_section_10_12(cls, parent):
@@ -295,10 +301,11 @@ def test_platina_error_keeps_the_field_it_was_given(field, value):
     assert getattr(exc, field) is value
 
 
+@pytest.mark.parametrize("cls", [UniqueViolation, CheckViolation])
 @pytest.mark.parametrize(("field", "value"), FIELD_VALUES)
-def test_database_error_keeps_the_base_field_it_was_given(field, value):
+def test_database_error_subclass_keeps_the_base_field_it_was_given(cls, field, value):
     # when
-    exc = with_field(UniqueViolation, field, value, sqlstate="23505")
+    exc = with_field(cls, field, value)
     # then
     assert getattr(exc, field) is value
 
@@ -326,18 +333,32 @@ def test_exception_with_only_a_message_renders_the_message(cls):
     assert str(exc) == "Order.items is not loaded."
 
 
-@pytest.mark.parametrize("cls", [DatabaseError, UniqueViolation, CheckViolation])
-def test_database_error_with_only_a_message_has_it_as_its_only_arg(cls):
+@pytest.mark.parametrize("cls", [UniqueViolation, CheckViolation])
+def test_database_error_subclass_with_only_a_message_has_it_as_its_only_arg(cls):
     # when
-    exc = cls("duplicate key value", sqlstate="23505")
+    exc = cls("duplicate key value")
     # then
     assert exc.args == ("duplicate key value",)
 
 
-@pytest.mark.parametrize("cls", [DatabaseError, UniqueViolation, CheckViolation])
-def test_database_error_with_only_a_message_renders_the_message(cls):
+def test_database_error_with_only_a_message_and_sqlstate_has_the_message_as_its_only_arg():
     # when
-    exc = cls("duplicate key value", sqlstate="23505")
+    exc = DatabaseError("duplicate key value", sqlstate="23505")
+    # then
+    assert exc.args == ("duplicate key value",)
+
+
+@pytest.mark.parametrize("cls", [UniqueViolation, CheckViolation])
+def test_database_error_subclass_with_only_a_message_renders_the_message(cls):
+    # when
+    exc = cls("duplicate key value")
+    # then
+    assert str(exc) == "duplicate key value"
+
+
+def test_database_error_with_only_a_message_and_sqlstate_renders_the_message():
+    # when
+    exc = DatabaseError("duplicate key value", sqlstate="23505")
     # then
     assert str(exc) == "duplicate key value"
 
@@ -528,9 +549,27 @@ def test_exception_pickle_keeps_the_entity_class_by_reference():
 
 def test_database_error_keeps_its_sqlstate():
     # when
-    exc = UniqueViolation("duplicate key value", sqlstate="23505")
+    exc = DatabaseError("could not serialize access", sqlstate="40001")
     # then
-    assert exc.sqlstate == "23505"
+    assert exc.sqlstate == "40001"
+
+
+@pytest.mark.parametrize("cls", [UniqueViolation, CheckViolation])
+def test_database_error_subclass_takes_every_database_error_parameter_but_sqlstate(cls):
+    # when
+    taken = parameters(cls)
+    # then
+    assert taken == parameters_without(DatabaseError, "sqlstate")
+
+
+@pytest.mark.parametrize(
+    ("cls", "sqlstate"), [(UniqueViolation, "23505"), (CheckViolation, "23514")]
+)
+def test_database_error_subclass_fixes_its_sqlstate(cls, sqlstate):
+    # when
+    exc = cls("constraint violated")
+    # then
+    assert exc.sqlstate == sqlstate
 
 
 def test_database_error_accepts_no_sqlstate_for_driver_errors_without_one():
@@ -570,3 +609,26 @@ def test_source_location_function_defaults_to_none():
     location = SourceLocation("shop/billing/entities.py", 29)
     # then
     assert location.function is None
+
+
+def test_foreign_key_violation_takes_every_database_error_parameter():
+    # when
+    taken = parameters_without(ForeignKeyViolation, "sqlstate")
+    # then
+    assert taken == parameters_without(DatabaseError, "sqlstate")
+
+
+@pytest.mark.parametrize("sqlstate", ["23503", "23001"])
+def test_foreign_key_violation_keeps_its_sqlstate(sqlstate):
+    # when
+    exc = ForeignKeyViolation("violates foreign key constraint", sqlstate=sqlstate)
+    # then
+    assert exc.sqlstate == sqlstate
+
+
+@pytest.mark.parametrize(("field", "value"), FIELD_VALUES)
+def test_foreign_key_violation_keeps_the_base_field_it_was_given(field, value):
+    # when
+    exc = with_field(ForeignKeyViolation, field, value, sqlstate="23503")
+    # then
+    assert getattr(exc, field) is value

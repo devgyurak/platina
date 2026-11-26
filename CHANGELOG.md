@@ -201,6 +201,21 @@ All notable changes are documented here. Format: [Keep a Changelog](https://keep
   receiver-fixed places, the variance ADR-0011 declares; the gap no longer reaches `Load.after`),
   and a cross-reference in ADR-0010;
   `docs/architecture.md` lists the ADR.
+- `platina.drivers` (#18, ADR-0012 Proposed): the driver contract without psycopg -
+  capability-split Protocols, the statement shape, per-statement replies `Completed` /
+  `Failed(at)` / `Lost` and `database_error(fault, *, usecase)` mapping 23505 / 23514 / 23503 /
+  23001 / other SQLSTATEs onto the 10.12 hierarchy - and `platina.drivers.psycopg` with
+  `SyncPsycopgDriver` / `AsyncPsycopgDriver`: a pool of autocommit connections with a per-pool
+  adapters map, one pipeline round trip per call, COPY outside pipelines, connections returned
+  idle, rolled back or closed. `UniqueViolation` and `CheckViolation` fix their SQLSTATE (ADR-0006
+  amended). Runtime dependency `psycopg[pool]>=3.3` (no bundled libpq); a `binary` dependency
+  group for development, left out by `make test-unit-ft`; guard A102 narrowed to
+  `platina.drivers.psycopg`; the first `tests/integration` suite, one database per test.
+- `platina.ForeignKeyViolation` (#18, decided by ADR-0010): the `DatabaseError` for `23503` and
+  `23001`, not retried; `sqlstate: Literal["23503", "23001"]`; `database_error` adds a hint to
+  delete or re-point the referencing rows. Naming the referencing entity and field waits for
+  #25's constraint names; until then the `Table:` line names the table.
+
 ### Changed
 - Entity syntax (ADR-0003, accepted): entities inherit `Entity` with table options as class
   keywords instead of an `@entity` decorator, are created with the keyword constructor
@@ -215,3 +230,7 @@ All notable changes are documented here. Format: [Keep a Changelog](https://keep
 - Design sections 4, 8.2, 10.3, 10.8, 10.12 and 11.8 (with the observed error codes), ADR-0002,
   README, the `design-invariants` rule, the `type-reviewer` agent and the `type-tests` skill
   follow these decisions.
+- `UniqueViolation` and `CheckViolation` no longer take `sqlstate`: they fix it to `"23505"` /
+  `"23514"` (#18, ADR-0006 amended by ADR-0012). Guards A102 and A104 allow psycopg and asyncio
+  only in `platina.drivers.psycopg`. The `spike` dependency group no longer carries psycopg (it
+  comes with the defaults).

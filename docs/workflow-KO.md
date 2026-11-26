@@ -1,4 +1,4 @@
-<!-- i18n: source=docs/workflow.md source-sha256=82790f1afb51 translation-sha256=2d5cfbec811d -->
+<!-- i18n: source=docs/workflow.md source-sha256=61f327965e04 translation-sha256=eee5eb966a40 -->
 # 에이전트 개발 워크플로
 
 원문(영어): [workflow.md](workflow.md)
@@ -105,7 +105,7 @@ free-threaded 3.14t의 단위 테스트(`make test-unit-ft`), 통합 테스트. 
 | 타입 | pyright(`src`는 strict) + mypy `--strict` | `make typecheck`, CI |
 | 공개 타입 표면 | `tools/typetests.py` (`# expect-error[<pyright 규칙>, <mypy 코드>]`로 표시한 `tests/typing/pass_*`, `fail_*`를 두 체커로 검사) | `make test-types`, CI |
 | 레이어 | import-linter (`exhaustive`: 모든 패키지가 레이어에 있어야 함) | `make guard`, pre-commit, CI |
-| 영역(A101-A106: `core`/`sql`은 허용 목록의 표준 라이브러리 모듈만 import, `async` 금지, 별칭을 거쳐도 시계·난수 ID 호출 금지, psycopg는 `drivers`에서만, SQLAlchemy/Alembic은 `migrate`에서만, 껍데기는 asyncio가 아니라 anyio) | `tools/guards` | 편집 훅, `make guard`, pre-commit, CI |
+| 영역(A101-A106: `core`/`sql`은 허용 목록의 표준 라이브러리 모듈만 import, `async` 금지, 별칭을 거쳐도 시계·난수 ID 호출 금지, psycopg는 `drivers.psycopg`에서만, SQLAlchemy/Alembic은 `migrate`에서만, 껍데기는 asyncio가 아니라 anyio) | `tools/guards` | 편집 훅, `make guard`, pre-commit, CI |
 | 테스트 규칙: GWT, 제어 흐름 금지 (T1xx-T3xx) | `tools/guards` | 위와 같음 |
 | 언어: 영어 + 번역, 양방향 낡음 감지 (L1xx/L2xx) | `tools/guards` | 위와 같음 |
 | `main` / `develop` 푸시 금지 | `tools/hooks/pre_push.py` (git pre-push, `make hooks-install`) | 훅을 설치한 클론의 모든 푸시 |

@@ -22,12 +22,16 @@ make db-up-durable   # durable profile
 make db-down      # stop both (the fast one is wiped; the durable volume is kept)
 make db-reset     # down + up
 make db-psql      # psql shell
-make test-int     # integration tests (skips cleanly while there are none)
+make test-int     # integration tests
 ```
 
-Integration tests will clone a migrated template database per test (`CREATE DATABASE ...
-TEMPLATE`, design section 11.5); the nightly matrix will cover PostgreSQL 14-18. Neither exists yet:
-add them with the first integration test and update this skill.
+Integration tests (`tests/integration/`, the `integration` marker applied by its `conftest.py`)
+connect with `PLATINA_TEST_DSN` (default: the fast profile,
+`postgresql://platina:platina@localhost:26432/platina`) and get one empty database per test
+(`CREATE DATABASE`, dropped `WITH (FORCE)` afterwards); each test creates its own tables. The
+server is shared, so tests never touch other databases. Still to come (#20): a migrated template
+cloned per test (`CREATE DATABASE ... TEMPLATE`, design section 11.5), a template per
+pytest-xdist worker, and the nightly PostgreSQL 14-18 matrix.
 
 ## Troubleshooting
 - `connection refused` -> `docker compose ps`; port clash -> stop the other service or change the

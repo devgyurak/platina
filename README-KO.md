@@ -1,4 +1,4 @@
-<!-- i18n: source=README.md source-sha256=39d643d96b26 translation-sha256=6452fd81d2d3 -->
+<!-- i18n: source=README.md source-sha256=4b2d4b4f4de1 translation-sha256=9fda0abfd872 -->
 # Platina
 
 원문(영어): [README.md](README.md)
@@ -29,8 +29,11 @@ await app.run(pay.bind(order=Order.ref(order_id), wallet=wallets.by_user(user_id
 
 ## 상태
 
-**설계 확정, 구현은 막 시작함.** 지금은 예외 계층(`platina.PlatinaError`와 하위 클래스)만 있고, 위 코드는 목표 문법이며 동작하는 API가 아니다. 스파이크 네
-개가 끝났다: 타입 표면([`docs/spikes/0001-type-surface.md`](docs/spikes/0001-type-surface.md)),
+**설계 확정, 구현은 막 시작함.** 지금은 예외 계층(`platina.PlatinaError`와 하위 클래스)과
+내부 psycopg 드라이버만 있고, 위 코드는 목표 문법이며 동작하는 API가 아니다. Platina는 libpq를
+번들하지 않은 `psycopg[pool]`에 의존한다. 그 옆에 `psycopg[binary]`를 설치하거나 시스템
+libpq 14+를 둔다([ADR-0012](docs/adr/0012-psycopg-driver-replies.md)). 스파이크 네 개가
+끝났다: 타입 표면([`docs/spikes/0001-type-surface.md`](docs/spikes/0001-type-surface.md)),
 종이 위에 옮긴 실제 유스케이스 10개([`docs/spikes/0002-use-cases-on-paper.md`](docs/spikes/0002-use-cases-on-paper.md)),
 SSI 동시성([`docs/spikes/0003-ssi-internal-tables.md`](docs/spikes/0003-ssi-internal-tables.md)),
 Alembic 왕복([`docs/spikes/0004-alembic-round-trip.md`](docs/spikes/0004-alembic-round-trip.md)).
@@ -47,7 +50,7 @@ Alembic 왕복([`docs/spikes/0004-alembic-round-trip.md`](docs/spikes/0004-alemb
 [uv](https://docs.astral.sh/uv/)가 필요하고, 통합 테스트에는 Docker가 필요하다.
 
 ```bash
-uv sync              # 의존성
+uv sync              # 의존성 (libpq는 `binary` 그룹의 psycopg-binary에서)
 make check           # 빠른 게이트: lint, pyright + mypy, 가드, 단위·타입 테스트
 make db-up           # PostgreSQL 18, localhost:26432
 make check-all       # 전부: + free-threaded 단위 테스트, 통합 테스트

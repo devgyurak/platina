@@ -19,7 +19,7 @@ Read `.agents/rules/testing.md` first.
    plans)? Engine: is a fault injected at every yield point, not just the happy path?
 4. Public typing: does every promised type error have a `fail_*.py` line, and does
    `uv run python -m tools.typetests` pass under both pyright and mypy?
-5. Integration: real PostgreSQL only, per-test database from the template, no reliance on test
+5. Integration: real PostgreSQL only, per-test database (empty until #20's template), no reliance on test
    order, concurrency pinned with barriers, no sleeps, no network beyond the test database.
 6. Readability: one behaviour per test, descriptive names, given/when/then sections that actually
    separate arrange/act/assert; helper logic lives in `tests/support/`.

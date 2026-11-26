@@ -49,6 +49,10 @@ been wrong on paper (design section 9), so prefer a measurement over an argument
    The commit outcome is read by **position**, never by SQLSTATE alone: an error before or on
    `COMMIT` is a rollback, a successful `COMMIT` result is committed whatever follows, no reply is
    unknown (ADR-0008).
+   The driver reports each round trip as `Completed`, `Failed(at)` or `Lost` (ADR-0012): read the
+   commit outcome from the position and the `COMMIT` result's tag (`ROLLBACK` in an aborted
+   transaction), never from `sqlstate is None`. Connections are autocommit and lent with
+   `getconn` / `putconn`; `pool.connection()` commits an open transaction on a clean exit.
 6. **Commit order** is the planner's dependency graph (FK + unique keys, freeing a value before
    taking it), batched; cycles are reported (`CommitCycle`), not guessed. A root's `.delete()`
    is one engine-issued statement per root table that deletes its owned relations by the root key
@@ -62,8 +66,9 @@ been wrong on paper (design section 9), so prefer a measurement over an argument
    and stop on a poison message; they never skip.
 9. **Consistency token** = (xid, insert LSN). Use `pg_current_wal_insert_lsn()`, not
    `pg_current_wal_lsn()`.
-10. **Errors** map SQLSTATE to the hierarchy of design section 10.12 in `platina.drivers`, keeping
-    the SQLSTATE and the original exception. Replies report per-statement facts (which statement
-    failed, whether the deadline had passed); what they mean for the run - rollback, committed,
-    `RunTimeout`, the hinted error for `42P01` / `42703` / `42501` on an internal table
-    (ADR-0009) - is decided by the engine, which built the statements.
+10. **Errors** map SQLSTATE to the hierarchy of design section 10.12 in `platina.drivers`
+    (`errors.database_error`, called with the use case; ADR-0012), keeping the SQLSTATE and the
+    original exception. Replies report per-statement facts (which statement failed, whether the
+    deadline had passed); what they mean for the run - rollback, committed, `RunTimeout`, the
+    hinted error for `42P01` / `42703` / `42501` on an internal table (ADR-0009) - is decided by
+    the engine, which built the statements.

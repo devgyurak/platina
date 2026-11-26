@@ -17,7 +17,7 @@ on its users: the code that decides has no I/O, the code that does I/O decides n
 cli | integrations | testing          shell: entry points, framework glue, user test kit
 app                                   shell: App, seal() orchestration, run/query (ADR-0001)
 runners | outbox | migrate | codegen  shell: drive the engine, consume the log, schema tooling
-drivers                               shell: the only psycopg importer
+drivers                               shell: driver contract + SQLSTATE mapping; drivers.psycopg is the only psycopg importer
 sql                                   sans-I/O: compiler, dialects (PostgreSQL first)
 core                                  sans-I/O: schema, expr, snapshot, changes, plan, planner, engine
 ```
@@ -30,12 +30,15 @@ core                                  sans-I/O: schema, expr, snapshot, changes,
   injected ID source (ADR-0002). Widening the allowlist is the maintainer's call.
 - **Every package has a layer.** The import-linter layers contract is `exhaustive`: a new direct
   child of `platina` breaks it until it is placed (and documented here).
-- **Drivers**: only `platina.drivers` imports `psycopg` / `psycopg_pool` (A102). Everything above
-  talks to a small Protocol, split by capability (design section 10.2, the Ecto lesson).
+- **Drivers**: only `platina.drivers.psycopg` imports `psycopg` / `psycopg_pool` (A102). Everything
+  above talks to the Protocols of `platina.drivers.interface`, split by capability (design section
+  10.2, the Ecto lesson), and gets replies as data, never psycopg exceptions (ADR-0012). The
+  contract and the SQLSTATE mapping import no psycopg, so unit tests run without libpq (the
+  free-threaded job has none).
 - **Schema tooling**: only `platina.migrate` imports `sqlalchemy` / `alembic` (A103); the runtime
   never needs the `platina[migrate]` extra (design section 8.5).
 - **Async runtime**: the shell writes against **anyio**; `asyncio` / `trio` / `uvloop` are not
-  imported outside `platina.drivers` (A104). trio is unsupported (design section 8.6).
+  imported outside `platina.drivers.psycopg` (A104). trio is unsupported (design section 8.6).
 
 ## Engine and runners (design section 10.5)
 - The engine is a generator that yields frozen Command values and receives Replies. A runner is
@@ -66,7 +69,10 @@ keyword-only and read-only (ADR-0006). A subclass may add fields and take its ow
 shape, but the message stays the only item of `args`; pickle and copy go through
 `PlatinaError.__reduce__` only, so no subclass defines its own. `errors.py` imports nothing
 from `platina`. Lines that restate a subclass's own typed field are built by the class, not
-passed in `details`. User domain exceptions propagate unwrapped.
+passed in `details`. User domain exceptions propagate unwrapped. The one internal exception
+outside the hierarchy is `platina.drivers.interface.SessionUnavailable` (no connection could be
+had); it never reaches users - whoever opens the driver or a session maps its fault with
+`database_error` (ADR-0012).
 
 ## Decisions
 The design document's decision record (section 8) and accepted ADRs in `docs/adr/` are binding.

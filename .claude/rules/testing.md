@@ -61,9 +61,10 @@ comprehensions are forbidden anywhere in a test module - no exceptions, no suppr
   (design section 11.4). The loops that do this live in `tests/support/`.
 - **Laws over examples** for ChangeSet, `chain`, planner and load plans (design section 11.3);
   add targeted examples for edge cases Hypothesis is unlikely to hit.
-- **Integration isolation**: each test gets its own database cloned from a migrated template
-  (`CREATE DATABASE ... TEMPLATE`), never transaction rollback - the runner owns transaction
-  boundaries. Concurrency tests pin interleavings with barriers, not timing.
+- **Integration isolation**: each test gets its own database (`CREATE DATABASE`, dropped after
+  the test), never transaction rollback - the runner owns transaction boundaries. Until #20 adds
+  the migrated template (`CREATE DATABASE ... TEMPLATE`) the database is empty and the test
+  creates its tables. Concurrency tests pin interleavings with barriers, not timing.
 - **Type tests**: everything the design promises to be a type error is a line in a `fail_*.py`
   file marked `# expect-error[<pyright rule>, <mypy code>]: <why>`, and must fail under **both**
   pyright and mypy **with the named code**; the happy path is a `pass_*.py` file with

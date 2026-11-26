@@ -5,6 +5,7 @@ from typing import Final, assert_type
 from platina import (
     CheckViolation,
     DatabaseError,
+    ForeignKeyViolation,
     ModuleBoundaryError,
     PlatinaError,
     RelationNotLoaded,
@@ -50,10 +51,23 @@ seal: SealError = ModuleBoundaryError("m", usecase="restock", entity=Order)
 
 db = DatabaseError("connection lost", sqlstate=None)
 assert_type(db.sqlstate, str | None)
-unique = UniqueViolation("duplicate key value", sqlstate="23505")
+# UniqueViolation and CheckViolation fix their SQLSTATE: the constructor takes none.
+unique = UniqueViolation("duplicate key value")
 assert_type(unique, UniqueViolation)
 assert_type(unique.sqlstate, str | None)
-check: DatabaseError = CheckViolation("check constraint", sqlstate="23514", entity=Order)
+check: DatabaseError = CheckViolation("check constraint", entity=Order)
+# On the constructed instance, not on `check`: pyright narrows `check` to CheckViolation and mypy
+# keeps the declared DatabaseError, so an assert on `check` would test a different class each.
+assert_type(CheckViolation("check constraint").sqlstate, str | None)
+# ForeignKeyViolation has two SQLSTATEs: it takes one of them (ADR-0012).
+foreign = ForeignKeyViolation("violates foreign key constraint", sqlstate="23503")
+assert_type(foreign, ForeignKeyViolation)
+assert_type(foreign.sqlstate, str | None)
+# Every base field stays reachable through the fixed-SQLSTATE constructors.
+full_db = DatabaseError("m", sqlstate="40001", usecase="pay", entity=Order, field="total", location=location, hint="h", details=(("L", "v"),))  # fmt: skip
+full_unique = UniqueViolation("m", usecase="pay", entity=Order, field="number", location=location, hint="h", details=(("L", "v"),))  # fmt: skip
+full_fk = ForeignKeyViolation("m", sqlstate="23001", usecase="pay", entity=Order, field="customer_id", location=location, hint="h", details=(("L", "v"),))  # fmt: skip
+full_check = CheckViolation("m", usecase="pay", entity=Order, field="total", location=location, hint="h", details=(("L", "v"),))  # fmt: skip
 
 # The entity class is an object type, not Any: what it builds is an object.
 assert exc.entity is not None

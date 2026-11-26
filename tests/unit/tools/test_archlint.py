@@ -7,6 +7,7 @@ CORE = "src/platina/core/engine/run.py"
 SQL = "src/platina/sql/compiler/base.py"
 SHELL = "src/platina/runners/async_.py"
 DRIVERS = "src/platina/drivers/psycopg/pool.py"
+DRIVER_CONTRACT = "src/platina/drivers/interface.py"
 MIGRATE = "src/platina/migrate/metadata.py"
 
 
@@ -75,24 +76,28 @@ def test_sql_package_is_part_of_the_sans_io_core():
         ("import psycopg\n", SHELL, ["A102"]),
         ("from psycopg_pool import AsyncConnectionPool\n", SHELL, ["A102"]),
         ("import psycopg\n", DRIVERS, []),
+        ("from psycopg import errors\n", DRIVER_CONTRACT, ["A102"]),
         ("import sqlalchemy\n", SHELL, ["A103"]),
         ("from alembic import command\n", DRIVERS, ["A103"]),
         ("import sqlalchemy\n", MIGRATE, []),
         ("import asyncio\n", SHELL, ["A104"]),
         ("import trio\n", MIGRATE, ["A104"]),
         ("import asyncio\n", DRIVERS, []),
+        ("import asyncio\n", DRIVER_CONTRACT, ["A104"]),
         ("import anyio\n", SHELL, []),
     ],
     ids=[
         "psycopg-in-runner",
         "pool-in-runner",
         "psycopg-in-drivers-ok",
+        "psycopg-in-driver-contract",
         "sqlalchemy-in-runner",
         "alembic-in-drivers",
         "sqlalchemy-in-migrate-ok",
         "asyncio-in-runner",
         "trio-anywhere",
         "asyncio-in-drivers-ok",
+        "asyncio-in-driver-contract",
         "anyio-in-runner-ok",
     ],
 )

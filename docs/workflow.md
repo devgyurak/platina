@@ -111,7 +111,7 @@ repository files.
 | Types | pyright (strict on `src`) + mypy `--strict` | `make typecheck`, CI |
 | Public type surface | `tools/typetests.py` (`tests/typing/pass_*`, `fail_*` with `# expect-error[<pyright rule>, <mypy code>]`, under both checkers) | `make test-types`, CI |
 | Layers | import-linter (`exhaustive`: every package placed) | `make guard`, pre-commit, CI |
-| Zones (A101-A106: `core`/`sql` import only an allowlist of standard-library modules, no `async`, no clock or random-ID calls even through aliases; psycopg only in `drivers`; SQLAlchemy/Alembic only in `migrate`; anyio, not asyncio, in the shell) | `tools/guards` | edit hook, `make guard`, pre-commit, CI |
+| Zones (A101-A106: `core`/`sql` import only an allowlist of standard-library modules, no `async`, no clock or random-ID calls even through aliases; psycopg only in `drivers.psycopg`; SQLAlchemy/Alembic only in `migrate`; anyio, not asyncio, in the shell) | `tools/guards` | edit hook, `make guard`, pre-commit, CI |
 | Test rules: GWT, zero control flow (T1xx-T3xx) | `tools/guards` | same |
 | Language: English + translations, stale in either direction (L1xx/L2xx) | `tools/guards` | same |
 | No push to `main` / `develop` | `tools/hooks/pre_push.py` (git pre-push, `make hooks-install`) | every push from a clone with the hooks installed |
