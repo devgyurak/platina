@@ -1,4 +1,4 @@
-# ADR-0006: Ever-increasing entity keys and SSI false conflicts
+# ADR-0007: Ever-increasing entity keys and SSI false conflicts
 
 - Status: Proposed
 - Date: 2026-11-26
@@ -63,7 +63,7 @@ Proposed, for the maintainer to decide **after** the two measurements of point 4
 3. Indexes on other ever-increasing columns (timestamps, sequences; e.g. 4.2's
    `Index(user_id, created_at.desc())`) keep the right-edge pattern; 7.3 documents it, and the
    per-use-case retry metric makes it visible. This ADR cannot remove it.
-4. **Before acceptance**, two small durable-profile measurements (a new 9.5 item): uuid4 vs
+4. **Before acceptance**, two small durable-profile measurements (a new 9.5 item, #65): uuid4 vs
    uuid7 insert rate and WAL bytes per insert with the index at about 1x and 10x
    `shared_buffers`; and the conflict window - C3 with the "recent" row aged by N inserts, as a
    curve. A large uuid4 cost, or a window that closes within a few inserts, strengthens the
@@ -111,3 +111,5 @@ Proposed, for the maintainer to decide **after** the two measurements of point 4
   over performance, not correctness; the change to ADR-0002 named; uuid4's unmeasured costs and
   two measurements before acceptance (a new 9.5 item) added; "no default" and a time-bucketed
   key added as alternatives; Related corrected (8.3, ADR-0003, #58).
+- 2026-11-26 - renumbered from 0006 to 0007: develop gained ADR-0006 (exception fields) while this
+  ADR was proposed on the spike branch; no content change.

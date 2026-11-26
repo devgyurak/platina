@@ -56,8 +56,9 @@ All notable changes are documented here. Format: [Keep a Changelog](https://keep
   pg-researcher (existence on the fast profile, rates on the durable profile under a quiet-host
   gate); design 9.2 ticked, 8.3 states the confirmed rule (no read lock from an INSERT's unique
   check; the small-table lock comes from sequential-scan plans) and 7.3 the measured cost.
-  ADR-0006 (Proposed) on ever-increasing entity keys; ADR-0005's Consequences now leave the
-  hot-row candidate comparison to a follow-up issue.
+  ADR-0007 (Proposed) on ever-increasing entity keys, to be decided after the measurements of
+  #65; ADR-0005's "until / after 9.2" wording now states what 9.2 measured and leaves `lock=`,
+  the hot-row approach and the candidate comparison to #64.
 
 ### Changed
 - Entity syntax (ADR-0003, accepted): entities inherit `Entity` with table options as class

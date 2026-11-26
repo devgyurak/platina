@@ -416,7 +416,7 @@ were seen, and are recorded here instead of being folded silently into the secti
   ADR-0005 Decision 4's candidate comparison (append-only legs, async projection, a counter
   outside the transaction, a session-level advisory lock before `BEGIN`) is **not** in this
   spike: it needs a workload per candidate and, for the advisory lock, a protocol of its own.
-  The maintainer decided (2026-11-25) to keep it out of this spike and give it a follow-up issue
+  The maintainer decided (2026-11-25) to keep it out of this spike and give it a follow-up issue (#64)
   that uses C4 as its baseline; ADR-0005's Consequences and design 9.2 were adjusted to say so.
 - **2026-11-25, quiet-host gate, second version** (replaces the first before any gated run had
   completed; no C or D record was kept under the first). Reasons: the first gate sampled only
@@ -446,6 +446,20 @@ were seen, and are recorded here instead of being folded silently into the secti
   / `results/bench.jsonl`), and the 30-minute limit can be raised with `SPIKE_QUIET_MAX_WAIT_S`,
   so a run stopped by the limit continues where it stopped instead of repeating kept runs. Neither
   changes what a kept run measures.
+- **2026-11-26, A7 added (post hoc).** Occasion: after the morning report, a one-off probe in the
+  maintainer's session found that a child INSERT's foreign-key check takes an SIRead lock on the
+  parent's primary-key leaf, so ADR-0007's "no foreign keys (not measured)" left a gap. A7 checks
+  it with fixed interleavings (existence only, fast profile; rates are not measured in this
+  spike): tables `fk_parent(id uuid pk)` with 100,000 rows and `fk_child(id uuid pk, parent_id
+  uuid references fk_parent)`, created by the scenario itself, parent and child keys from the
+  same generator (uuid7, then uuid4); `pg_locks` after a child INSERT whose parent is new in the
+  same transaction, committed just before, or old; then 10 pinned repetitions each of P1 (three
+  sessions, each a parent INSERT and its child INSERT, one session after the other, COMMIT S3,
+  S2, S1), P2 (two sessions, each first a child of its own just-committed parent, then - after
+  both children - a new parent, COMMIT S2, S1) and P3 (two sessions, both parents first, then
+  both children, COMMIT S2, S1). `uv run python spikes/0003-ssi-internal-tables/interleave.py
+  --port 26432 A7` (not in the default scenario list). The probe's numbers were not used as
+  evidence; A7 measured them again.
 
 ## Observations
 
@@ -536,6 +550,28 @@ then S1.
 | uuid7 | old rows | phased / sequential | `orders_pkey` pages 233 and 24 (different leaves) | ok / ok, ok / ok |
 | uuid4 | each session's own recent row | phased / sequential | `orders_pkey` pages 137 and 367 | ok / ok, ok / ok |
 | uuid4 | old rows | phased / sequential | `orders_pkey` pages 427 and 324 | ok / ok, ok / ok |
+
+**A7 - foreign-key checks on an ever-increasing parent key (post hoc, see the change record).**
+SIReadLock rows after one child INSERT (one SERIALIZABLE session):
+
+| Parent of the child | uuid7 parent keys | uuid4 parent keys |
+|---|---|---|
+| new, inserted in the same transaction | `page fk_parent_pkey page=387` (the rightmost leaf) | `page fk_parent_pkey page=305` |
+| committed just before | `page fk_parent_pkey page=387` + `tuple fk_parent page=636 tuple=149` | `page fk_parent_pkey page=364` + a heap tuple |
+| old | `page fk_parent_pkey page=4` + a heap tuple | `page fk_parent_pkey page=469` + a heap tuple |
+
+The FK check reads the parent's primary-key index under the transaction's predicate locking, like
+any other read. Outcomes, 10 pinned repetitions each:
+
+| Order | uuid7 | uuid4 |
+|---|---|---|
+| P1: three sessions, each parent INSERT + its child INSERT; COMMIT S3, S2, S1 | **10/10** fail: S2 `40001 ... read/write dependencies`, "Canceled on identification as a pivot, during commit attempt" | 0/10 |
+| P2: two sessions, each a child of its own just-committed parent, then a new parent; COMMIT S2, S1 | **10/10** fail: S1, same message | 0/10 |
+| P3: two sessions, both parents first, then both children; COMMIT S2, S1 | 0/10 | 0/10 |
+
+So creating a parent and its children - an aggregate root with owned children, the most common
+write - is the "read the right edge and insert into it" pattern of A6/C3 through the FK check,
+without any read in the use case. Rates were not measured.
 
 ### B. Existence under load (fast)
 `uv run python spikes/0003-ssi-internal-tables/load.py exist --port 26432` - 16 workers, 2 s
@@ -739,7 +775,7 @@ Both rounds agreed with every verdict.
   100,000 rows, no foreign keys); the conflict window as rows age was not measured. D's `create`
   command also failed only under SERIALIZABLE (27 % vs 0 % at 64 workers / Zipf), but through its
   range read on the `(user_id, id)` index - a per-user right edge plus page granularity, partly
-  true conflicts - which a uuid4 primary key would not change (architect review of ADR-0006).
+  true conflicts - which a uuid4 primary key would not change (architect review of ADR-0007).
 - **Snapshot aging while waiting on a claim:** the claim INSERT takes the snapshot and an xid
   **before** it waits (A3: `backend_xmin`/`backend_xid` set while waiting, none after `BEGIN` or
   `SET LOCAL`); after the wait the transaction reads pre-wait values and its UPDATE of a row
@@ -794,7 +830,7 @@ in design 7.3, 8.3 and 9.2, EN + KO; item 4 is a `Proposed` ADR, reviewed by the
    UPDATE form conflicts far less often than look-up-then-INSERT, but does conflict.
 3. 9.2: tick items 1, 3, 4, 5 and the hot-row item, and item 2 as "partly" (4 as "partly" for
    the small-table cause), each with the link, once reproduction round 2 agrees with the rates.
-4. **Decision change proposed: [ADR-0006](../adr/0006-ever-increasing-entity-keys.md)
+4. **Decision change proposed: [ADR-0007](../adr/0007-ever-increasing-entity-keys.md)
    (Proposed, revised after the architect review).** The default `pk(generated="uuid7")` for user
    entities (4.2) makes "read a recent row by PK + INSERT into the same table" a false-conflict
    pattern under SERIALIZABLE (A6; C3 65-69 % of attempts in a worst case, against ~0.1 % for
@@ -811,7 +847,7 @@ in design 7.3, 8.3 and 9.2, EN + KO; item 4 is a `Proposed` ADR, reviewed by the
    reproduction, paired medians within 5 % in both - and at most 1.007 attempts per commit; Zipf:
    retries dominated by same-row conflicts that REPEATABLE READ has too, SERIALIZABLE 0-17 %
    slower).
-7. ADR-0005 / hot rows: the C4 numbers go to the follow-up issue as its baseline and to 7.3 if
+7. ADR-0005 / hot rows: the C4 numbers go to #64 as its baseline and to 7.3 if
    the maintainer wants the cost stated there; no design change follows from this spike.
 
 ## Reproduction

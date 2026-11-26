@@ -71,17 +71,19 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
 1. Keep SERIALIZABLE + automatic retry and the ban on READ COMMITTED for commands.
 2. Correct the text: neither `lock="for_update"` nor REPEATABLE READ is an escape hatch from the
    same-row write conflict (`40001 ... concurrent update`) on a row that concurrent commands
-   update; a hot row costs a wait and a retry per conflicting writer (and, if 9.2 shows it,
+   update; a hot row costs a wait and a retry per conflicting writer (and, as 9.2 showed,
    `RetryExhausted` under sustained contention). REPEATABLE READ + `version` stays the escape hatch
    from SSI's read/write-dependency conflicts (`40001 ... read/write dependencies`), as 8.3 says.
    7.3 and 8.3 say both; 4.6's mapping of `@Lock(PESSIMISTIC_WRITE)` says what the profile does
    here; 4.4 says `.add(n)` avoids the read, not the conflict.
-3. Until 9.2 measures it, the profile is documented as "fail early" (the conflict surfaces at the
-   load stage, before the use case runs), not as an escape hatch. Keeping or removing `lock=`, and
-   the 3.1 / 4.3 notation (spike 0002 X12), are separate decisions for the maintainer after 9.2.
-4. 7.3 lists candidates for genuinely hot rows, to be measured in 9.2; which direction the design
-   takes - a different model, a lock taken before the transaction, or accepting the retries - is
-   decided after 9.2, not here. Candidates: append-only rows with a total computed on read (a
+3. 9.2 measured it (spike 0003, C4): on one hot row `for_update` fails as often as a blind
+   increment and only moves the failure to the load stage. The profile is documented as "fail
+   early" (the conflict surfaces at the load stage, before the use case runs), not as an escape
+   hatch. Keeping or removing `lock=`, and the 3.1 / 4.3 notation (spike 0002 X12), are separate
+   decisions for the maintainer in #64.
+4. 7.3 lists candidates for genuinely hot rows, to be compared in #64 with spike 0003's C4 as the
+   baseline; which direction the design takes - a different model, a lock taken before the
+   transaction, or accepting the retries - is decided there, not here. Candidates: append-only rows with a total computed on read (a
    ledger of legs - which helps only writers that do not read the total; an overdraft check that
    sums an account's legs under SERIALIZABLE conflicts with concurrent inserts of legs for that
    account), an async projection of the total, a counter kept outside the SERIALIZABLE
@@ -92,11 +94,11 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
 ## Consequences
 - The design stops promising something PostgreSQL does not do: users with a hot row learn early
   that neither `lock="for_update"` nor REPEATABLE READ removes the retries on that row. What to
-  use instead is decided after 9.2.
+  use instead is decided in #64.
 - 9.2 (spike 0003, #3) gets one more item, on the durable profile: the retry rate, the
   `RetryExhausted` rate and the `57014` rate on one hot row with and without `for_update`. The
   comparison of the candidates of point 4, including the session-level advisory lock before
-  `BEGIN`, is a follow-up issue that uses that measurement as its baseline, not part of 9.2.
+  `BEGIN`, is #64, which uses that measurement as its baseline; it is not part of 9.2.
 - Use cases with a hot row and a rule that reads it (stock allocation, an overdraft check) stay on
   retries until that decision is made.
 
@@ -137,7 +139,7 @@ unverified.
   as the first statement (observed). `LOCK TABLE` also locks the whole table. Rejected for a lock
   inside the transaction.
 - **A session-level advisory lock taken before `BEGIN`** (`pg_advisory_lock` on a key derived from
-  the ref, released after `COMMIT` / `ROLLBACK`). **Unverified candidate**, for 9.2 (#3). Basis:
+  the ref, released after `COMMIT` / `ROLLBACK`). **Unverified candidate**, for #64. Basis:
   the same principle as the observed `LOCK TABLE` before the first query - a writer that waits
   before its snapshot exists sees the holder's committed update instead of conflicting with it.
   Not resolved:
@@ -150,12 +152,12 @@ unverified.
     trip) and the run-ID claim;
   - not tested in this spike.
 - Keep `for_update` with a retry policy tuned for lock waiters (retry at once, no backoff, after a
-  wait-then-`40001`): reduces latency but not the number of failures; a candidate for 9.2.
+  wait-then-`40001`): reduces latency but not the number of failures; a candidate for #64.
 - A hot counter updated in a short separate non-SERIALIZABLE transaction or table, like the
   internal-table rule (8.3): fast, but the counter is no longer part of the use case's atomic
   change; listed under point 4 as a candidate, not decided here.
 - Remove `lock=` now: possibly right, but that is a decision on public syntax for the maintainer,
-  and 9.2 can first show whether failing early pays for itself.
+  and #64 can first show whether failing early pays for itself.
 - Leave the text and let 9.2 find it: the current text is wrong today, and 9.4 already depends on
   it (use cases 4 and 8).
 
@@ -183,3 +185,8 @@ unverified.
   splits the 9.2 work - spike 0003 measures the single hot row (retry, `RetryExhausted` and
   `57014` rates with and without `for_update`); the comparison of point 4's candidates moves to a
   follow-up issue with that measurement as its baseline.
+- 2026-11-26 - at the maintainer's decision, without changing the direction: the "until / after
+  9.2" wording of Decisions 2-4, Consequences and Alternatives now states what 9.2 (spike 0003,
+  C4) measured - `for_update` does not reduce the failures on a hot row, `RetryExhausted` occurs
+  under sustained contention - and points the open decisions (`lock=`, the hot-row approach, the
+  candidate comparison) to #64.

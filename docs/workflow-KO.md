@@ -1,4 +1,4 @@
-<!-- i18n: source=docs/workflow.md source-sha256=f9f83c2a9a7c translation-sha256=01d44f7adeb1 -->
+<!-- i18n: source=docs/workflow.md source-sha256=226d2ee9e38c translation-sha256=5aa70ed00925 -->
 # 에이전트 개발 워크플로
 
 원문(영어): [workflow.md](workflow.md)
@@ -159,7 +159,7 @@ uv run python -m tools.guards --changed
       `area:migrate`, `area:codegen`, `area:testing`, `area:integrations`, `area:cli`,
       `area:tooling`.
 - [x] 로드맵 이슈 #1-#66: 설계 §9 실험, 그리고 설계 §3-11의 모든 패키지·기능을 의존 관계와 함께
-      (#1은 이 설정 작업, #48-#52와 #54, #55는 스파이크 0001에서, #57-#61은 스파이크 0002에서, #63은 스파이크 0004에서 나옴,
+      (#1은 이 설정 작업, #48-#52와 #54, #55는 스파이크 0001에서, #57-#61은 스파이크 0002에서, #63은 스파이크 0004에서, #64-#65는 스파이크 0003에서 나옴,
       #47·#53·#56·#62·#66은 풀 리퀘스트).
 - [x] 첫 구현 전에 ADR-0001(조립 패키지와 seal)과 ADR-0002(새 ID를 주입된 소스에서 받기) 결정 - 둘 다 수락.
 

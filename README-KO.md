@@ -1,4 +1,4 @@
-<!-- i18n: source=README.md source-sha256=bb18e39532f9 translation-sha256=2d888705d985 -->
+<!-- i18n: source=README.md source-sha256=05a270e177d0 translation-sha256=aea7efdf6f6f -->
 # Platina
 
 원문(영어): [README.md](README.md)

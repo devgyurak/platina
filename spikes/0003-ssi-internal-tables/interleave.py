@@ -471,6 +471,141 @@ def a6(port: int) -> None:
                 fresh = [new_key(), new_key()]
 
 
+# ----------------------------------------------------------------------------- A7
+
+
+def _q(s: Session, sql: str, params: tuple[Any, ...] = ()) -> str:
+    """Run one statement without logging it; "ok" or "<SQLSTATE> <message> | <detail>"."""
+    try:
+        s.conn.execute(sql, params)  # type: ignore[arg-type]
+        return "ok"
+    except psycopg.Error as exc:
+        d = exc.diag
+        return f"{d.sqlstate} {d.message_primary} | {d.message_detail}"
+
+
+FK_DDL = (
+    "DROP TABLE IF EXISTS fk_child, fk_parent",
+    "CREATE TABLE fk_parent (id uuid PRIMARY KEY, v int NOT NULL DEFAULT 0)",
+    "CREATE TABLE fk_child (id uuid PRIMARY KEY, "
+    "parent_id uuid NOT NULL REFERENCES fk_parent (id))",
+)
+INS_P = "INSERT INTO fk_parent (id) VALUES (%s)"
+INS_C = "INSERT INTO fk_child (id, parent_id) VALUES (%s, %s)"
+
+
+def _a7_key(port: int, key: str, reps: int) -> None:
+    new_key: Callable[[], uuid.UUID] = common.uuid7 if key == "uuid7" else uuid.uuid4
+    with common.connect(port) as conn:
+        for ddl in FK_DDL:
+            conn.execute(ddl)  # type: ignore[arg-type]
+        common.copy_rows(conn, "fk_parent", "id", ((new_key(),) for _ in range(100_000)))
+        conn.execute("VACUUM ANALYZE fk_parent")
+        old = [r[0] for r in conn.execute("SELECT id FROM fk_parent ORDER BY random() LIMIT 2")]
+
+    # -- lock observation: which SIRead locks does a child INSERT's FK check take?
+    log(f"-- A7 key={key} lock observation (one session, SERIALIZABLE)")
+    (s1,), obs = open_sessions(port, 1)
+    recent = new_key()
+    with common.connect(port) as conn:
+        conn.execute(INS_P, (recent,))  # a parent committed just before
+    for case, stmts in (
+        ("child of its own new parent (same transaction)", "own"),
+        ("child of a parent committed just before", "recent"),
+        ("child of an old parent", "old"),
+    ):
+        s1.run("BEGIN ISOLATION LEVEL SERIALIZABLE")
+        if stmts == "own":
+            p = new_key()
+            s1.run(INS_P, (p,))
+        else:
+            p = recent if stmts == "recent" else old[0]
+        s1.run(INS_C, (new_key(), p))
+        log(f"  [{case}]")
+        obs.siread([s1])
+        s1.run("COMMIT")
+    close_all([s1], obs)
+
+    # -- three orders, each repeated
+    def run_case(name: str, n: int, plan: Callable[[list[Session]], None]) -> None:
+        fails = 0
+        for rep in range(1, reps + 1):
+            ss, obs = open_sessions(port, n)
+            for s in ss:
+                _q(s, "BEGIN ISOLATION LEVEL SERIALIZABLE")
+            errs: list[str] = []
+            try:
+                plan(ss)
+            finally:
+                outcomes = []
+                for s in reversed(ss):
+                    r = _q(s, "COMMIT")
+                    outcomes.append(f"{s.name} COMMIT: {r}")
+                    if r != "ok":
+                        errs.append(r)
+                close_all(ss, obs)
+            failed = any(o.split(": ", 1)[1] != "ok" for o in outcomes)
+            fails += failed
+            log(f"  rep {rep}: " + "; ".join(outcomes))
+        log(f"  => {name}: {fails}/{reps} reps with a failed commit")
+
+    def p1(ss: list[Session]) -> None:  # each: parent + its child; commit S3, S2, S1
+        for s in ss:
+            pid = new_key()
+            for sql, prm in ((INS_P, (pid,)), (INS_C, (new_key(), pid))):
+                r = _q(s, sql, prm)
+                if r != "ok":
+                    log(f"    {s.name}: {sql.split(' (')[0]} -> {r}")
+
+    def p2(ss: list[Session]) -> None:  # child of own recent parent, then new parent (phased)
+        recents = [new_key() for _ in ss]
+        with common.connect(port) as conn:
+            for rp in recents:
+                conn.execute(INS_P, (rp,))
+        for s, rp in zip(ss, recents, strict=True):
+            r = _q(s, INS_C, (new_key(), rp))
+            if r != "ok":
+                log(f"    {s.name}: child -> {r}")
+        for s in ss:
+            r = _q(s, INS_P, (new_key(),))
+            if r != "ok":
+                log(f"    {s.name}: parent -> {r}")
+
+    def p3(ss: list[Session]) -> None:  # both parents first, then both children
+        pids = [new_key() for _ in ss]
+        for s, pid in zip(ss, pids, strict=True):
+            r = _q(s, INS_P, (pid,))
+            if r != "ok":
+                log(f"    {s.name}: parent -> {r}")
+        for s, pid in zip(ss, pids, strict=True):
+            r = _q(s, INS_C, (new_key(), pid))
+            if r != "ok":
+                log(f"    {s.name}: child -> {r}")
+
+    log(
+        f"-- A7 key={key} P1: three sessions, each parent INSERT + its child INSERT in turn; COMMIT S3, S2, S1"
+    )
+    run_case(f"key={key} P1", 3, p1)
+    log(
+        f"-- A7 key={key} P2: two sessions, each child of its own just-committed parent, then a new parent (children first, then parents); COMMIT S2, S1"
+    )
+    run_case(f"key={key} P2", 2, p2)
+    log(
+        f"-- A7 key={key} P3: two sessions, each parent + its child (both parents first, then both children); COMMIT S2, S1"
+    )
+    run_case(f"key={key} P3", 2, p3)
+
+
+def a7(port: int, reps: int = 10) -> None:
+    """FK checks against a parent with an ever-increasing key (added after the morning report,
+    see the change record). Parent 100,000 rows; parent and child keys from the same generator."""
+    log("== A7: FK checks on an ever-increasing parent key (uuid7 vs uuid4), fast profile")
+    for key in ("uuid7", "uuid4"):
+        _a7_key(port, key, reps)
+    with common.connect(port) as conn:
+        conn.execute("DROP TABLE IF EXISTS fk_child, fk_parent")
+
+
 SCENARIOS: dict[str, Callable[[int], None]] = {
     "A1": a1,
     "A2": a2,
@@ -478,13 +613,14 @@ SCENARIOS: dict[str, Callable[[int], None]] = {
     "A4": a4,
     "A5": a5,
     "A6": a6,
+    "A7": a7,
 }
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=26432)
-    ap.add_argument("only", nargs="*", default=[k for k in SCENARIOS if k != "A6"])
+    ap.add_argument("only", nargs="*", default=[k for k in SCENARIOS if k not in ("A6", "A7")])
     args = ap.parse_args()
     with common.connect(args.port) as conn:
         version = conn.execute("SELECT version()").fetchone()
