@@ -58,3 +58,35 @@ for v in relop:_O_inv path:_P_inv; do
   echo "error lines gained (variant - main):" | tee -a "$R/variant-$name.txt"
   comm -13 "$R/errors-main.txt" "$V/errors.txt" | tee -a "$R/variant-$name.txt"
 done
+
+# 4. Round 6 (ADR-0011 probe): `Load.after(fn, missing=...) -> LoadAfter[E]` with the load
+#    arguments on `.load(*paths: LoadPath[E])`, and no invariant `Path`. The build directory is
+#    this directory's files with round6/ laid over them (round6/ holds only the changed and the
+#    new files); everything the round-5 run checks is checked again against the round-6 stub.
+B=$R/round6
+rm -rf "$B" && mkdir -p "$B"
+cp "$D"/*.py "$D/lib.pyi" "$B/"
+cp "$D"/round6/*.py "$D/round6/lib.pyi" "$B/"
+uv run python -m tools.typetests "$B/lib.pyi" "$B/domain.py" "$B/pass_shapes.py" \
+  "$B/fail_shapes.py" "$B/probe_runtime_only.py" "$B/pass_r6.py" "$B/fail_r6.py" \
+  "$B/uc01_payment.py" "$B/uc02_refund.py" "$B/uc03_coupon_checkout.py" \
+  "$B/uc04_stock_allocation.py" "$B/uc05_seat_hold.py" "$B/uc06_order_merge.py" \
+  "$B/uc07_expire_orders.py" "$B/uc08_transfer_a.py" "$B/uc08_transfer_b.py" \
+  "$B/uc09_profile_edit.py" "$B/uc10_payment_approval.py" 2>&1 | tee "$R/round6-typetests.txt"
+# Per checker: Annotated metadata (X1), the owner widening (W4/W5), and the full messages of the
+# rejected lines (which argument each checker blames).
+for f in probe_annotated probe_owner_widen probe_owner_variance probe_union_result fail_shapes \
+  fail_r6; do
+  (cd "$B" && uv run pyright "$f.py" >"results-$f-pyright.txt" 2>&1 || test $? -eq 1)
+  (cd "$B" && uv run mypy --strict --show-error-codes --no-incremental "$f.py" \
+    >"results-$f-mypy.txt" 2>&1 || test $? -eq 1)
+done
+# The owner variance and union-result probes against the round-5 stub, for comparison.
+V=$R/round6-r5stub
+rm -rf "$V" && mkdir -p "$V"
+cp "$D/lib.pyi" "$D/domain.py" "$D/round6/probe_owner_variance.py" "$D/round6/probe_union_result.py" "$V/"
+for f in probe_owner_variance probe_union_result; do
+  (cd "$V" && uv run pyright "$f.py" >"results-$f-pyright.txt" 2>&1 || test $? -eq 1)
+  (cd "$V" && uv run mypy --strict --show-error-codes --no-incremental "$f.py" \
+    >"results-$f-mypy.txt" 2>&1 || test $? -eq 1)
+done

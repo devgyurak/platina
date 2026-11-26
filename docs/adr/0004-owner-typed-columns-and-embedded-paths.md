@@ -68,11 +68,13 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
 4. **Where the owner is checked.** Owner types are checked only where the receiver fixes the owner:
    `order.set(...)`, `Entity.where(...)`, `SetChange.set(...)`, `SetChange.emit_each(...)`,
    relation operations (`Order.items.add/remove/update`), `RowSet.set(...)`, the Finders of
-   `Repository[E]`, and `path`. Where the owner would have to be inferred from several arguments
-   of one call it is not checked by types, with one exception: `insert(entity, *children:
-   AddOp[E])` (ADR-0010) solves `E` from the entity and the children, and the invariant `AddOp`
-   leaves the given entity as the only solution, so both checkers reject another entity's `add`
-   (spike 0007 F11). Elsewhere: queries (`select`/`join`/`where`) are validated when their description is
+   `Repository[E]`, `path`, and the load paths `relation.load(...)` (#59) and
+   `Load.after(...).load(...)` (ADR-0011, proposed). Where the owner would have to be inferred
+   from several arguments of one call it is not checked by types, with one exception:
+   `insert(entity, *children: AddOp[E])` (ADR-0010) solves `E` from the entity and the
+   children, and the invariant `AddOp` leaves the given entity as the only solution, so both
+   checkers reject another entity's `add` (spike 0007 F11). Elsewhere: queries
+   (`select`/`join`/`where`) are validated when their description is
    built (whether seal can also catch them is #52), and `Profile`, `Load`, `Index`, `Check` and
    `@invariant(fields=...)` are validated by seal. Reason: at those places pyright solves the owner
    to a union and mypy to the common base `Entity`, so the same misuse would be an error under one
@@ -172,3 +174,9 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
   `Path` / `LoadPath` finding for #59; Decision 4 adds `RowSet.set` and `insert(entity,
   *children)`, an owner solved from several arguments that invariance keeps checkable; the mypy
   gap of a declared type that widens a relation's owner is a Consequence.
+- 2026-11-26 - amended in place, without changing the direction: the load paths `relation.load(...)`
+  (#59 point 1, nested paths) and `Load.after(...).load(...)` (ADR-0011, proposed) are added to
+  Decision 4's receiver-fixed places; both checkers reject a path of another entity there (spike
+  0007 S5 and round 6). If ADR-0011 is rejected, the `Load.after(...).load(...)` clause comes out.
+  Variance (Decision 3) still covers `Column` only; the variance of the relation types is
+  ADR-0011's.

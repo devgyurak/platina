@@ -123,6 +123,7 @@ which pins them; rounds 1-3 had #51's overloads on `__eq__` only, from its decis
    # pyright fail_shapes.py 134
    # pyright fail_shapes.py 135
    # error lines gained (variant - main):
+   # typetests: 0 problem(s) in 18 file(s)      <- stage 4, round 6
    ```
 
    It runs `uv run python -m tools.typetests` over the stub, the domain, the three probe files and
@@ -133,6 +134,7 @@ which pins them; rounds 1-3 had #51's overloads on `__eq__` only, from its decis
    if a variant stub has diagnostics of its own (mypy through `fail_shapes.py`, pyright on the
    stub itself), and prints which error lines of `fail_shapes.py` differ from the main run
    (`results/variant-*.txt`). Line 112 is F11; lines 127, 134 and 135 are F17, F21 and F22.
+   Stage 4 is round 6 (the receiver form of `Load.after`, section "Round 6" below).
 
 ## Observations
 
@@ -319,7 +321,8 @@ the Question type-checks the same way under pyright and mypy, and every misuse i
 is rejected by both, once the conditions below hold. Where the checkers still differ:
 - inside `Annotated[...]` metadata mypy checks nothing (X1);
 - mypy accepts a declared type written directly on a relation's class access that widens its
-  owner, and then F11 and F21 pass (`probe_owner_widen.py`);
+  owner, and then F11 and F21 pass (`probe_owner_widen.py`; Round 6 / ADR-0011 (proposed): with the receiver form
+  of `Load.after` F21 is rejected that way too, W5 - other widenings of `E` go to seal, W6-W8);
 - `owned=` (the rejected alternative) given a literal-initialised constant: pyright accepts, mypy
   rejects (`probe_owned_flag.py`);
 - on F13-F17 and F21 mypy names a misleading reason (the instance type, or the function); for a
@@ -334,6 +337,9 @@ The conditions:
    covariant type stays - invariance there rejected a nested load through a nullable many-to-one
    (pyright; mypy for a chained path) - but it is `LoadPath[O]`, which only relations derive from,
    so a column is not a load path (F30, F31).
+   Round 6: in the receiver form `Load.after(fn).load(*paths: LoadPath[E])` the receiver fixes
+   `E`, so the invariant `Path` is not needed and both checkers reject the same lines, except a
+   result widened by a declared type or a union return (W6-W8, a seal rule; "Round 6").
 3. **`RelOp` is not an `Op`, and `.where` / `.load` on an owned relation return the read-only
    `Relation`** (F25-F27). The price is `list[Op[O] | RelOp[O]]` where both kinds are collected.
 
@@ -353,7 +359,7 @@ form accepted a path of another entity. Both the architect and the type-reviewer
 | S3 `insert`, candidate B (**chosen**) | holds | only with an invariant `RelOp` and `AddOp` children (F10, F11, F24); `.set` on a new entity is a runtime error (R13) |
 | S4 owned-only operations | holds | read-only `where` / `load` views (F25, F26); declared with **`owns_many(...)`** (chosen; the annotation and the specifier, F28; the domain uses it since round 5). The rejected `owned=True` flag (F8, F9) splits the checkers for a literal-initialised constant (`probe_owned_flag.py`). Owned children can still be written directly (R10-R12); the declaration's consistency with `parent_fk` and the root is seal's (R18) |
 | S5 nested paths | holds | with the covariant `LoadPath` on `relation.load` (round 4; F30, F31); checked by mypy only outside `Annotated[...]` (X1); the flat form is a seal error (R15) |
-| S6 `Load.after` forms | holds | **only with the invariant `Path`** (F17, F21, F22); the same X1 condition; parameter type vs function result and `missing="none"` on a non-optional result stay seal checks (R9, R16) |
+| S6 `Load.after` forms | holds | **only with the invariant `Path`** (F17, F21, F22; Round 6 / ADR-0011 (proposed): or with the receiver form `Load.after(fn).load(...)`, without `Path`, plus a seal rule for W6-W8); the same X1 condition; parameter type vs function result and `missing="none"` on a non-optional result stay seal checks (R9, R16) |
 | S7 `missing` on `Load.when` | holds | - |
 | S8 `= INJECTED` on dependent loads | holds | passing them to `bind`, leaving them out of a direct call, and a misplaced `INJECTED` are runtime / seal errors (R2-R4) |
 
@@ -377,7 +383,8 @@ the maintainer's decisions (#48 needs no follow-up: PR #77 recorded it in 4.5 / 
    may be empty is not caught by types (R17). Only `Entity.where` changes - a relation's
    `.where(...)` (partial loads) and the query path's `where` are unchanged.
 
-Open: whether row sets replace partial `.where` loads (ADR 2, below).
+Open: whether row sets replace partial `.where` loads (ADR 2, below). Round 6 / ADR-0011 (proposed): they do not -
+partial `.where` loads stay with constant predicates.
 
 ### ADR directions
 1. **Writes beyond `.set`: `insert`, `delete`, and relation operations only through an owned
@@ -391,6 +398,8 @@ Open: whether row sets replace partial `.where` loads (ADR 2, below).
      two new places where the owner is solved from several arguments and still checked by type,
      thanks to invariance - with its known gap: under mypy a declared type written on a
      relation's class access widens the owner and gets past both (`probe_owner_widen.py`).
+     Round 6 / ADR-0011 (proposed): `Path` and `Load.after`'s two-argument solving are gone (the receiver form); only
+     `insert` remains of the two, and ADR-0011 amends Decision 4 for the load paths.
    - **Decided by the maintainer (2026-11-26)**: `owns_many`; candidate B (`.set` on a new
      entity is an error; a new child brings no children of its own); `Entity.where` requires a
      predicate.
@@ -434,9 +443,12 @@ Open: whether row sets replace partial `.where` loads (ADR 2, below).
        weighs them as equals (the invariant `Path` adds a second relation base class; the
        receiver form adds a `LoadAfter[E]` type and a second call). One observation in favour of
        the receiver form (independent review): there mypy's message points at the wrong path,
-       while with `*paths: Path[E]` it blames the function (F17, F21).
+       while with `*paths: Path[E]` it blames the function (F17, F21). Round 6 / ADR-0011 (proposed): the receiver form is
+       proposed; the two do not reject quite the same lines (W5 vs W6-W8, "Round 6").
    - **Open (not decided by the maintainer): do row sets replace partial `.where` loads?** The
-     ADR must name the invariants it bends. Three forms can load the same rows, and no check can
+     ADR must name the invariants it bends. (Round 6 / ADR-0011 (proposed): no, by the maintainer's direction; the
+     clock-hole claim below does not hold - a function reading a module-level clock value is as
+     frozen - and a seal check for date constants is proposed instead.) Three forms can load the same rows, and no check can
      tell them apart (a function body is opaque to seal):
      - a partial load `Load(Order.items.where(Item.status == ACTIVE))` and a `Load.after`
        returning `Item.where(Item.order_id == order.id, Item.status == ACTIVE)`;
@@ -465,13 +477,155 @@ Open: whether row sets replace partial `.where` loads (ADR 2, below).
      - `in_`'s operand: an empty list (a predicate that is always false, compiled how) and the
        array parameter it binds to;
      - the flat path is a type error under `Load.after` (`*paths: Path[E]` takes one entity's
-       paths) but a seal error under `Profile` / `Load` (R15) - one rule, two checks;
+       paths) but a seal error under `Profile` / `Load` (R15) - one rule, two checks (Round 6 / ADR-0011 (proposed): a type
+       error under `Load.after(...).load(...)`, where the receiver fixes the owner);
      - a row-set function's predicate never runs in a unit test: the test passes the loaded rows
        by hand (`hold_seat(..., holds=[...])`), so a wrong predicate is caught only by an
        integration test.
 
 Both ADRs carry X1's consequence: write load declarations as named values, because mypy does not
 check them inline in `Annotated[...]`.
+
+## Round 6: the receiver form of `Load.after` (for ADR-0011, 2026-11-26)
+
+### Question
+The maintainer proposes the receiver form for ADR-0011 (ADR direction 2): `Load.after(fn,
+missing=...)` returns a `LoadAfter[E]`, and its load arguments go on it with `.load(*paths)`, as on
+a relation. This changes #59 point 3 as decided on 2026-11-26, where `Load.after(fn, ...)` took the
+load arguments of `Load(...)` itself. Until now the only evidence was one run of the reproducer's
+round-1 variant (`repro/types/variant_after_receiver/`), whose `.load` took `OwnedExpr[E]` - a
+type that columns also have (F30 / F31 under round 3). Round 6 asks whether the form holds on the
+**final** stub, where `.load` takes `LoadPath[E]`.
+
+| # | Confirmed when | Refuted when |
+|---|---|---|
+| Q1 | both reject F17, F18, F21 and F22 in the receiver form (and F23) | either accepts one of them |
+| Q2 | both accept each return form with load arguments, a nested `.load(...)`, and a nested path through a nullable many-to-one | either rejects one |
+| Q3 | (recorded, not a condition) a column as a path (F30 / F31), the behaviour inside `Annotated[...]` (X1), the argument mypy's message names, and whether the invariant `Path` is still needed | - |
+
+### Setup and method
+- Same tools as Setup: Python 3.14.7, pyright 1.1.414, mypy 2.4.1 (`results/versions.txt`).
+- `round6/lib.pyi` (sha256 `edbf01b137a14576...`) is the final stub (`lib.pyi`, `9c0de329717a2ac2...`)
+  with three changes, each marked `# [r6]`:
+  - `Load.after` has the same three overloads without `*paths`, each returning `LoadAfter[E]`;
+    `missing=` (keyword-only) stays on the one-ref overload only;
+  - `class LoadAfter[E](Load)` with `load(self, *paths: LoadPath[E]) -> LoadAfter[E]` - the
+    signature of `Relation.load`;
+  - `Path` and `_P_inv` are removed; `Relation` and `RelColumn` derive from `OwnedExpr[O]` and
+    `LoadPath[O]` only.
+- `round6/` holds only the changed and the new files:
+  - copies of `pass_shapes.py`, `fail_shapes.py`, `uc04_stock_allocation.py`, `uc05_seat_hold.py`,
+    `probe_annotated.py` and `probe_owner_widen.py`, where the `Load.after` lines with load
+    arguments are rewritten in the receiver form (`# [r6]`). In `fail_shapes.py` the codes of F17,
+    F18 and F21-F23 are the ones observed in round 6; the copies keep their line numbers + 3 (a
+    longer docstring);
+  - new: `pass_r6.py` (P1-P12), `fail_r6.py` (G1-G10; G9 / G10 after the reproduction),
+    `probe_owner_variance.py` (V1, V2);
+    after the reproduction, `probe_union_result.py` (N1, N2).
+- Stage 4 of `run.sh` builds `results/round6/` from this directory's files with `round6/` laid over
+  them. It runs `tools.typetests` over the same files as stage 1, plus `pass_r6.py` and `fail_r6.py`:
+  `typetests: 0 problem(s) in 18 file(s)` (`results/round6-typetests.txt`). It then runs
+  `probe_annotated.py`, `probe_owner_widen.py`, `probe_owner_variance.py`,
+  `probe_union_result.py`, `fail_shapes.py` and `fail_r6.py` per checker, for the full messages
+  (`results/round6/results-<file>-<checker>.txt`). Last, it runs `probe_owner_variance.py` and
+  `probe_union_result.py` against the round-5 stub (`results/round6-r5stub/`).
+  The script exits 0.
+
+### Observations
+
+| # | Line (round-6 files) | pyright | mypy |
+|---|---|---|---|
+| F17 | `Load.after(variants_of).load(Order.items)` (list form) | rejected (`reportArgumentType`: `OwnedRelation[Order, Item]` is not `LoadPath[Variant]`) | rejected (`arg-type`: argument 1 to `load` of `LoadAfter`) |
+| F18 | `Load.after(active_holds, missing="none")` (row-set function) | rejected (`reportArgumentType` on `fn`, + `reportUnknownVariableType`: the result is `LoadAfter[Unknown]`) | rejected (`call-overload`) |
+| F21 | `Load.after(point_wallet).load(Order.items)` (one ref) | rejected (`reportArgumentType`, `LoadPath[Wallet]`) | rejected (`arg-type`, argument 1 to `load`) |
+| F22 | `Load.after(point_wallet, missing="none").load(Order.items)` | rejected (`reportArgumentType`) | rejected (`arg-type`, argument 1 to `load`; was `call-overload`) |
+| F23 | `Load.after(active_holds).load(Order.items)` (row set) | rejected (`reportArgumentType`) | rejected (`arg-type`; was `misc`) |
+| P1-P3 | `Load.after(active_holds)`, `Load.after(variants_of)`, `Load.after(point_wallet, missing="none")` | `LoadAfter[SeatHold]`, `LoadAfter[Variant]`, `LoadAfter[Wallet]` | the same |
+| P4-P6 | each form with a load argument: `Load.after(seats_of).load(Seat.holds)`, `Load.after(variants_of).load(Variant.stocks)`, `Load.after(order_of, missing="none").load(Order.items)` | `LoadAfter[Seat]`, `LoadAfter[Variant]`, `LoadAfter[Order]` | the same |
+| P7, P8 | nested: `.load(Variant.stocks.load(Stock.warehouse))`; three levels through a many-to-one, `.load(Seat.tickets.load(Ticket.order.load(Order.items)))` | accepted | accepted |
+| P9 | through nullable many-to-one relations: `Load.after(open_orders).load(Order.show.load(Show.seats), Order.user.load(User.addresses))` | accepted, `LoadAfter[Order]` | the same |
+| P10 | `.load(Seat.holds).load(Seat.tickets)` (chained, as on a relation) | `LoadAfter[Seat]` | the same |
+| P11, P12 | named values in `Annotated[...]` on `= INJECTED` parameters; `bind` without them | `Sequence[SeatHold]`, `Sequence[Seat]`; accepted | the same |
+| G1, G2 | a column as a path: `Load.after(stocks_of).load(Stock.quantity)`, `Load.after(point_wallet).load(Wallet.balance)` (F30 / F31) | rejected (`reportArgumentType`) | rejected (`arg-type`) |
+| G3, G4 | a skipped level, a wrong owner one level deeper (F14 / F15) | rejected (`reportArgumentType`) | rejected (`arg-type`) |
+| G5 | round 5's form, `Load.after(variants_of, Variant.stocks)` | rejected (`reportCallIssue` + `reportUnknownVariableType`) | rejected (`call-overload`) |
+| G6 | `missing=` on the list form | rejected (`reportArgumentType` + `reportUnknownVariableType`) | rejected (`call-overload`) |
+| G7 | `missing=` on `.load(...)` | rejected (`reportCallIssue` + `reportUnknownVariableType`) | rejected (`call-arg`, and `arg-type` for its wrong path) |
+| G8 | a good path, then a column: `.load(Seat.holds, SeatHold.seat_id)` | rejected (`reportArgumentType`) | rejected (`arg-type`, argument 2) |
+| G9, G10 | (after the reproduction) `Order.items.load(Item.allocations.count())`, `Load.after(seats_of).load(Seat.holds.exists())`: `.count()` / `.exists()` return `Expr`, not a load path | rejected (`reportArgumentType`) | rejected (`arg-type`) |
+| - | the rest of the round-5 run (`pass_shapes.py`, the other F lines, R1-R18, the eleven use cases) against the round-6 stub | unchanged | unchanged |
+
+- **mypy's message now names the path.** On F17 and F21-F23 mypy blames argument 1 of `load`,
+  where round 5 blamed the function (`expected "Callable[[Order], RowSet[Order]]"`). It still
+  names the path's *instance* type (`"Sequence[Item]"` for `Order.items`), the descriptor effect
+  of F13-F16 (ADR-0004); pyright names the relation.
+- **Inside `Annotated[...]` (X1) nothing changes.** `round6/probe_annotated.py`: pyright reports
+  all four lines (F13 twice, F17 in the receiver form, F18); mypy reports `Success: no issues
+  found`. Load declarations stay named values.
+- **The invariant `Path` is not needed for the lines above, but it did more** (corrected after the
+  round-6 reproduction, discrepancy 1). The round-6 stub has no `Path`, and every round-5 line
+  keeps its verdict. But the receiver fixes `E` only when nothing widens it: a declared type on
+  the result (`la: LoadAfter[Wallet | Order] = Load.after(point_wallet)`, then
+  `la.load(Order.items)`, W6 / W7, also for the list form) and a function returning a union of
+  entities (`-> Sequence[Wallet | Order]`, W8) let `.load` take another entity's path in both
+  checkers. Round 5's invariant `Path` rejected both (U6, U8); the row-set form stays safe because
+  `RowSet` is invariant, for any real body - a declared `-> RowSet[Wallet | Order]` still widens `E`
+  (addendum N6x, M8x). Types cannot close it (an invariant `Path` on `LoadAfter.load` alone closes
+  it in pyright only); it is a seal rule: the function returns one entity type, and every path's
+  owner is that entity.
+- **A union result is not a difference between the forms** (`probe_union_result.py`, added after
+  the reproduction). With no load argument, a function returning `Sequence[Wallet | Order]` (N1)
+  or `Wallet | Order | None` (N2) is accepted by both checkers on **both** stubs:
+
+  | Line | round-5 stub, pyright / mypy | round-6 stub, pyright | round-6 stub, mypy |
+  |---|---|---|---|
+  | N1 `Load.after(wallet_or_order)` | accepted, `Load` / `Load` | accepted, `LoadAfter[Wallet \| Order]` | accepted, `LoadAfter[Wallet \| Order]` |
+  | N2 `Load.after(one_or_other)` | accepted, `Load` / `Load` | accepted, `LoadAfter[Order \| Wallet]` | accepted, `LoadAfter[Entity]` |
+
+  Round 5's invariant `Path` rejected U8 only because U8 also passed a path; the union result
+  itself type-checks in either form. So the seal rule "one entity per `Load.after` function" is
+  needed whichever form is chosen. **Once that rule exists**, what separates the forms is W6 / W7:
+  a wider type written on the result, which round 5 rejected by type and the receiver form leaves
+  to the same seal rule (and W5, which the receiver form rejects and round 5 let through mypy).
+  On types alone the receiver form accepts more: every union result with a path of a member
+  (addendum M1x-M5x, M8x), and under mypy, for a one-ref union whose `E` it joins to `Entity`,
+  a path of any entity (M6x; pyright rejects it).
+- **Removing `Path` has a second effect**, observed by `probe_owner_variance.py`:
+  the owner of `Relation` and `RelColumn` is now inferred **covariant**, as `Column`'s is declared.
+  `Relation[Order, Item]` is accepted as a `Relation[Wallet | Order, Item]` by both checkers
+  (round-5 stub: rejected by both, "`O@Relation` is invariant"). `OwnedRelation` stays invariant
+  in its owner (its `add` returns the invariant `AddOp[O]`): W1 and W3 keep their round-4 verdicts.
+  The variance of `LoadAfter[E]` itself is left to inference in the stub, and the checkers infer it
+  differently (pyright invariant, mypy contravariant; reproduction discrepancy 2): the surface
+  declares it.
+- **The descriptor widening under mypy (W5) no longer reaches `Load.after`** (other widenings do:
+  W6-W8 above). `round6/probe_owner_widen.py`:
+  - W5 in the receiver form, `Load.after(point_wallet).load(wide)` with `wide: Relation[Wallet |
+    Order, Item] = Order.items`, is rejected by **both** (mypy: `Relation[Wallet | Order, Item]`
+    is not `LoadPath[Wallet]`). In round 5 mypy accepted it: this gap of the Verdict is closed for
+    `Load.after`. W2 (`insert`) is unchanged: mypy still accepts it.
+  - pyright now accepts W4 itself, the widening declaration, because the owner is covariant. It
+    no longer leads to a misuse: W5 is rejected.
+
+### Verdict (round 6)
+**Holds for Q1 and Q2; one new gap for seal (Q3, found by the reproduction).** Q1: F17, F18 and
+F21-F23 are rejected by both checkers in the receiver form. Q2: every
+return form with load arguments, nested paths, and nested paths through nullable many-to-one
+relations are accepted by both. Q3:
+- a column is not a path (G1, G2);
+- X1 is unchanged;
+- mypy's message points at the wrong path, not the function;
+- the invariant `Path` can be removed for the lines of Q1 and Q2, with two costs: the owners of
+  `Relation` / `RelColumn` become covariant, and a declared type or a union result widens `E` past
+  the types (W6-W8, which round 5's form rejected) - a seal rule then. That seal rule is needed in
+  either form, because a union result without a path type-checks on both stubs (N1, N2); once it
+  exists, the difference between the forms is W6 / W7 (and W5 the other way). The gain is that the
+  descriptor widening under mypy no longer reaches `Load.after` (W5), and mypy names the path.
+
+Consequence for condition 2: with the receiver form, `Load.after`'s load arguments are typed like
+`relation.load(...)`'s (`LoadPath[E]`, covariant), because the receiver fixes `E`; the widening of
+`E` by a declared type or a union result (W6-W8) moves to seal. The type reproduction below agrees
+on Q1 and Q2 and found W6-W8; ADR-0011 cites this round with that seal rule.
 
 ## Reproduction
 
@@ -927,6 +1081,164 @@ operation inside `update`), is rejected by both (`reportArgumentType` / `arg-typ
   - Observations now states round 4's discrepancy 1 correctly: the descriptor as the cause, F21 in
     scope, and the invariant variant cited.
   - No disagreement with a verdict.
+
+### Type reproduction, round 6 (type-reviewer)
+Recorded as the sub-agent gave it (it has no write access to the write-up).
+- **Who / date:** the `type-reviewer` sub-agent, 2026-11-26, on round 6 only. It wrote its own
+  probes from this write-up before opening `round6/`.
+- **Sources:** `repro/types/round6/`.
+  - `lib.pyi` (sha256 `a7f29206f2e2c338...`) is the reproducer's own edit of the round-5 stub
+    (`9c0de329717a2ac2...`). It drops `_P_inv` / `Path` and gives `Relation` / `RelColumn` the
+    bases `OwnedExpr[O], LoadPath[O]`. It has three `Load.after` overloads without `*paths`,
+    returning `LoadAfter[E]` (`missing=` keyword-only on the one-ref overload), and
+    `class LoadAfter[E](Load)` with `load(self, *paths: LoadPath[E]) -> LoadAfter[E]`.
+  - It differs from the author's `round6/lib.pyi` (`edbf01b137a14576...`) only in comments and line
+    wrapping. All the reproducer's files give the same error lines on both stubs.
+  - `domain.py` is unchanged (`05862bf0dad939ae...`).
+  - Files: `pass_r6x.py`, `fail_r6x.py` (H1-H20); per checker `probe_annotated_r6x.py`,
+    `probe_widen_r6x.py` (W1-W16), `probe_variance_r6x.py` (V1-V5) and `probe_widen_r5form_x.py`
+    (U6, U8, round-5 stub only); helpers `errors_r6x.py`, `regress_r6x.py` and `variant_r6x.py`.
+- **Rerun:** `bash spikes/0007-phase-1a-type-shapes/repro/types/round6/run.sh` (exit 0); raw output in
+  `results/repro-types/round6/`. The author's `bash spikes/0007-phase-1a-type-shapes/run.sh` exits 0
+  with the output listed in Method (stage 4: `typetests: 0 problem(s) in 18 file(s)`). Gates clean.
+
+| Item | Reproducer's lines | pyright | mypy | vs. write-up |
+|---|---|---|---|---|
+| (a) Q1 | `fail_r6x.py` 38-42: H1-H5 = F17, F18, F21, F22 and F23 in the receiver form | rejected: `reportArgumentType` (H2 also `reportUnknownVariableType`) | rejected: `arg-type` (H2 `call-overload`) | agree |
+| (b) mypy's message | H1, H3-H5 | names the relation (`OwnedRelation[Order, Item]` vs `LoadPath[Variant]`) | `Argument 1 to "load" of "LoadAfter" has incompatible type "Sequence[Item]"` | agree: mypy now blames the path and names its instance type |
+| (c) G-lines | H6 / H7 a column / an embedded column; H8 a skipped level; H9 a deeper wrong owner; H10-H12 round 5's positional paths, one per overload (H12 even with a right path); H13 `missing=` on the list form; H14 `missing=` on `.load` with a right path; H15 a good path, then a column | all rejected (`reportArgumentType`, or `reportCallIssue` + `reportUnknownVariableType` for H10-H12 and H14) | all rejected (`arg-type`, `call-overload`; H14 `call-arg` only, because its path is right) | agree |
+| (d) own rejections | H16 `Load.after(shows_of).load(Order.show)`; H17 an `Order` path under a `Show` function; H18 a wrong path in the second link of a chain; H19 `missing` passed positionally; H20 `missing=` on a chained `.load()` with no path | rejected | rejected | new, all rejected by both |
+| (e) Q2 | `pass_r6x.py`: the three forms, bare and with load arguments; nested and three-level paths; `Order.show.load(Show.seats)` / `Order.user.load(User.addresses)`; chained `.load`; named values in `Annotated` on `= INJECTED` parameters and `bind`. Own: `.load()` with no paths; a `LoadAfter` declared as `Load`; functions returning `RowSet[Show]` and `Show \| None` (the entity of the nullable `Order.show`) with `Show.seats.load(...)`; a non-optional one ref (`-> Order`) | accepted, `LoadAfter[...]` as `assert_type` states | the same | agree |
+| (f) X1 | `probe_annotated_r6x.py` 26-28, 33, 35, 37: F13 twice, F17 and a column in the receiver form, F18, and a wrong path in a parameter annotation | 6 errors | `Success: no issues found` | agree |
+| (g) variance | `probe_variance_r6x.py`, all through variables: V1-V3 a wider owner for `Relation` (from `Order.items`, and from a parameter) and for `RelColumn`; V4 `OwnedRelation`; V5 a narrower owner | round-6 stub: V1-V3 accepted, V4 and V5 rejected; round-5 stub: all rejected | the same | agree: the owner of `Relation` / `RelColumn` is now inferred covariant; `OwnedRelation` stays invariant |
+| (h) W1-W5 | `probe_widen_r6x.py` 23-35 | W1 rejected; W2 no error; W3 rejected; **W4 accepted**; W5 rejected | W1 and W2 accepted; W3 rejected; W4 accepted; **W5 rejected** (`Relation[Wallet \| Order, Item]` is not `LoadPath[Wallet]`) | agree |
+| (i) own widening | W6 / W7 (37-38) `la: LoadAfter[Wallet \| Order] = Load.after(point_wallet)`, then `la.load(Order.items)`; W8 (39) a function `-> Sequence[Wallet \| Order]` with `.load(Order.items)`; W14 (64-65), W6 / W7 for the list form; W15 (66), the same for the row-set form; W11-W13 (59-61) in one statement; W16 (71) W7 through a variable | W6-W8, W14 and W16 accepted; W11-W13 and W15 rejected | the same | **disagree in scope** (discrepancy 1) |
+| (j) the rest of round 5 | `regress_r6x.py`: the author's 17 round-5 files with the round-5 stub vs the reproducer's stub, by (checker, file, line, code) | differ only on the `Load.after(fn, path, ...)` lines (`fail_shapes.py` 127 and 134-136; `pass_shapes.py` 161, 163 and 178; `uc04` 27; `uc05` 53 and 54; `probe_owner_widen.py` 30; `probe_annotated.py` 24), on F18 (128, + `reportUnknownVariableType`) and on W4 (29, `reportAssignmentType` gone) | differ only on the same `Load.after` lines | agree |
+| (k) the stub | `lib.pyi` vs `round6/lib.pyi` | - | - | agree on both hashes. The only changes are the three marked `# [r6]`, the module docstring and comments; the `# [0007] round 4: was list[E]` comment on the Sequence overload is gone |
+
+**Discrepancies**
+1. **The receiver form opens a widening that round 5's form rejected in both checkers.** In the
+   receiver form `E` is solved from the function alone, unless an expected type widens it:
+   - `la: LoadAfter[Wallet | Order] = Load.after(point_wallet)`, then `la.load(Order.items)` (W6 /
+     W7; the same for the list form, W14);
+   - a function typed `-> Sequence[Wallet | Order]`, then `.load(Order.items)` (W8).
+
+   Both checkers accept these. Round 5's form, `Load.after(point_wallet, Order.items)` declared as
+   `Load` (U6) and `Load.after(wallet_or_order, Order.items)` (U8), is rejected by both. The
+   row-set form is safe, because `RowSet` is invariant (W15).
+
+   So "the mypy widening no longer reaches `Load.after`" is true of W5 only, and the invariant
+   `Path` did more than the write-up says: it also rejected U6 and U8.
+
+   A variant (`variant_r6x.py`) keeps the invariant `Path[E]` on `LoadAfter.load` only, with
+   `Relation.load` keeping `LoadPath`. It closes W7, W8 and W14 under pyright only. mypy still
+   accepts them, because it solves the descriptor's owner from the expected type; through a
+   variable (W16) mypy rejects. The types cannot close this. The ADR should state it as a seal
+   rule: each path's owner equals the function's one return entity.
+2. **`LoadAfter`'s inferred variance differs.** pyright infers it invariant (W9 and W10 rejected);
+   mypy infers it contravariant (W10 accepted). The ADR / stub should declare it.
+
+- **Verdict:**
+  - Agree:
+    - Q1 (F17, F18, F21-F23 and the G-lines);
+    - Q2;
+    - X1;
+    - mypy's message naming the path;
+    - `Relation` / `RelColumn` becoming covariant in the owner;
+    - W5 rejected by both, and W4 accepted by pyright;
+    - every other round-5 line keeps its verdict;
+    - the stub differs only where stated.
+  - Disagree with the scope of the Q3 bullet "the invariant `Path` can be removed ... nothing in
+    the stub relies on it". U6 / U8 relied on it, and their receiver-form counterparts W6-W8 pass
+    both checkers (discrepancy 1).
+  - This does not change the round-6 verdict on Q1 or Q2. It adds one seal rule and one variance
+    declaration to ADR-0011.
+- **After the reproduction** (author):
+  - Discrepancy 1 is accepted. Round 6's Observations and Verdict now say that the receiver fixes
+    `E` unless a declared type or a union result widens it.
+  - ADR-0011 adds the seal rule (a `Load.after` function returns one entity type, and every
+    path's owner is that entity) and weighs W6-W8 against W5 in its alternative for the invariant
+    `Path`.
+  - Discrepancy 2: ADR-0011 declares `LoadAfter[E]` invariant. The round-6 stub keeps the
+    inferred variance; no round-6 line depends on it.
+
+#### Round 6 addendum: union results (type-reviewer)
+Recorded as the sub-agent gave it.
+- **Who / date:** `type-reviewer`, 2026-11-26. It wrote its probes from the round-6 text alone
+  (the N1 / N2 bullet and the round-6 verdict), and opened `round6/probe_union_result.py` and its
+  results only after its own probes had run.
+- **Sources:**
+  - Stubs (sha256 prefixes): round-5 `lib.pyi` `9c0de329717a2ac2`; the author's `round6/lib.pyi`
+    `edbf01b137a14576`; the reproducer's `repro/types/round6/lib.pyi` `a7f29206f2e2c338`.
+  - Probes in `repro/types/round6/`:
+    - `probe_union_r6x.py` (N1x-N8x, C1x, N6b; no load argument; run against all three stubs);
+    - `probe_union_paths_r6x.py` (M1x-M8x, receiver form);
+    - `probe_union_paths_r5form_x.py` (the same M lines in round 5's form, round-5 stub).
+- **Rerun:** `bash spikes/0007-phase-1a-type-shapes/repro/types/round6/run.sh`. Stage 8 writes
+  `results/repro-types/round6/union/{r6stub,author_stub,r5stub}/<probe>-<checker>.txt`, and the
+  script exits 0. The author's `run.sh` also exits 0, and its `probe_union_result` results show
+  the same types as N1x / N2x.
+
+| Line | stub | pyright | mypy | vs. write-up |
+|---|---|---|---|---|
+| N1 / N1x `-> Sequence[Wallet \| Order]` | round 5 | accepted, `Load` | accepted, `Load` | agrees |
+| N1 / N1x | round 6 (author's and reproducer's) | accepted, `LoadAfter[Wallet \| Order]` | accepted, `LoadAfter[Wallet \| Order]` | agrees |
+| N2 / N2x `-> Wallet \| Order \| None` | round 5 | accepted, `Load` | accepted, `Load` | agrees |
+| N2 / N2x | round 6 (author's and reproducer's) | accepted, `LoadAfter[Order \| Wallet]` | accepted, `LoadAfter[Entity]` | agrees |
+
+The reproducer's own lines, no load argument. The verdict is the same on all three stubs; round 5
+reveals `Load`.
+
+| Line | pyright | mypy |
+|---|---|---|
+| N3x N2x with `missing="none"` | accepted, `LoadAfter[Order \| Wallet]` | accepted, `LoadAfter[Entity]` |
+| N4x `-> Wallet \| Order` (not optional) | accepted, `LoadAfter[Order \| Wallet]` | accepted, `LoadAfter[Entity]` |
+| N5x `-> list[Wallet \| Order]` | accepted, `LoadAfter[Wallet \| Order]` | the same |
+| N6x `-> RowSet[Wallet \| Order]` | accepted, `LoadAfter[Wallet \| Order]` | the same |
+| N6b `return Order.where(...)` under `-> RowSet[Wallet \| Order]` | rejected (`reportReturnType`) | rejected (`return-value`) |
+| N7x `-> RowSet[Wallet] \| RowSet[Order]` | rejected (`reportCallIssue` + `reportArgumentType`) | rejected (`misc`) |
+| N8x `-> Sequence[Order \| Item]` | accepted, `LoadAfter[Order \| Item]` | the same |
+| C1x control `-> Sequence[Wallet \| int]` | rejected (`reportCallIssue` + `reportArgumentType`) | rejected (`arg-type`) |
+
+A union result with load arguments. "Round 5" is `Load.after(fn, path)` on the round-5 stub;
+"round 6" is `Load.after(fn).load(path)` on both round-6 stubs, which give the same results.
+
+| Line | round 5, pyright / mypy | round 6, pyright | round 6, mypy |
+|---|---|---|---|
+| M1x `seq_union`, `Order.items` (U8 / W8) | rejected / rejected | accepted | accepted |
+| M2x `order_or_item`, `Item.allocations` | rejected / rejected | accepted | accepted |
+| M3x `order_or_item`, `Order.items.load(Item.allocations)` | rejected / rejected | accepted | accepted |
+| M4x `order_or_item`, `Order.items, Item.allocations` | rejected / rejected | accepted | accepted |
+| M5x `opt_union`, `Order.items` | rejected / rejected | accepted | accepted (`E` = `Entity`) |
+| **M6x `opt_union`, `Seat.holds`** (a path of neither member) | rejected / rejected | **rejected** | **accepted** (`E` = `Entity`) |
+| M7x `seq_union`, `Seat.holds` | rejected / rejected | rejected | rejected (`arg-type`) |
+| M8x `rowset_of_union`, `Order.items` | rejected / rejected | accepted | accepted |
+
+**Discrepancies**
+1. None on N1 / N2: types, verdicts and the error-free runs match the author's.
+2. **New, and the checkers differ (M6x).** In the receiver form, mypy joins a one-ref union result
+   to `Entity`, so `.load(...)` accepts a path of *any* entity, not only of a member; pyright
+   rejects it. The seal rule covers it, but it should be named: "the receiver fixes `E`" is
+   weakest under mypy here.
+3. **Refinement.** "The row-set form stays safe because `RowSet` is invariant" holds for real
+   bodies (N6b). A declared `-> RowSet[Wallet | Order]` is still accepted and widens `E` (N6x,
+   M8x).
+4. **Refinement.** On types alone, round 5 rejected all eight union-with-path lines (M1x-M8x);
+   the receiver form rejects only M7x (and M6x under pyright). So "what separates the forms is
+   W6 / W7" holds only once the seal rule is in place.
+
+Not confirmed: on the round-5 stub the result is `Load`, so what `E` solves to for N1 / N2 there
+is not visible; only their acceptance is.
+
+**Verdict**
+- N1 and N2, with the stated inferred types: **agree**.
+- "Round 5's invariant `Path` rejected U8 only because U8 also passed a path": **agree**.
+- "One entity per `Load.after` function" must be a seal rule in either form: **agree**.
+- "What separates the forms is W6 / W7 (and W5)": **agree with qualification** (true once the
+  seal rule exists; discrepancy 4).
+
+**After the addendum** (author): discrepancies 2-4 are taken into the round-6 bullets above and
+into ADR-0011 (M6x is named next to N2; the row-set exception; "once the seal rule exists").
 
 ## Review
 

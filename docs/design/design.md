@@ -127,7 +127,7 @@ These priorities are used in real decisions. Example: making SERIALIZABLE the de
 ### 3.1 Command (write) path
 - `@usecase`: begin transaction → execute load plan → pure function → commit ChangeSet. From load to commit is one transaction, and there is no external IO in between, so the transaction is short.
 - **Load plan**: based on `Annotated` signature declarations, fixed and validated at seal time. Warning for relations that are declared but not used
-- **Dependent loads**: `Load.when` (column expression, folded into a subquery, no extra round trip) / `Load.after` (typed pure function, adds one load stage). If the function returns a list of refs, they are batch-loaded at once. No generators; the number of round-trip stages is fixed at seal
+- **Dependent loads**: `Load.when` (column expression, folded into a subquery, no extra round trip) / `Load.after` (typed pure function, adds one load stage). The function returns one ref, a list of refs (batch-loaded at once) or a row set (`Entity.where(...)`, the rows that match); what is known when the declaration is written (a partial load with a constant predicate, `Load.when`) folds into the stage of the row it continues instead (stage 1 under a parameter's own declaration) ([ADR-0011](../adr/0011-row-set-loads.md)). No generators; the number of round-trip stages is fixed at seal
 - **Call**: `app.run(uc.bind(...))`. `bind` has the same signature as the use case, so it is type-checked with ParamSpec alone
 - **Recursive loads**: `Load.recursive(...)` → `WITH RECURSIVE` (depth limit required, cycle detection)
 - **ChangeSet**: row-level changes / condition-based changes / chunk streams are all the same type
@@ -351,6 +351,7 @@ orders, wallets = OrderRepo(), WalletRepo()
 - **Optimistic locking across requests**: if you pass `Order.ref(id, expected_version=v)`, a different loaded version raises `VersionMismatch`. This is the pattern of sending the version received when opening an edit screen along with the save request (HTTP `If-Match`).
 - Finder arguments are checked against the column type. There are no keyword strings. A Finder of `Repository[Order]` must be built on a column of `Order`; another entity's column is a type error (ADR-0004).
 - **A query may reference only the entities it selects from or joins.** A column of any other entity is rejected when the query description is built. This is not checked by types: in a call that receives columns of several entities, pyright and mypy infer the owner differently (ADR-0004); whether seal can also catch it is open (#52).
+- `Entity.where(...)` names a row set: besides a set change it is what a `Load.after` function returns to load the rows that match (§4.7, [ADR-0011](../adr/0011-row-set-loads.md)).
 - **Repository is optional.** Start by writing `Load(...)` directly in the use case signature, and move it to a `Profile` once the same load repeats.
 - **Module boundary**: a Repository handles only the entities of its own module. Only queries published with `Module("billing", exposes=[orders.summaries])` can be used from other modules.
 
@@ -597,10 +598,10 @@ async with app.read(consistency="snapshot") as r:                    # REPEATABL
 
 ### 4.7 Partial loads and dependent loads
 
-There are no generators. Additional data you need is also **declared**. The number of load stages is fixed at seal time.
+There are no generators. Additional data you need is also **declared**. The number of load stages is fixed at seal time. One rule decides the form ([ADR-0011](../adr/0011-row-set-loads.md)): what is expressible as SQL over the declared rows' columns and constants **known when the declaration is written** folds into the stage of the row it continues, with no stage of its own (a nested path, a partial load, `Load.when`); what needs a value **known only per run** (a use case parameter that is not loaded, `Now`), Python logic over loaded values, or a case `Load.when` does not allow is a `Load.after` function, which runs one load stage after its inputs (stage 2 at the earliest; functions of the same depth share a stage). One row chosen by a key the caller already has, whose absence is an error, is neither: it is a ref parameter passed to `bind` (`wallet=wallets.by_user(user_id)`), loaded in stage 1 (a ref has no `missing="none"`; an optional row by key stays a one-ref `Load.after`).
 
 ```python
-# Partial load: does not read the whole collection
+# Partial load: does not read the whole collection. Its predicate is a constant (folds into stage 1)
 type OrderWithCount = Annotated[Order, orders.with_item_count]
 
 @usecase
@@ -610,17 +611,34 @@ def add_item(order: OrderWithCount, sku: str) -> Changes:
     # Item takes no order_id: the parent sets its parent_fk key on add (§4.2, #49)
     return order.set(Order.items.add(Item(sku=sku, price=..., position=order.items.count)))
 
+# Nested path: written on the relation it continues (a flat Profile(Order.items, Item.allocations) is a SealError)
+releasable = Profile(Order.items.load(Item.allocations.load(Allocation.stock)))
+
 # Expression form: if the condition and the match are column expressions, they fold into a subquery with no extra round trip
-type PointWallet = Annotated[Wallet | None,
-    Load.when(Order.paid_with == PaymentMethod.POINT, match=Wallet.user_id == Order.user_id)]
-    # match compares two columns of the same value type: a predicate over Wallet | Order (§8.2 "Field type surface", #51).
-    # Inside Annotated metadata only pyright type-checks it (mypy checks nothing there, spike 0002 X1); seal validates the declaration
+point_wallet_when = Load.when(Order.paid_with == PaymentMethod.POINT,
+                              match=Wallet.user_id == Order.user_id, missing="none")
+type PointWallet = Annotated[Wallet | None, point_wallet_when]
+    # match compares two columns of the same value type: a predicate over Wallet | Order (§8.2 "Field type surface", #51)
 
-# Function form (Load.after): when it is hard to express as an expression. Argument names bind to use case parameters
-def point_wallet(order: Order) -> Wallet | None:
-    return wallets.by_user(order.user_id) if order.paid_with is PaymentMethod.POINT else None
+# Function form (Load.after): the function returns one ref, a list of refs or a row set; it adds one load stage.
+# Argument names bind to use case parameters (seal)
+def dst_wallet(dst: Order) -> Wallet | None:    # one ref: refund_merge has two Order parameters, so Load.when cannot say which (§4.13)
+    return wallets.by_user(dst.user_id) if dst.paid_with is PaymentMethod.POINT else None
 
-type PointWalletAfter = Annotated[Wallet | None, Load.after(point_wallet)]   # adds one load stage
+def variants_of(order: Order) -> list[Variant]:                  # a list of refs: loaded in one statement
+    return [Variant.ref(i.variant_id) for i in order.items]
+
+def other_holds(seat: Seat, user_id: Id[User], now: Now) -> RowSet[SeatHold]:   # a row set: the rows that match
+    return SeatHold.where(SeatHold.seat_id == seat.id, SeatHold.user_id != user_id,
+                          SeatHold.expires_at > now)
+
+dst_wallet_load = Load.after(dst_wallet, missing="none")
+variants_with_stock = Load.after(variants_of).load(Variant.stocks.load(Stock.warehouse))  # load arguments on the result
+holds_load = Load.after(other_holds)
+
+type DstWallet = Annotated[Wallet | None, dst_wallet_load]   # refund_merge(src, dst, wallet: DstWallet = INJECTED)
+type VariantsWithStock = Annotated[Sequence[Variant], variants_with_stock]
+type OtherHolds = Annotated[Sequence[SeatHold], holds_load]
 
 @usecase
 def refund(order: Annotated[Order, Load(Order.items)], wallet: PointWallet = INJECTED) -> Changes:
@@ -633,9 +651,19 @@ def refund(order: Annotated[Order, Load(Order.items)], wallet: PointWallet = INJ
 type RoleTree = Annotated[list[Role], Load.recursive(start=User.roles, via=Role.parent, max_depth=10)]
 ```
 
+- **Write load declarations as named values** and use the name in `Annotated[...]`: inside its metadata only pyright type-checks them, mypy checks nothing (spike 0002 X1); seal validates them either way.
+- **Nested paths** continue the relation they are written on, `Order.items.load(Item.allocations.load(Allocation.stock))`. A path of another entity, a skipped level or a column is a type error wherever a receiver fixes the owner (`relation.load(...)`, `Load.after(...).load(...)`); the flat form at the top of `Profile(...)` / `Load(...)` is a `SealError` (only seal knows the parameter's entity there). `.count()` / `.exists()` are not load paths, so they appear only at the top of a `Profile` / `Load`, not nested (whether that limit stays is #14's).
+- **A partial `.where(...)`** takes a constant predicate. A date or date-time constant in a predicate written in a load declaration (a partial `.where` at any depth, `Load.when`'s condition and `match`) is a `SealError` - a `date` / `datetime` value, or any value but `None` compared with a `date` / `timestamp` / `timestamptz` column: written at module level, `datetime.now()` would be evaluated once, at import, and reused by every run and retry. A time that depends on the clock is a row set over `now: Now`; a fixed date is a row set too (one load stage more). Seal cannot see where any other constant came from, nor inside a `Load.after` function (ADR-0011).
 - The **expression form** is allowed only when there is exactly one parameter of the same entity type. With two or more, seal raises an error and points to `Load.after`.
-- In the **function form**, argument names bind to use case parameters (checked at seal), and a typed function is recommended (lambda arguments are inferred as `Any`). The function must be pure and returns a ref or `None`.
-- **`None` and `NotFound` are distinguished.** If the condition is false or the function returns `None`, the result is `None`; if the condition is true but the row is missing, it is `NotFound`. If absence is acceptable, use `Load.after(fn, missing="none")`.
+- In the **function form**, argument names bind to use case parameters (checked at seal), and a typed function is required: seal reads its return annotation, which names one entity (ADR-0011); a lambda cannot have one. A `now: Now` parameter binds by name like every argument, so the use case declares `now: Now = INJECTED` too (even if its body does not read it), and both see the attempt's single clock value. The function must be pure and returns:
+  - **one ref or `None`**;
+  - **a list of refs** (any `Sequence`), loaded in one statement, in the function's order;
+  - **a row set**, `Entity.where(...)` (§4.3) - the rows that match, ordered by primary key (the same order on every attempt; a unit test passes rows in its own order); it may be empty, and there is no required `limit`.
+
+  The function runs again on every attempt, from that attempt's snapshots. If it raises, the attempt ends like the body (no retry). Its load arguments go on the result, `Load.after(fn).load(...)`, as on a relation; they add no stage (`Load.when` takes none). The function returns one entity type and every load argument starts at it (seal: a declared type on the result or a union return would widen it past the types, spike 0007 round 6). The parameter's declared type must match the function's result (`Sequence[E]` for a list or a row set; checked at seal, types cannot relate the two).
+- **`None` and `NotFound` are distinguished.** If the condition is false or the function returns `None`, the result is `None`; if the condition is true but the row is missing, it is `NotFound` (so is a ref of a list that has no row). If absence is acceptable, write `missing="none"` - on `Load.when` and on the one-ref form of `Load.after` only (a type error on the other forms), and only for an optional parameter (seal).
+- Different forms can load the same rows: a constant partial load and a row set with the same predicate; `Load.when` and a one-ref `Load.after`; a `Load.after` returning refs of a foreign key and a nested path through its many-to-one; a one-ref `Load.after` without `missing="none"` over unloaded parameters only and a ref parameter the caller binds; and `.load(a).load(b)` / `.load(a, b)` (#14 keeps one spelling). The rule above decides between them; seal cannot, because a function body is opaque to it - "one way per operation" is kept here by a documented rule, and the date check detects its most likely mistake (ADR-0011).
+- A row-set predicate does not run in a unit test, which passes the loaded rows by hand (§4.12); a wrong predicate is caught by an integration test.
 - Logic that "follows data without end" and cannot be expressed even this way cannot fit into a single use case (§7.1).
 
 ### 4.8 Bulk writes
@@ -834,6 +862,17 @@ SealError: refund's parameter wallet is filled by a dependent load (Load.when) b
   Location: shop/billing/usecases.py:58  (refund)
   Fix: write wallet: PointWallet = INJECTED (the runner fills it; bind and app.run never take it)
 
+SealError: Profile(Order.items, Item.allocations) has a path that does not start at Order: Item.allocations.
+  Location: shop/billing/repos.py:22  (OrderRepo.releasable)
+  Used by: expire_order (shop/billing/usecases.py:74)
+  Fix: write the path on the relation it continues: Profile(Order.items.load(Item.allocations))
+
+SealError: the partial load Order.items.where(...) compares Item.created_at with a constant datetime.
+  Location: shop/billing/repos.py:18  (OrderRepo.recent_items)
+  Used by: refund (shop/billing/usecases.py:58)
+  Value: 2026-11-26 09:14:03+00:00, fixed when the declaration was evaluated
+  Fix: a time known per run or a fixed date is a row-set load: Load.after(fn) returning Item.where(...); a time from the clock takes now: Now as a parameter of fn
+
 SealError: the Load.when expression is ambiguous. refund_merge has two parameters of type Order (src, dst).
   Fix: use Load.after(function) to state which parameter is meant
 
@@ -983,7 +1022,7 @@ On highly contended tables, serialization failures and retries increase. Two kin
 **Field type surface: the `Col[T]` wrapper and owner-typed columns**
 - Decision: every column field of entities, events and value objects is declared as `Col[T]` (`status: Col[OrderStatus] = column(...)`, `amount: Col[Decimal]` in `Money`). Relations are `Rel[...]` (`many_to_one`, `one_to_many`), and owned collections `Owned[list[...]]` (`owns_many`): on the class `Relation[Owner, E]` (read and load only) and `OwnedRelation[Owner, E]` (adds `add` / `remove` / `update`), on the instance `Sequence[E]`. A relation operation is a `RelOp[Owner]` (`add` an `AddOp[Owner]`), invariant in its owner and not an `Op`, so a set change rejects it by type and `insert` takes `add` only (spike 0007; [ADR-0010](../adr/0010-writes-beyond-set.md)). Class access is `Column[Owner, T]`, where the owner is the class that declares the field (`Order.status`: `Column[Order, OrderStatus]`); instance access is `T`. Paths into embedded values are `Order.total.path(Money.amount)` (`Column[Order, Decimal]`). `Column`'s owner parameter is covariant and its value parameter invariant, pinned by type tests (ADR-0004).
 - Rationale: with a plain annotation, the type checker also sees class access (`Order.status`) as `T`. For it to appear as a column on the class and `T` on the instance, the annotation itself must be a descriptor type with an overloaded `__get__`. SQLAlchemy 2.0's `Mapped[T]` exists for the same reason. `.to()`, Finders and projection keys all stand on top of this. The owner comes from the `owner` argument of `__get__`, so operations (`Op[Owner]`), predicates and relations carry the entity they belong to. Spike 0001 confirmed all of it under pyright and mypy.
-- **Where the owner is checked**: by types only where the receiver fixes the owner - `order.set(...)`, `Entity.where(...)`, `RowSet.set(...)`, `SetChange.set(...)`, `SetChange.emit_each(...)`, relation operations, the Finders of `Repository[E]`, and `path` - and in `insert(entity, *children)`, where the owner is solved from several arguments but `RelOp`'s invariance leaves the entity as the only solution (under mypy a declared type written on a relation's class access can still widen it, ADR-0004). Where the owner would have to be inferred from several arguments of one call it is not checked by types: queries (`select`/`join`/`where`) are validated when their description is built (whether seal can also catch them is #52), and `Profile`, `Load`, `Index`, `Check` and `@invariant(fields=...)` are validated by seal. Reason (spike 0001, P-A): given columns of two entities in one call, pyright infers the owner as the union `Order | Item` and mypy as the common base `Entity`, so the same misuse would be an error under one checker only.
+- **Where the owner is checked**: by types only where the receiver fixes the owner - `order.set(...)`, `Entity.where(...)`, `RowSet.set(...)`, `SetChange.set(...)`, `SetChange.emit_each(...)`, relation operations, the Finders of `Repository[E]`, `path`, and the load paths `relation.load(...)` (#59) and `Load.after(...).load(...)` ([ADR-0011](../adr/0011-row-set-loads.md)) - and in `insert(entity, *children)`, where the owner is solved from several arguments but `RelOp`'s invariance leaves the entity as the only solution (under mypy a declared type written on a relation's class access can still widen it, ADR-0004). Where the owner would have to be inferred from several arguments of one call it is not checked by types: queries (`select`/`join`/`where`) are validated when their description is built (whether seal can also catch them is #52), and `Profile`, `Load`, `Index`, `Check` and `@invariant(fields=...)` are validated by seal. Reason (spike 0001, P-A): given columns of two entities in one call, pyright infers the owner as the union `Order | Item` and mypy as the common base `Entity`, so the same misuse would be an error under one checker only.
 - **Comparison operands** (#51, [spike 0006](../spikes/0006-parent-fk-and-column-operands.md)): a value compared with a column is exactly `T`, with no numeric widening - `Order.total.path(Money.amount) >= 0` is a type error and §4.2 writes `>= Decimal(0)` (the typing spec's `int` to `float` promotion still applies to a `float` column). Two columns compare directly, through overloads of `Column`'s comparison operators, when they have the same value type; a difference in nullability only (`T` against `T | None`) is allowed. The result is a predicate over both owners: `Column[O, T] == Column[O2, T]` is `Pred[O | O2]`, so a place where the receiver fixes the owner (`Order.where(...)`) still rejects a predicate that mentions another entity's column. Where two entities are in scope the owner is checked by the query description or by seal (ADR-0004 Decision 4); the parameter type that accepts a predicate over two owners there is open (queries #52; `Load.when`'s `match` takes `Pred[object]` in the spike's stub). That rejection rests on `Pred` being covariant in its owner: like `Column`'s, its variance is declared and pinned by a type test when it is written (spike 0006 O1). The value and the column forms are separate overloads; no parameter takes `T | Column[O, T]`, the shape on which the checkers split (spike 0001).
 - Comparison gaps (open, decided in #9; spike 0006):
   - `==` and `!=` with a value of the wrong type are `bool` to both checkers, which fall back to the value's reflected `__eq__` (typeshed: `(object) -> bool`); the mistake is reported only where a predicate is required (`Order.where`, `Check`, `Load.when`, `select(...).where`). That is the checkers' view: at run time `Column.__eq__` is called first, and what it does with a value that is not a `T` must not end in a silent `bool`.
@@ -1009,10 +1048,12 @@ On highly contended tables, serialization failures and retries increase. Two kin
 
 **Dependent loads: declarative only, no generators**
 - Decision: additional data needed is declared with `Load.when` (column expression) or `Load.after` (typed pure function). There is no way to request data with `yield` inside a use case.
+- What the function returns ([ADR-0011](../adr/0011-row-set-loads.md), from #59 and [spike 0007](../spikes/0007-phase-1a-type-shapes.md)): one ref (`E | None`), a `Sequence[E]` of refs loaded in one statement, or a row set `RowSet[E]` - `Entity.where(pred, /, *preds)`, the same object a set change and a set-level delete start from. Row sets are ordered by primary key and have no required `limit`. Load arguments go on the result, `Load.after(fn).load(...)`, typed like `relation.load(...)`: the receiver fixes the entity, so both checkers reject a path of another entity (with the arguments in `Load.after(fn, ...)` itself the entity was solved from two arguments and needed an invariant path type, spike 0007 round 6); a result widened by a declared type or a union return is caught by seal (one entity per function, every path owned by it). Nested paths and load arguments add no stage; the function runs again on every attempt, and a `now: Now` parameter binds by name to the use case's `Now` parameter.
+- The boundary to partial loads: what is expressible as SQL over the declared rows' columns and constants known when the declaration is written folds, with no stage of its own (a nested path, a partial load with a constant predicate, `Load.when`); what needs a per-run value (a parameter that is not loaded, `Now`), Python logic over loaded values, or a case `Load.when` does not allow is a `Load.after`, which always adds one stage after its inputs (independent functions share it; folding a function over unloaded parameters only into stage 1 is an optimisation left to #14 / #28). One row chosen by a key the caller has, whose absence is an error, is a ref parameter passed to `bind`, loaded in stage 1, not a `Load.after`. A date or date-time constant in a predicate of a load declaration is a `SealError` (it would be evaluated once, at import). Different forms can still load the same rows and seal cannot tell them apart (a function body is opaque), so "one way per operation" rests on this documented rule here, and the date check is a detection, not a removal - the two bends ADR-0011 names.
 - Rationale: generator use cases were a new function color. They could not simply be put into `chain`, the caller also had to become a generator, and since there is only one send type, the type of `wallet = yield ...` could not be inferred. Switching to declarations removes the color, makes parameter types (`Wallet | None`) precise, and fixes the number of round-trip stages of every use case at seal time.
 - The expression form is allowed only when there is exactly one parameter of the same entity type (with two, seal error → points to `Load.after`). The condition and the match are column expressions, so they fold into a subquery with no extra round trip.
-- In the function form, argument names bind to use case parameters (checked at seal), and typed functions are recommended over lambdas (lambda arguments are inferred as `Any`).
-- `None` and `NotFound` are distinguished. If the condition is false, `None`; if the condition is true but the row is missing, `NotFound`. When absence is acceptable, state it explicitly with `missing="none"`.
+- In the function form, argument names bind to use case parameters (checked at seal), and a typed function is required: seal reads its return annotation, which names one registered entity, and checks every load argument against it ([ADR-0011](../adr/0011-row-set-loads.md)); a lambda cannot have one.
+- `None` and `NotFound` are distinguished. If the condition is false, `None`; if the condition is true but the row is missing, `NotFound`. When absence is acceptable, state it explicitly with `missing="none"` - on `Load.when` and on a one-ref `Load.after` (a type error on a list or a row set; on a parameter that is not optional, a `SealError`).
 - Cost: traversal of unknown depth cannot be expressed (§7.1).
 
 **Recursive loads**
@@ -1050,6 +1091,7 @@ On highly contended tables, serialization failures and retries increase. Two kin
 
 **Partial loads of large aggregates**
 - Decision: provide partial loads such as `Load(Order.items.count())`, `.exists()`, `.where(...)`. Writes do not require loading the whole collection: `add` needs no loaded child, `update` / `remove` need the child they name, and a root's `.delete()` removes its owned relations unloaded ([ADR-0010](../adr/0010-writes-beyond-set.md)); iteration and lookup require loading.
+- A partial `.where(...)` takes a constant predicate and folds into the stage of the row it continues (stage 1 under a parameter's own declaration). Filters that depend on a loaded value, a parameter or `Now` are row-set loads (`Load.after`, one stage more); replacing partial `.where` loads by row sets was rejected because every constant filter would then cost a round trip (§8.3). Date and date-time constants in its predicate are rejected at seal ([ADR-0011](../adr/0011-row-set-loads.md)).
 
 **Marking Python-only invariants**
 - Decision: protected fields are stated with `@invariant(fields=lambda: (Order.status, ...))` (references instead of strings). If a set-based update touches such a field, it is an error at seal time. Rules expressible in SQL are declared with `Check(...)` and pushed down to a DB `CHECK` constraint; set updates are allowed on such fields.
@@ -1286,10 +1328,10 @@ Each was chosen to test a different part of the design. If something does not tr
 Started as a proposal reflecting the comment that the scope is too broad; decided by the maintainer on 2026-11-26 in #6, from the verdicts of §9.1-9.4 and the recommendations on the decision issues they produced. Phase 1 is cut in two at the first working `app.run`. Where a part depends on a decision issue that is still open, it follows the decision of that issue.
 - **Phase 1a - Core execution path**: pure use cases and the execution engine, PostgreSQL dialect, run ID (#9-#22), then the release pipeline and a working 0.0.1 (#44, #30).
   - Exit: use cases 6 (order merge, delete of a root), 8 (transfer, insert of a new root) and 9 (profile edit) of [spike 0002](../spikes/0002-use-cases-on-paper.md) pass as integration tests on PostgreSQL in one load batch and one commit batch, SERIALIZABLE with retry and a run ID.
-  - Before the build issues they gate: the type spike for #49 and #51 (done: [spike 0006](../spikes/0006-parent-fk-and-column-operands.md)); the decisions #48, #54, #57, #58, #59, #60, #61 and #63, with a separate type spike for the shapes of #48, #57, #59 and #60 (done: [spike 0007](../spikes/0007-phase-1a-type-shapes.md); the maintainer decided `owns_many`, candidate B for owned children of a new root and a required predicate in `Entity.where` on 2026-11-26; the first follow-up ADR, [ADR-0010](../adr/0010-writes-beyond-set.md) (accepted 2026-11-26, writes beyond `.set`, #57 and #60), changes §4.2-4.4 / 4.6 / 4.8 / 4.12 / 8.2 / 8.3 / 10.7 / 10.12 and gates the exit's use cases 6, 8 and 9; the second (#59) changes §4.7 and 8.2 "Dependent loads" and decides whether row sets replace partial `.where` loads), and the ADRs they call for (one of them for #61's run budget); ADR-0007 after #65; the cleanup cost of the run-ID tables (#72) before #63 fixes their schema. What these decisions add to the build issues follows the decision of each.
+  - Before the build issues they gate: the type spike for #49 and #51 (done: [spike 0006](../spikes/0006-parent-fk-and-column-operands.md)); the decisions #48, #54, #57, #58, #59, #60, #61 and #63, with a separate type spike for the shapes of #48, #57, #59 and #60 (done: [spike 0007](../spikes/0007-phase-1a-type-shapes.md); the maintainer decided `owns_many`, candidate B for owned children of a new root and a required predicate in `Entity.where` on 2026-11-26; the first follow-up ADR, [ADR-0010](../adr/0010-writes-beyond-set.md) (accepted 2026-11-26, writes beyond `.set`, #57 and #60), changes §4.2-4.4 / 4.6 / 4.8 / 4.12 / 8.2 / 8.3 / 10.7 / 10.12 and gates the exit's use cases 6, 8 and 9; the second, [ADR-0011](../adr/0011-row-set-loads.md) (proposed, #59), changes §4.7 and §8.2's dependent loads and keeps partial `.where` loads with constant predicates), and the ADRs they call for (one of them for #61's run budget); ADR-0007 after #65; the cleanup cost of the run-ID tables (#72) before #63 fixes their schema. What these decisions add to the build issues follows the decision of each.
   - `expected_version`, `VersionMismatch` and the root `version` bump on changes of owned children are part of #11, #13, #15 and #17. Until the outbox lands (#23), a use case that emits events is rejected, never silently dropped; whether at seal or at run time is decided in #21.
 - **Phase 1b - Events, queries and tooling**: inline projections and the outbox log (#23), Query path (TypedSQL, #24), schema tooling (optional extra, #25, CLI #26), the test kit (#27), the §9.5 measurements (#28) and documentation examples as tests (#29). Exit: adoption step 3 (§6).
-  - Also in 1b: the set-load implementation (following #59), the cleanup cost of the outbox log (#73) before #23, and the classification of `53200` under SSI load (#74; it gates nothing - until then it is not retried and surfaces as `DatabaseError`).
+  - Also in 1b: the set-load implementation (following #59 and [ADR-0011](../adr/0011-row-set-loads.md)), the cleanup cost of the outbox log (#73) before #23, and the classification of `53200` under SSI load (#74; it gates nothing - until then it is not retried and surfaces as `DatabaseError`).
   - Schema tooling in Phase 1 ([spike 0004](../spikes/0004-alembic-round-trip.md)): Alembic generates what round-trips (create, add or drop a column, a type change, `version` triggers); the constraint and index naming rule is decided in 1b, before the first name is created; a shadow-schema catalog diff reports what Alembic cannot see. `platina check` runs it in CI in projects that use `platina migrate`, and it can also check the declared tables of a database Platina does not migrate. A rename, or a changed CHECK or partial index, is a hand-written migration that the drift report catches. The internal tables follow #63 ([ADR-0009](../adr/0009-internal-tables-owned-by-the-core.md): versioned SQL in a dedicated schema, shipped only after #72).
   - `platina gen` accepts an existing database as its schema source (#24).
 - **Phase 2**: async projections, `then` and `@process` with the job pipeline, batch use cases and set changes (#33; the set-level delete and `insert_all` follow [ADR-0010](../adr/0010-writes-beyond-set.md)), migration fidelity (renames, derived names, CHECK and partial-index changes, #70) and `platina pull` (#71). Phase 1 has no boundary with the outside world: the `@process` handlers that four of spike 0002's use cases need arrive here.
