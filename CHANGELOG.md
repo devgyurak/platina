@@ -77,6 +77,8 @@ All notable changes are documented here. Format: [Keep a Changelog](https://keep
   - Design 11.2 now says every PR instead of nightly; ADR-0002, the workflow document, the
     `testing` rule, the `test-writer` agent and the `core-testing`, `write-tests`,
     `review-change`, `architecture-guard` and `commit` skills follow.
+- GitHub organization icon in `docs/assets/` (see its README): a hallmark-style plate with a
+  "Pt" ligature, platinum `#E5E4E2` on graphite `#15171B`, as SVG master and 1024 / 500 px PNGs.
 
 ### Changed
 - Entity syntax (ADR-0003, accepted): entities inherit `Entity` with table options as class
