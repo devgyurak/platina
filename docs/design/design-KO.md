@@ -1,4 +1,4 @@
-<!-- i18n: source=docs/design/design.md source-sha256=1b1213aed1b1 translation-sha256=fd9a5bd2ab71 -->
+<!-- i18n: source=docs/design/design.md source-sha256=86c2af619a0c translation-sha256=14c6bbfe402c -->
 # Platina 설계 문서
 
 > **Platina**: 백금(platinum)의 옛 스페인어 이름. 백금이 산에도 녹지 않고 반응하지 않듯, 도메인 코드는 DB와 반응하지 않는다.
@@ -377,6 +377,8 @@ t = Transfer(amount=amount)
 insert(t, Transfer.legs.add(Leg(account_id=src.id, side=LegSide.CREDIT, amount=amount)),
           Transfer.legs.add(Leg(account_id=dst.id, side=LegSide.DEBIT, amount=amount)))
 src.delete()                                                           # 주문과 그 항목, 티켓
+user.set(User.addresses.add(Address(line1=..., city=...)), User.addresses.update(old, Address.city.to(city)),
+         User.addresses.remove(gone), User.default_address_id.to(new_default.id))   # 유스케이스 9: 로드된 루트의 owned 자식, .set 하나로
 ```
 
 - **연산마다 동사 하나.** `.set`은 로드한 스냅샷을 수정한다(컬럼 연산, 그리고 그 스냅샷의 owned 관계에 대한 관계 연산). `insert`는 새 행을 쓰고, `.delete()`는 로드한 행을 삭제한다. 생성, 수정, 삭제는 서로 다른 연산이다(ADR-0003). `insert_all`은 대량 경로로, 또 다른 연산이다(§4.8).

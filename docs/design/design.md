@@ -377,6 +377,8 @@ t = Transfer(amount=amount)
 insert(t, Transfer.legs.add(Leg(account_id=src.id, side=LegSide.CREDIT, amount=amount)),
           Transfer.legs.add(Leg(account_id=dst.id, side=LegSide.DEBIT, amount=amount)))
 src.delete()                                                           # the order, its items and its tickets
+user.set(User.addresses.add(Address(line1=..., city=...)), User.addresses.update(old, Address.city.to(city)),
+         User.addresses.remove(gone), User.default_address_id.to(new_default.id))   # use case 9: owned children of a loaded root, one .set
 ```
 
 - **One verb per operation.** `.set` modifies a loaded snapshot (column operations, and the relation operations of its owned relations); `insert` writes a new row; `.delete()` deletes a loaded row. Creating, modifying and deleting are different operations (ADR-0003). `insert_all` is the bulk path, a different operation (§4.8).
