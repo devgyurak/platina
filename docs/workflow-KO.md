@@ -1,4 +1,4 @@
-<!-- i18n: source=docs/workflow.md source-sha256=346de309897d translation-sha256=f90922ae2b67 -->
+<!-- i18n: source=docs/workflow.md source-sha256=bac072f571c5 translation-sha256=36e691c9d103 -->
 # 에이전트 개발 워크플로
 
 원문(영어): [workflow.md](workflow.md)
@@ -61,8 +61,8 @@ pyright·mypy에서의 타입 표면, SSI 거짓 충돌, Alembic 왕복, 유스�
 문서는 코드와 함께 움직인다. `docs-sync` 규칙이 변경 종류마다 같은 변경 안에서 고쳐야 할
 문서를 정해 두었고, `arch-guardian`은 빠뜨린 것을 MAJOR로 보고한다.
 
-작업은 GitHub에서 추적한다. 단계마다 마일스톤 하나(`Phase 0 - Experiments`, `Phase 1 - Core execution path`, `Phase 2 - Event pipeline`, `Later`. 1·2단계 구분은 이슈 #6이
-정할 때까지 설계 §9.6의 제안이다), 로드맵 항목마다 설계 절·범위 체크리스트·의존 이슈를 적은
+작업은 GitHub에서 추적한다. 단계마다 마일스톤 하나(`Phase 0 - Experiments`, `Phase 1a - Core execution path`, `Phase 1b - Events, queries and tooling`, `Phase 2 - Event pipeline`, `Later`.
+단계는 이슈 #6에서 결정된 설계 §9.6의 단계다), 로드맵 항목마다 설계 절·범위 체크리스트·의존 이슈를 적은
 이슈 하나, 라벨은 종류(`feature`, `spike`, `test`, `ci`, `documentation`), 영역(`area:*`),
 절차(`needs-decision`, `blocked`)로 단다. PR은 `Closes #N`으로 이슈를 닫는다.
 
@@ -146,8 +146,8 @@ uv run python -m tools.guards --changed
 
 ## 8. GitHub 설정 (메인테이너, 한 번)
 
-**현재 상태(2026-11-25):** 완료. `develop`이 기본 브랜치이고, 룰셋 두 개가 활성 상태이며,
-마일스톤·라벨·로드맵 이슈(#1-#69, #47·#53·#56·#62·#66·#67·#68·#69는 풀 리퀘스트)가 있다. 로컬 pre-push 훅(`make hooks-install`)은 두 번째
+**현재 상태(2026-11-26):** 완료. `develop`이 기본 브랜치이고, 룰셋 두 개가 활성 상태이며,
+마일스톤·라벨·로드맵 이슈(#1-#74, #47·#53·#56·#62·#66·#67·#68·#69는 풀 리퀘스트)가 있다. 로컬 pre-push 훅(`make hooks-install`)은 두 번째
 방어선으로 남는다. 에이전트는 메인테이너가 요청할 때만 GitHub 설정·마일스톤·라벨을 바꾼다.
 
 - [x] `main`에 첫 커밋, 그다음 거기서 `develop` 생성, `develop`을 기본 브랜치로.
@@ -157,13 +157,14 @@ uv run python -m tools.guards --changed
       "main accepts PRs from develop only"(`.github/workflows/branch-policy.yml`)와
       "lint, types, guards, unit, type tests (py3.14)" / "(py3.15)", "unit tests, free-threaded (py3.14t)"(`ci.yml`), force push 금지,
       삭제 금지. CI 잡 이름을 바꾸면 룰셋에서도 바꿔야 한다.
-- [x] 마일스톤: `Phase 0 - Experiments`, `Phase 1 - Core execution path`, `Phase 2 - Event pipeline`, `Later`.
+- [x] 마일스톤: `Phase 0 - Experiments`, `Phase 1a - Core execution path`, `Phase 1b - Events, queries and tooling`, `Phase 2 - Event pipeline`, `Later` (1단계는 2026-11-26에 #6에서 나눔).
 - [x] 라벨: `feature`, `spike`, `test`, `ci`, `documentation`, `needs-decision`, `blocked`,
       `area:core`, `area:sql`, `area:app`, `area:runners`, `area:drivers`, `area:outbox`,
       `area:migrate`, `area:codegen`, `area:testing`, `area:integrations`, `area:cli`,
       `area:tooling`.
-- [x] 로드맵 이슈 #1-#69: 설계 §9 실험, 그리고 설계 §3-11의 모든 패키지·기능을 의존 관계와 함께
-      (#1은 이 설정 작업, #48-#52와 #54, #55는 스파이크 0001에서, #57-#61은 스파이크 0002에서, #63은 스파이크 0004에서, #64-#65는 스파이크 0003에서 나옴,
+- [x] 로드맵 이슈 #1-#74: 설계 §9 실험, 그리고 설계 §3-11의 모든 패키지·기능을 의존 관계와 함께
+      (#1은 이 설정 작업, #48-#52와 #54, #55는 스파이크 0001에서, #57-#61은 스파이크 0002에서, #63은 스파이크 0004에서, #64-#65는 스파이크 0003에서, #70-#74는
+      1단계 범위 결정 #6에서 나옴,
       #47·#53·#56·#62·#66·#67·#68·#69는 풀 리퀘스트).
 - [x] 첫 구현 전에 ADR-0001(조립 패키지와 seal)과 ADR-0002(새 ID를 주입된 소스에서 받기) 결정 - 둘 다 수락.
 
