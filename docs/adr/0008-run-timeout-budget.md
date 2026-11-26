@@ -18,7 +18,8 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
   commit batch.
 - Facts established for this ADR (pg-researcher, PostgreSQL 18.6, psycopg 3.3.9 / libpq 18.0.6,
   one run each in throwaway databases, summarised in the
-  #61 decision comment, not reproduced by a
+  [#61 decision comment](https://github.com/devgyurak/platina/issues/61#issuecomment-7185864996),
+  not reproduced by a
   second agent; the synchronous-replication case ran in a separate `postgres:18` container,
   because `synchronous_standby_names` is server-wide):
   - **`statement_timeout` limits each statement, also inside a pipeline.** "In extended query
