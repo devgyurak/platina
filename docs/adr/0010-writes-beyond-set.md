@@ -216,7 +216,8 @@ that references `src` (an allocation or a payment committed just before the dele
   `parent_fk` to the order, a plain `fk` to the shipment) or split the aggregate. Allowing nesting
   later relaxes a seal error, which is backward compatible.
 - `RowSet[E]` (spike 0007 S2) is "the rows of E that match", invariant, not a `Changes`, with
-  `.set(*ops: Op[E])` and `.delete()`; both are Phase 2 (#33). Whether it is a load is #59's.
+  `.set(*ops: Op[E])` and `.delete()`; both are Phase 2 (#33). It is also a load: a `Load.after`
+  function may return one (ADR-0011, #59).
 - `insert` solves `E` from the entity and the children; invariance keeps it checked (spike 0007
   F11), except under mypy through a declared type on a relation's class access (ADR-0004).
 - Build issues: #9 (proposals 1, 2, 5; `owns_many`, no `owned=`), #13 (`insert`, `.delete()`,
@@ -265,3 +266,4 @@ roots with owned relations in Phase 1a; unloaded owned relations deleted without
   two root tables that reference each other (P1, verified), the dialect capability, P5's place.
 - 2026-11-26 - accepted by the maintainer, every proposal as written; the name of `Write[O]` is
   left to #13.
+- 2026-11-26 - cross-reference only, after ADR-0011 was accepted: a `RowSet` is also a load (#59).

@@ -185,7 +185,7 @@ All notable changes are documented here. Format: [Keep a Changelog](https://keep
   independent review. Design 4.2-4.4, 4.6, 4.8, 4.12, 8.2, 8.3, 9.6, 10.7, 10.8, 10.12, 11.3,
   11.8 (EN + KO), ADR-0003 and ADR-0004 amended in place, the `design-invariants` and
   `engine-and-concurrency` rules.
-- ADR-0011 (Proposed, #59): row-set loads and the shape of dependent loads. A `Load.after`
+- ADR-0011 (accepted by the maintainer 2026-11-26, #59): row-set loads and the shape of dependent loads. A `Load.after`
   function returns one ref, a list of refs or a row set (`Entity.where(...)`); its load arguments
   go on the result, `Load.after(fn, missing=...).load(...)` (changes #59 point 3; probed and
   reproduced as spike 0007 round 6, which also drops the invariant `Path`); partial `.where` loads
@@ -197,7 +197,9 @@ All notable changes are documented here. Format: [Keep a Changelog](https://keep
   count is the plan's depth); a row chosen by a key the caller has, whose absence is an error, is
   a ref parameter, not a `Load.after`. Numbered 0011 (`0010-writes-beyond-set.md` takes 0010).
   Reviewed by architect (two rounds). Design 3.1, 4.3 (a cross-reference), 4.7, 4.13, 8.2 and 9.6
-  updated; ADR-0004 Decision 4 amended in place (load paths are receiver-fixed places);
+  updated; ADR-0004 Decisions 3 and 4 and its known mypy gap amended in place (load paths are
+  receiver-fixed places, the variance ADR-0011 declares; the gap no longer reaches `Load.after`),
+  and a cross-reference in ADR-0010;
   `docs/architecture.md` lists the ADR.
 ### Changed
 - Entity syntax (ADR-0003, accepted): entities inherit `Entity` with table options as class

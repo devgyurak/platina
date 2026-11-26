@@ -321,7 +321,7 @@ the Question type-checks the same way under pyright and mypy, and every misuse i
 is rejected by both, once the conditions below hold. Where the checkers still differ:
 - inside `Annotated[...]` metadata mypy checks nothing (X1);
 - mypy accepts a declared type written directly on a relation's class access that widens its
-  owner, and then F11 and F21 pass (`probe_owner_widen.py`; Round 6 / ADR-0011 (proposed): with the receiver form
+  owner, and then F11 and F21 pass (`probe_owner_widen.py`; Round 6 / ADR-0011 (accepted): with the receiver form
   of `Load.after` F21 is rejected that way too, W5 - other widenings of `E` go to seal, W6-W8);
 - `owned=` (the rejected alternative) given a literal-initialised constant: pyright accepts, mypy
   rejects (`probe_owned_flag.py`);
@@ -359,7 +359,7 @@ form accepted a path of another entity. Both the architect and the type-reviewer
 | S3 `insert`, candidate B (**chosen**) | holds | only with an invariant `RelOp` and `AddOp` children (F10, F11, F24); `.set` on a new entity is a runtime error (R13) |
 | S4 owned-only operations | holds | read-only `where` / `load` views (F25, F26); declared with **`owns_many(...)`** (chosen; the annotation and the specifier, F28; the domain uses it since round 5). The rejected `owned=True` flag (F8, F9) splits the checkers for a literal-initialised constant (`probe_owned_flag.py`). Owned children can still be written directly (R10-R12); the declaration's consistency with `parent_fk` and the root is seal's (R18) |
 | S5 nested paths | holds | with the covariant `LoadPath` on `relation.load` (round 4; F30, F31); checked by mypy only outside `Annotated[...]` (X1); the flat form is a seal error (R15) |
-| S6 `Load.after` forms | holds | **only with the invariant `Path`** (F17, F21, F22; Round 6 / ADR-0011 (proposed): or with the receiver form `Load.after(fn).load(...)`, without `Path`, plus a seal rule for W6-W8); the same X1 condition; parameter type vs function result and `missing="none"` on a non-optional result stay seal checks (R9, R16) |
+| S6 `Load.after` forms | holds | **only with the invariant `Path`** (F17, F21, F22; Round 6 / ADR-0011 (accepted): or with the receiver form `Load.after(fn).load(...)`, without `Path`, plus a seal rule for W6-W8); the same X1 condition; parameter type vs function result and `missing="none"` on a non-optional result stay seal checks (R9, R16) |
 | S7 `missing` on `Load.when` | holds | - |
 | S8 `= INJECTED` on dependent loads | holds | passing them to `bind`, leaving them out of a direct call, and a misplaced `INJECTED` are runtime / seal errors (R2-R4) |
 
@@ -383,7 +383,7 @@ the maintainer's decisions (#48 needs no follow-up: PR #77 recorded it in 4.5 / 
    may be empty is not caught by types (R17). Only `Entity.where` changes - a relation's
    `.where(...)` (partial loads) and the query path's `where` are unchanged.
 
-Open: whether row sets replace partial `.where` loads (ADR 2, below). Round 6 / ADR-0011 (proposed): they do not -
+Open: whether row sets replace partial `.where` loads (ADR 2, below). Round 6 / ADR-0011 (accepted): they do not -
 partial `.where` loads stay with constant predicates.
 
 ### ADR directions
@@ -398,7 +398,7 @@ partial `.where` loads stay with constant predicates.
      two new places where the owner is solved from several arguments and still checked by type,
      thanks to invariance - with its known gap: under mypy a declared type written on a
      relation's class access widens the owner and gets past both (`probe_owner_widen.py`).
-     Round 6 / ADR-0011 (proposed): `Path` and `Load.after`'s two-argument solving are gone (the receiver form); only
+     Round 6 / ADR-0011 (accepted): `Path` and `Load.after`'s two-argument solving are gone (the receiver form); only
      `insert` remains of the two, and ADR-0011 amends Decision 4 for the load paths.
    - **Decided by the maintainer (2026-11-26)**: `owns_many`; candidate B (`.set` on a new
      entity is an error; a new child brings no children of its own); `Entity.where` requires a
@@ -443,10 +443,10 @@ partial `.where` loads stay with constant predicates.
        weighs them as equals (the invariant `Path` adds a second relation base class; the
        receiver form adds a `LoadAfter[E]` type and a second call). One observation in favour of
        the receiver form (independent review): there mypy's message points at the wrong path,
-       while with `*paths: Path[E]` it blames the function (F17, F21). Round 6 / ADR-0011 (proposed): the receiver form is
+       while with `*paths: Path[E]` it blames the function (F17, F21). Round 6 / ADR-0011 (accepted): the receiver form is
        proposed; the two do not reject quite the same lines (W5 vs W6-W8, "Round 6").
    - **Open (not decided by the maintainer): do row sets replace partial `.where` loads?** The
-     ADR must name the invariants it bends. (Round 6 / ADR-0011 (proposed): no, by the maintainer's direction; the
+     ADR must name the invariants it bends. (Round 6 / ADR-0011 (accepted): no, by the maintainer's direction; the
      clock-hole claim below does not hold - a function reading a module-level clock value is as
      frozen - and a seal check for date constants is proposed instead.) Three forms can load the same rows, and no check can
      tell them apart (a function body is opaque to seal):
@@ -477,7 +477,7 @@ partial `.where` loads stay with constant predicates.
      - `in_`'s operand: an empty list (a predicate that is always false, compiled how) and the
        array parameter it binds to;
      - the flat path is a type error under `Load.after` (`*paths: Path[E]` takes one entity's
-       paths) but a seal error under `Profile` / `Load` (R15) - one rule, two checks (Round 6 / ADR-0011 (proposed): a type
+       paths) but a seal error under `Profile` / `Load` (R15) - one rule, two checks (Round 6 / ADR-0011 (accepted): a type
        error under `Load.after(...).load(...)`, where the receiver fixes the owner);
      - a row-set function's predicate never runs in a unit test: the test passes the loaded rows
        by hand (`hold_seat(..., holds=[...])`), so a wrong predicate is caught only by an

@@ -1,6 +1,6 @@
 # ADR-0011: Row-set loads and the shape of dependent loads
 
-- Status: Proposed
+- Status: Accepted (maintainer, 2026-11-26)
 - Date: 2026-11-26
 - Related: design sections 3.1, 4.3, 4.7, 4.13, 8.2 ("Dependent loads", "Partial loads of large
   aggregates", "Field type surface"), 8.3 ("2 round trips"), 9.6; issues #59 (decisions of
@@ -61,7 +61,7 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
    for a set change (`.set(...)`), for a set-level delete (`.delete()`, #57), and as a load (the
    result of a `Load.after` function). It is not a `Changes`, so a bare `where(...)` cannot stand
    for one (type error). This ADR owns `RowSet` as a load result; `.set` / `.delete()` on it are
-   the #57 / #60 ADR's.
+   ADR-0010's (#57 / #60).
 2. **A `Load.after` function returns a `RowSet[E]`, a `Sequence[E]` of refs, or one ref
    (`E | None`).**
    - `missing=` applies only to one ref (a type error on the other forms), and only to an optional
@@ -75,8 +75,9 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
      ADR-0004 Decision 4 (amended in place).
    - The invariant `Path` of spike 0007's condition 2 is not part of the surface.
    - **Seal rule**: a `Load.after` function's return annotation names one registered entity class
-     `E` (as `E | None`, `Sequence[E]` or `RowSet[E]`; not a union of entities, not `Entity` or
-     another base), and every load argument's owner is `E`. This catches what the types cannot: a
+     `E` - for one ref `E` or `E | None`; for a list of refs `Sequence[E]` or a subtype of it
+     (`list[E]`, `tuple[E, ...]`); for a row set `RowSet[E]`; not a union of entities, not `Entity`
+     or another base - and every load argument's owner is `E`. This catches what the types cannot: a
      result widened by a declared type or a union return (W6-W8, N1, N2, and M6x under mypy). R9
      reads the same annotation, so a `Load.after` function without one (a lambda) is a
      `SealError`: the typed function the design only recommended becomes required.
@@ -224,8 +225,8 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
   - `LoadAfter[E]` is new, and its parameter is invariant.
   - `Relation[O, E]` / `RelColumn[O, T]`: the owner is covariant (like `Column`'s, now that no
     invariant `Path` base needs it) and the second parameter invariant. Each is declared, not
-    inferred, for the reason ADR-0004 Decision 3 gives for `Column` (ADR-0004 itself is not
-    amended for variance).
+    inferred, for the reason ADR-0004 Decision 3 gives for `Column`; ADR-0004 Decision 3
+    records these alongside ADR-0010's `RelOp` / `RowSet`.
   - `OwnedRelation` stays invariant in its owner through `AddOp` / `RelOp` (F11).
   - mypy still names a path's instance type (`Sequence[Item]`), the descriptor effect ADR-0004
     records.
@@ -287,3 +288,7 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
   functions share a stage); the ref-parameter rule applies when absence is an error; the seal rule
   reads a required return annotation (a lambda is a `SealError`). Point 4 separates a ref parameter bound by the caller from a
   `Load.after`; the nested `.count()` / `.exists()` limit is stated.
+- 2026-11-26 - accepted by the maintainer, including the required return annotation of a
+  `Load.after` function, the time check over `Load.when`, the stage count as the plan's depth and
+  `Load.after(fn, missing="none")` for an optional row by key. The seal rule's annotation list now
+  allows `E` for one ref and any subtype of `Sequence[E]` (`list[E]`, `tuple[E, ...]`) for a list.

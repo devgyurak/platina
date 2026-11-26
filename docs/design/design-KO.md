@@ -1,4 +1,4 @@
-<!-- i18n: source=docs/design/design.md source-sha256=68f3b759ac97 translation-sha256=1c64baaeacda -->
+<!-- i18n: source=docs/design/design.md source-sha256=8c9039fd75ca translation-sha256=5c9f006c5930 -->
 # Platina 설계 문서
 
 > **Platina**: 백금(platinum)의 옛 스페인어 이름. 백금이 산에도 녹지 않고 반응하지 않듯, 도메인 코드는 DB와 반응하지 않는다.
@@ -347,11 +347,10 @@ orders, wallets = OrderRepo(), WalletRepo()
 ```
 
 - **ref는 자리표시자다.** `Order.ref(id)`와 `orders.by_number("A-1")`는 타입상 `Order`지만, 실제로는 "이 행을 로드해 달라"는 표시다. 호출 측에서 ref의 필드를 읽거나 **ref에 `.set`이나 `.delete()`를 하면** 즉시 `UnloadedReference` 에러다. `.set`을 막는 이유는, 로드와 `@invariant` 검사를 건너뛰는 쓰기가 되기 때문이다. 로드 없이 쓰고 싶으면 `Order.where(Order.id == x).set(...)` 집합 변경으로 명시한다(seal에서 불변식 검사를 받는다).
-- **`Order.where(pred, *preds)`는 `RowSet[Order]`다**: 조건에 맞는 `Order`의 행들이며, `.set(...)`(집합 변경)과 `.delete()`를 가진다. `Changes`가 아니므로 그 자체로 반환하거나 `+`로 더할 수 없다. 술어는 하나 이상 필요하다. `Order.where()`는 두 체커 모두에서 타입 에러이고, 언팩한 리스트가 런타임에 비어 있으면(`Order.where(*preds)`) `UsageError`다(스파이크 0007; [ADR-0010](../adr/0010-writes-beyond-set.md)). 바뀌는 것은 `Entity.where`뿐이고, 관계의 `.where(...)`(부분 로드, §4.7)와 쿼리의 `where`는 바뀌지 않는다. row set이 로드이기도 한지는 #59에서 정한다.
+- **`Order.where(pred, *preds)`는 `RowSet[Order]`다**: 조건에 맞는 `Order`의 행들이며, `.set(...)`(집합 변경)과 `.delete()`를 가진다. `Changes`가 아니므로 그 자체로 반환하거나 `+`로 더할 수 없다. 술어는 하나 이상 필요하다. `Order.where()`는 두 체커 모두에서 타입 에러이고, 언팩한 리스트가 런타임에 비어 있으면(`Order.where(*preds)`) `UsageError`다(스파이크 0007; [ADR-0010](../adr/0010-writes-beyond-set.md)). 바뀌는 것은 `Entity.where`뿐이고, 관계의 `.where(...)`(부분 로드, §4.7)와 쿼리의 `where`는 바뀌지 않는다. 행 집합은 로드이기도 하다: 조건에 맞는 행을 로드하려고 `Load.after` 함수가 이것을 돌려준다(§4.7, [ADR-0011](../adr/0011-row-set-loads.md)).
 - **요청 사이 낙관적 락**: `Order.ref(id, expected_version=v)`로 넘기면, 로드한 버전이 다를 때 `VersionMismatch`다. 편집 화면을 열 때 받은 버전을 저장 요청에 실어 보내는 패턴(HTTP `If-Match`)이다.
 - Finder 인자는 컬럼 타입으로 검사된다. 키워드 문자열이 없다. `Repository[Order]`의 Finder는 `Order`의 컬럼으로 만들어야 하고, 다른 엔티티의 컬럼은 타입 에러다(ADR-0004).
 - **쿼리는 자신이 select하거나 join한 엔티티만 참조할 수 있다.** 그 밖의 엔티티 컬럼은 쿼리 서술을 만들 때 거부된다. 이는 타입으로 검사하지 않는다. 여러 엔티티의 컬럼을 받는 호출에서 pyright와 mypy가 소유자를 다르게 추론하기 때문이다(ADR-0004). seal에서도 잡을 수 있는지는 열린 질문이다(#52).
-- `Entity.where(...)`는 행 집합(row set)을 가리킨다. 집합 변경 외에, 조건에 맞는 행을 로드하려고 `Load.after` 함수가 돌려주는 것도 이것이다(§4.7, [ADR-0011](../adr/0011-row-set-loads.md)).
 - **Repository는 선택이다.** 처음엔 유스케이스 시그니처에 `Load(...)`를 직접 쓰다가, 같은 로드가 반복되면 `Profile`로 옮긴다.
 - **모듈 경계**: Repository는 자기 모듈의 엔티티만 다룬다. `Module("billing", exposes=[orders.summaries])`로 공개한 조회만 다른 모듈에서 쓸 수 있다.
 
@@ -1328,7 +1327,7 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
 범위가 넓다는 지적을 반영한 제안에서 출발했고, 메인테이너가 2026-11-26에 #6에서 §9.1-9.4의 판정과 그로부터 나온 결정 이슈의 권고를 보고 확정했다. 1차는 처음으로 동작하는 `app.run`을 기준으로 둘로 나눈다. 어떤 부분이 아직 열려 있는 결정 이슈에 달려 있으면 그 이슈의 결정을 따른다.
 - **Phase 1a - Core execution path**: 순수 유스케이스와 실행 엔진, PostgreSQL 방언, 실행 ID(#9-#22), 그다음 릴리스 파이프라인과 동작하는 0.0.1(#44, #30).
   - 종료 조건: [스파이크 0002](../spikes/0002-use-cases-on-paper.md)의 유스케이스 6(주문 병합, 루트 삭제), 8(계좌 이체, 새 루트 INSERT), 9(프로필 편집)가 PostgreSQL 위 통합 테스트로 로드 배치 1회와 커밋 배치 1회 안에서, 재시도와 실행 ID를 갖춘 SERIALIZABLE로 통과한다.
-  - 그것이 막고 있는 구현 이슈보다 먼저: #49와 #51을 위한 타입 스파이크(완료: [스파이크 0006](../spikes/0006-parent-fk-and-column-operands.md)); 결정 #48, #54, #57, #58, #59, #60, #61, #63과 #48, #57, #59, #60의 형태를 위한 별도 타입 스파이크(완료: [스파이크 0007](../spikes/0007-phase-1a-type-shapes.md); 메인테이너가 2026-11-26에 `owns_many`, 새 루트의 owned 자식에 대한 후보 B, `Entity.where`의 필수 술어를 정했다. 첫 번째 후속 ADR인 [ADR-0010](../adr/0010-writes-beyond-set.md)(2026-11-26 수락, `.set` 너머의 쓰기, #57과 #60)은 §4.2-4.4 / 4.6 / 4.8 / 4.12 / 8.2 / 8.3 / 10.7 / 10.12를 바꾸고 1a 종료 조건의 유스케이스 6, 8, 9를 막고 있다. 두 번째인 [ADR-0011](../adr/0011-row-set-loads.md)(제안됨, #59)은 §4.7과 §8.2의 의존 로드를 바꾸고, 상수 술어를 쓴 부분 `.where` 로드는 유지한다), 그리고 이 결정들이 요구하는 ADR(그중 하나는 #61의 실행 예산); #65 이후의 ADR-0007; #63이 스키마를 고정하기 전에 실행 ID 테이블의 정리 비용(#72). 이 결정들이 구현 이슈에 더하는 것은 각 결정을 따른다.
+  - 그것이 막고 있는 구현 이슈보다 먼저: #49와 #51을 위한 타입 스파이크(완료: [스파이크 0006](../spikes/0006-parent-fk-and-column-operands.md)); 결정 #48, #54, #57, #58, #59, #60, #61, #63과 #48, #57, #59, #60의 형태를 위한 별도 타입 스파이크(완료: [스파이크 0007](../spikes/0007-phase-1a-type-shapes.md); 메인테이너가 2026-11-26에 `owns_many`, 새 루트의 owned 자식에 대한 후보 B, `Entity.where`의 필수 술어를 정했다. 첫 번째 후속 ADR인 [ADR-0010](../adr/0010-writes-beyond-set.md)(2026-11-26 수락, `.set` 너머의 쓰기, #57과 #60)은 §4.2-4.4 / 4.6 / 4.8 / 4.12 / 8.2 / 8.3 / 10.7 / 10.12를 바꾸고 1a 종료 조건의 유스케이스 6, 8, 9를 막고 있다. 두 번째인 [ADR-0011](../adr/0011-row-set-loads.md)(2026-11-26 수락됨, #59)은 §4.7과 §8.2의 의존 로드를 바꾸고, 상수 술어를 쓴 부분 `.where` 로드는 유지한다), 그리고 이 결정들이 요구하는 ADR(그중 하나는 #61의 실행 예산); #65 이후의 ADR-0007; #63이 스키마를 고정하기 전에 실행 ID 테이블의 정리 비용(#72). 이 결정들이 구현 이슈에 더하는 것은 각 결정을 따른다.
   - `expected_version`, `VersionMismatch`, owned 자식 변경 시 루트 `version` 증가는 #11, #13, #15, #17에 속한다. outbox가 들어오기 전(#23)까지 이벤트를 내는 유스케이스는 조용히 버리지 않고 거부한다. 시점(seal 또는 실행)은 #21에서 정한다.
 - **Phase 1b - Events, queries and tooling**: inline 프로젝션과 outbox 로그(#23), Query 경로(TypedSQL, #24), 스키마 도구(선택 extra, #25, CLI #26), 테스트 키트(#27), §9.5 측정(#28), 테스트로서의 문서 예제(#29). 종료 조건: 도입 3단계(§6).
   - 1b에 함께 들어가는 것: 집합 로드 구현(#59와 [ADR-0011](../adr/0011-row-set-loads.md)을 따름), #23 전에 outbox 로그의 정리 비용(#73), SSI 부하에서 `53200`의 분류(#74. 아무것도 막지 않으며, 그때까지는 재시도하지 않고 `DatabaseError`로 드러난다).
