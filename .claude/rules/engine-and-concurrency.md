@@ -53,7 +53,7 @@ been wrong on paper (design section 9), so prefer a measurement over an argument
    taking it), batched; cycles are reported (`CommitCycle`), not guessed. A root's `.delete()`
    is one engine-issued statement per root table that deletes its owned relations by the root key
    and the root (never `ON DELETE CASCADE`), planned with the row changes after every change that
-   removes a reference into the aggregate (ADR-0010, Proposed; design 10.7).
+   removes a reference into the aggregate (ADR-0010; design 10.7).
 7. **Workers and dispatchers** (`then`, `@process`): leases are taken in short READ COMMITTED
    transactions with `SKIP LOCKED`; external I/O never runs while a transaction (and its xid) is
    open; completion and fencing are the job-ID-as-run-ID `run_claim` INSERT; at most one in-flight

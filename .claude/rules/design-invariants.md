@@ -38,7 +38,7 @@ these off, pick by this order and say so in the commit body or ADR.
   passed around, no transaction API inside a use case.
 - **Configuration never changes meaning.** If behaviour differs, the name (syntax) differs. Never
   add a flag that makes the same code mean something else.
-- **One way to do each thing.** Writes, one verb per operation (ADR-0010, Proposed): a loaded
+- **One way to do each thing.** Writes, one verb per operation (ADR-0010): a loaded
   row is modified with `.set(Column op)` and deleted with `.delete()`, a new row is written with
   `insert(entity, *children)`; the rows of an `owns_many` relation only through their root
   (`Order.items.add/update/remove`), every other row directly. Creation: the keyword constructor

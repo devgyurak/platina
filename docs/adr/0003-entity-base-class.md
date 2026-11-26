@@ -90,7 +90,7 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
   another parent's key. Reading the key before the child is added is open (#76). Owned children
   of a new root are added in `insert(t, Transfer.legs.add(...))` and a relation that is not owned
   has no `add` (ADR-0010). Moving an existing child to another parent still type-checks
-  (`Item.order_id.to(...)`, spike 0006 O9) and is open (#9); ADR-0010 proposes that seal checks
+  (`Item.order_id.to(...)`, spike 0006 O9) and is open (#9); ADR-0010 decides that seal checks
   `owns_many` and `parent_fk` against each other.
 - Section 10.8 generates a slots class per entity at seal; with a base class this needs a metaclass
   `__new__` (or a separate snapshot class), since `__init_subclass__` cannot add `__slots__`.

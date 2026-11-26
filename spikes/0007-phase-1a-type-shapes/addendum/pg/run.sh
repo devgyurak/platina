@@ -26,4 +26,5 @@ run q4 3                 # F4: versioned root DELETE matching zero rows
 run q4pipe 3             # F4 in pipeline mode
 run n1_cte 3             # N1: one CTE statement for cascade + root
 run n2_race 3            # N2: child INSERT + root bump racing the deleter
+run n3_review 3           # N3: two root tables referencing each other; a non-owned insert racing the delete
 echo "logs in $W"

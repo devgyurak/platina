@@ -1,4 +1,4 @@
-<!-- i18n: source=docs/design/design.md source-sha256=86c2af619a0c translation-sha256=14c6bbfe402c -->
+<!-- i18n: source=docs/design/design.md source-sha256=68f3b759ac97 translation-sha256=1c64baaeacda -->
 # Platina 설계 문서
 
 > **Platina**: 백금(platinum)의 옛 스페인어 이름. 백금이 산에도 녹지 않고 반응하지 않듯, 도메인 코드는 DB와 반응하지 않는다.
@@ -23,7 +23,7 @@
 | 기본 격리 수준 | Command는 **SERIALIZABLE + 자동 재시도**(SSI의 읽기/쓰기 의존성 실패에서의 탈출구는 REPEATABLE READ + version), Query는 READ COMMITTED |
 | 외부 IO | 유스케이스 안에서는 금지. 외부 IO는 **process 핸들러**에서만 |
 | 합성 | 단계는 **`with chain(a, b) as (c, a, b)`**로만. 최신 상태 뷰로 같은 이름 재바인딩, 별칭은 이동 표시로 차단. `+`는 한 단계 안에서만 |
-| 호출·쓰기 | `app.run(uc.bind(...), 옵션)`. ref는 타입상 엔티티인 자리표시자(JPA `getReference`, `.set` 불가). 엔티티는 `Entity`를 상속하고, 필드는 `Col[T]`이며 클래스에서는 `Column[Owner, T]`로 읽힌다. 생성은 키워드 생성자 `Order(...)`. 로드한 행은 `.set(Order.status.to(...))`로 수정하고 `.delete()`로 삭제하며, 새 행은 `insert(order, *children)`로 쓴다. owned 행은 루트를 통해서만 쓴다([ADR-0010](../adr/0010-writes-beyond-set.md), Proposed). 임베디드 경로는 `Order.total.path(Money.amount)` |
+| 호출·쓰기 | `app.run(uc.bind(...), 옵션)`. ref는 타입상 엔티티인 자리표시자(JPA `getReference`, `.set` 불가). 엔티티는 `Entity`를 상속하고, 필드는 `Col[T]`이며 클래스에서는 `Column[Owner, T]`로 읽힌다. 생성은 키워드 생성자 `Order(...)`. 로드한 행은 `.set(Order.status.to(...))`로 수정하고 `.delete()`로 삭제하며, 새 행은 `insert(order, *children)`로 쓴다. owned 행은 루트를 통해서만 쓴다([ADR-0010](../adr/0010-writes-beyond-set.md)). 임베디드 경로는 `Order.total.path(Money.amount)` |
 | 커밋 순서 | FK·유니크 키 의존성 그래프 위상 정렬 + 배치 |
 | 왕복 | 로드 배치 1회 + 커밋 배치 1회(쓰기·COMMIT·LSN 조회까지) |
 | 실행 ID | 모든 `app.run`에 실행 ID(호출자 멱등 키 또는 자동 uuid7). 조회 없이 INSERT로 선점 → 멱등성과 커밋 결과 판정(재실행)을 하나로 |
@@ -96,7 +96,7 @@ N+1, `MissingGreenlet`, expire 사고, 흐릿한 레이어 경계, DB 없이 테
 - **경계는 라이브러리가 소유**: 세션을 인자로 들고 다니지 않는다. 유스케이스 = 트랜잭션.
 - **순수/비순수의 두 종류만 존재**: 유스케이스(순수)와 process 핸들러(외부 IO 허용). 그 중간은 없다.
 - **설정으로 의미를 바꾸지 않는다**: 같은 코드가 옵션에 따라 다르게 동작하는 기능은 두지 않는다. 의미가 다르면 이름(문법)을 다르게 한다.
-- **방법은 하나만**: 연산마다 하나다. 로드한 행은 `.set(...)`으로 수정하고 `.delete()`로 삭제하며, 새 행은 `insert(...)`로 쓴다([ADR-0010](../adr/0010-writes-beyond-set.md), Proposed). 단계 합성은 `chain`, 실행은 `app.run`/`app.query`. 같은 일을 하는 두 번째 문법을 두지 않는다.
+- **방법은 하나만**: 연산마다 하나다. 로드한 행은 `.set(...)`으로 수정하고 `.delete()`로 삭제하며, 새 행은 `insert(...)`로 쓴다([ADR-0010](../adr/0010-writes-beyond-set.md)). 단계 합성은 `chain`, 실행은 `app.run`/`app.query`. 같은 일을 하는 두 번째 문법을 두지 않는다.
 - **감지보다 제거**: 실수를 사후에 감지하는 장치를 붙이기보다, 실수가 생길 수 있는 구조를 빼거나 타입 에러로 만든다.
 - **SQL은 1급 시민**: ORM은 SQL을 숨기지 않고 쓰기 편하게 만든다.
 - **문자열 대신 참조, 런타임 대신 코드젠**.
@@ -287,9 +287,9 @@ class OrderPaid:
 - **모든 필드는 `Col[T]`로 선언한다.** 평범한 어노테이션(`status: OrderStatus = column(...)`)으로는 타입 체커가 클래스 접근(`Order.status`)도 `OrderStatus`로 본다. 클래스에서는 `Column[Order, OrderStatus]`(컬럼이 자신을 선언한 클래스를 안다), 인스턴스에서는 `OrderStatus`로 보이려면 어노테이션 자체가 디스크립터 타입이어야 한다. SQLAlchemy 2.0이 `Mapped[T]`를 쓰는 이유와 같다. 이벤트 필드와 값 객체 필드도 마찬가지다(프로젝션 키의 `OrderPaid.user_id`, 임베디드 경로의 `Money.amount`, ADR-0004).
 - **스냅샷은 불변이다.** `order.status = PAID`는 에러이고, 쓰기는 오직 `.set(...)`, `insert(...)`, `.delete()`로 한다(§4.4). 컬렉션 필드는 인스턴스에서 읽기 전용 `Sequence[Item]`이다.
 - **생성은 키워드 생성자다**: `Order(number="A-1", total=..., user_id=...)`. 이벤트, 값과 같다. 필수 필드 누락은 두 체커 모두에서 타입 에러이고, 생성되는 키, `version_column()`, 서버 기본값, 관계, owned 자식의 부모 키는 파라미터가 아니다(§8.2 "생성 문법", ADR-0003).
-- **owned 자식의 키는 부모가 채운다.** 자식은 이 키를 `parent_fk(lambda: Order)`(작업용 이름. 최종 이름은 #9에서 정한다)로 선언하므로, `Item(sku=..., price=..., position=...)`은 `order_id`를 받지 않고 `Order.items.add(item)`이 그 키를 채운다. 키를 넘기면 두 체커 모두에서 타입 에러이므로, 새 자식을 다른 부모의 키로 만들 수 없다. owned가 아닌 관계의 자식은 키를 `fk`로 선언하고 다른 컬럼처럼 생성자에 넘긴다(#49, [스파이크 0006](../spikes/0006-parent-fk-and-column-operands.md)). 새 루트의 owned 자식은 `insert(t, Transfer.legs.add(...))`에서 추가하고, owned가 아닌 관계에는 `add`가 없다(§4.4, [ADR-0010](../adr/0010-writes-beyond-set.md)). seal은 `owns_many`, `parent_fk`, `aggregate_root=True`를 서로 대조해 검사한다([ADR-0010](../adr/0010-writes-beyond-set.md), Proposed. 최종 이름은 #9에서 정한다). 두 선언은 모두 남는다. 자식의 생성자에는 자신의 필드 지정자가 필요하고, 루트의 연산에는 `Owned[...]` 어노테이션이 필요하기 때문이다. 미결: 아직 추가되지 않은 자식의 키 읽기(#76), 여전히 타입 검사를 통과하는, 기존 자식을 다른 부모로 옮기는 일(자식 갱신이나 집합 변경 안의 `Item.order_id.to(...)`. 스파이크 0006 O9)(#9). 로드한 자식의 `add`는 `UsageError`다([ADR-0010](../adr/0010-writes-beyond-set.md), Proposed).
+- **owned 자식의 키는 부모가 채운다.** 자식은 이 키를 `parent_fk(lambda: Order)`(작업용 이름. 최종 이름은 #9에서 정한다)로 선언하므로, `Item(sku=..., price=..., position=...)`은 `order_id`를 받지 않고 `Order.items.add(item)`이 그 키를 채운다. 키를 넘기면 두 체커 모두에서 타입 에러이므로, 새 자식을 다른 부모의 키로 만들 수 없다. owned가 아닌 관계의 자식은 키를 `fk`로 선언하고 다른 컬럼처럼 생성자에 넘긴다(#49, [스파이크 0006](../spikes/0006-parent-fk-and-column-operands.md)). 새 루트의 owned 자식은 `insert(t, Transfer.legs.add(...))`에서 추가하고, owned가 아닌 관계에는 `add`가 없다(§4.4, [ADR-0010](../adr/0010-writes-beyond-set.md)). seal은 `owns_many`, `parent_fk`, `aggregate_root=True`를 서로 대조해 검사한다([ADR-0010](../adr/0010-writes-beyond-set.md). 최종 이름은 #9에서 정한다). 두 선언은 모두 남는다. 자식의 생성자에는 자신의 필드 지정자가 필요하고, 루트의 연산에는 `Owned[...]` 어노테이션이 필요하기 때문이다. 미결: 아직 추가되지 않은 자식의 키 읽기(#76), 여전히 타입 검사를 통과하는, 기존 자식을 다른 부모로 옮기는 일(자식 갱신이나 집합 변경 안의 `Item.order_id.to(...)`. 스파이크 0006 O9)(#9). 로드한 자식의 `add`는 `UsageError`다([ADR-0010](../adr/0010-writes-beyond-set.md)).
 - **동등성**(#54): 두 스냅샷은 엔티티 타입이 같고 모든 컬럼 값(임베디드 값 포함)이 같으면 같다. 관계와 무엇이 로드됐는지는 비교하지 않는다. 아직 값이 없는 컬럼(서버 기본값이나 새 엔티티의 `identity` 키)은 양쪽 모두 값이 없을 때만 같다. 해시는 엔티티 타입과 기본 키다. ref에 대한 `==`와 `hash()`는 `UnloadedReference`를 낸다(ADR-0003 Decision 4). 아직 추가되지 않은 owned 자식의 부모 키(`add` 전의 `parent_fk`)에도 값이 없다. 동등성과 해시가 이를 어떻게 다룰지는 #76에서 정한다.
-- **`owns_many(...)`**(어노테이션 `Owned[list[Item]]`)는 집계에 속한 자식을 선언한다. 자식이 바뀌면 루트의 `version`도 함께 오른다(JPA `OPTIMISTIC_FORCE_INCREMENT`). 그래서 편집 화면이 주문과 항목을 같이 다룰 때 항목만 바뀐 경우도 요청 사이 낙관적 락(§4.6)에 걸린다. owned 관계의 행은 루트를 통해서만 쓰고, 루트를 삭제하면 함께 삭제된다(§4.4). 일반 FK 자식(예: 게시글의 댓글)은 `one_to_many(...)`로 `Rel[list[...]]`를 선언한다. 이들은 루트를 건드리지 않고, 관계에 쓰기 연산이 없으며, 직접 쓴다(`insert(Comment(post_id=...))`). `owned=` 플래그는 없다. 동작이 다르므로 이름이 다르다([ADR-0010](../adr/0010-writes-beyond-set.md)). [ADR-0010](../adr/0010-writes-beyond-set.md)의 제안(Proposed): 소유는 한 단계 깊이다. `aggregate_root=True` 클래스만 `owns_many`를 선언하므로, owned 자식은 스스로 아무것도 소유하지 않는다.
+- **`owns_many(...)`**(어노테이션 `Owned[list[Item]]`)는 집계에 속한 자식을 선언한다. 자식이 바뀌면 루트의 `version`도 함께 오른다(JPA `OPTIMISTIC_FORCE_INCREMENT`). 그래서 편집 화면이 주문과 항목을 같이 다룰 때 항목만 바뀐 경우도 요청 사이 낙관적 락(§4.6)에 걸린다. owned 관계의 행은 루트를 통해서만 쓰고, 루트를 삭제하면 함께 삭제된다(§4.4). 일반 FK 자식(예: 게시글의 댓글)은 `one_to_many(...)`로 `Rel[list[...]]`를 선언한다. 이들은 루트를 건드리지 않고, 관계에 쓰기 연산이 없으며, 직접 쓴다(`insert(Comment(post_id=...))`). `owned=` 플래그는 없다. 동작이 다르므로 이름이 다르다([ADR-0010](../adr/0010-writes-beyond-set.md)). [ADR-0010](../adr/0010-writes-beyond-set.md)에서 정했다: 소유는 한 단계 깊이다. `aggregate_root=True` 클래스만 `owns_many`를 선언하므로, owned 자식은 스스로 아무것도 소유하지 않는다.
 - **클라이언트 생성 ID가 기본값이다.** Python 3.14의 `uuid.uuid7()` 덕분에 순수 함수 안에서 새 엔티티의 ID를 안다. `generated="identity"`도 지원하지만, 그 경우 ID는 커밋 결과(`result.created(Order)`)로만 얻는다. 코어는 `uuid7()`을 직접 부르지 않는다. `Order(...)`는 엔진이 호출마다 설치한 소스에서 ID를 받고, 테스트의 직접 호출과 `Order.stub()`은 결정적인 대체 시퀀스를 쓰며, 유스케이스나 step 밖에서 부른 `Order(...)`는 `UsageError`다(ADR-0002). SERIALIZABLE에서 계속 커지는 키(uuid7, identity)는 테이블의 최근 행을 읽고(새 부모를 가리키는 자식의 외래 키 검사 포함) 같은 테이블에 INSERT하는 커맨드끼리 충돌하게 만든다. [ADR-0007](../adr/0007-ever-increasing-entity-keys.md)(Proposed)은 무작위 기본값을 제안한다.
 - 다른 클래스를 참조하는 곳은 `lambda`로 늦게 평가한다. 문자열 참조는 쓰지 않는다.
 - 테스트용 인스턴스는 `Order.stub(...)`.
@@ -356,7 +356,7 @@ orders, wallets = OrderRepo(), WalletRepo()
 
 ### 4.4 쓰기 문법: `.set`, `insert`, `.delete()`
 
-> 메인테이너가 #57과 #60에서 결정했고(2026-11-26) [ADR-0010](../adr/0010-writes-beyond-set.md)에 정리했다. *(Proposed)*로 표시한 규칙은 그 ADR의 제안이며, 메인테이너가 수락하기를 기다린다.
+> 메인테이너가 #57과 #60에서 [ADR-0010](../adr/0010-writes-beyond-set.md)으로 결정했다(2026-11-26 수락).
 
 | 연산 | 의미 | 생성 SQL |
 |---|---|---|
@@ -364,10 +364,10 @@ orders, wallets = OrderRepo(), WalletRepo()
 | `Wallet.balance.path(Money.amount).add(n)` | 임베디드 값 일부의 DB 쪽 증감 (현재 값을 읽지 않음. 같은 행을 동시에 쓰는 쪽끼리는 여전히 40001로 충돌, ADR-0005) | `SET balance_amount = balance_amount + $1` |
 | `Order.items.add(item)` | owned 관계에 새 자식 추가. 부모가 자식의 `parent_fk` 키를 채운다(§4.2) | `INSERT` + 루트 version 증가 |
 | `Order.items.remove(item)` | owned 관계의 로드한 자식 삭제 | `DELETE` + 루트 version 증가 |
-| `Order.items.update(item, Item.price.to(p))` | owned 관계의 로드한 자식 갱신. 컬럼 연산만 *(Proposed: 소유는 한 단계 깊이)* | `UPDATE` + 루트 version 증가 |
+| `Order.items.update(item, Item.price.to(p))` | owned 관계의 로드한 자식 갱신. 컬럼 연산만(소유는 한 단계 깊이) | `UPDATE` + 루트 version 증가 |
 | `insert(payment)` | 새 행 하나 삽입. 컬럼 값은 생성자에서 온다 | `INSERT` |
 | `insert(t, Transfer.legs.add(leg), ...)` | 새 루트를 그 owned 자식과 함께 삽입 (`add`만) | 루트의 `INSERT`, 그다음 자식의 `INSERT` |
-| `order.delete()` | 로드한 행 삭제. 루트라면 그 owned 관계의 모든 행도 (*Proposed:* 로드 여부와 무관) | 엔진이 내는 `DELETE`: 루트 키로 owned 관계를, 그리고 루트를 (*Proposed:* §10.7) |
+| `order.delete()` | 로드한 행 삭제. 루트라면 그 owned 관계의 모든 행도(로드 여부와 무관) | 루트 키로 owned 관계와 루트를 삭제하는, 엔진이 내는 문장 하나(§10.7) |
 
 ```python
 order.set(Order.status.to(OrderStatus.PAID), Order.paid_at.to(now))   # 로드한 행
@@ -382,10 +382,10 @@ user.set(User.addresses.add(Address(line1=..., city=...)), User.addresses.update
 ```
 
 - **연산마다 동사 하나.** `.set`은 로드한 스냅샷을 수정한다(컬럼 연산, 그리고 그 스냅샷의 owned 관계에 대한 관계 연산). `insert`는 새 행을 쓰고, `.delete()`는 로드한 행을 삭제한다. 생성, 수정, 삭제는 서로 다른 연산이다(ADR-0003). `insert_all`은 대량 경로로, 또 다른 연산이다(§4.8).
-- **owned 행은 루트를 통해서만 쓴다.** `owns_many` 관계의 행은 루트의 `version`을 올리는 `Order.items.add / update / remove`로 쓴다. 그 밖의 행은 모두 직접 쓴다: `insert(Payment(...))`, `payment.set(...)`, `payment.delete()`. owned가 아닌 관계에는 쓰기 연산이 없다. `Order.payments.add(...)`는 두 체커 모두에서 타입 에러다(스파이크 0007). *(Proposed)* owned 자식을 직접 쓰는 것 - `item.set(...)`, `item.delete()`, `insert(Item(...))` - 은 그 호출에서 `UsageError`이고, 대신 쓸 루트 연산을 알려 준다.
-- **새 엔티티, 로드한 엔티티, ref**는 한 타입을 공유하므로, 이들의 오용은 호출 시점에 검사하는 런타임 규칙이다. 결정됨: 새 엔티티에 대한 `.set`은 `UsageError`다(값은 생성자에, owned 자식은 `insert`에 넣는다). ref에 대한 `.set`과 `.delete()`는 `UnloadedReference`를 낸다. 단계에서 만들고 끝내 삽입하지 않은 엔티티는 그 단계가 반환할 때 `UsageError`다. *(Proposed)* 새 엔티티의 `.delete()`, 로드한 스냅샷이나 stub의 `insert`, 로드한 스냅샷의 `add`, 새 엔티티나 다른 루트의 자식에 대한 `update` / `remove`, 커밋 전 새 엔티티의 `identity` 키 읽기는 `UsageError`다. ref의 `insert`, `add`, `update`, `remove`는 `UnloadedReference`를 낸다. 빈 `.set()`이나 연산 없는 `update(item)`은 아무것도 바꾸지 않고 `version`도 올리지 않는다. `identity` 키를 가진 루트의 owned 자식은 Phase 1a에서 거부한다. 새 루트의 자식에는 `RETURNING`으로 받는 루트의 키가 필요하기 때문이다(*Proposed:* `owns_many`를 선언한 `identity` 키 클래스는 `SealError`). 전체 표는 ADR-0010에 있다.
-- **삭제.** `order.delete()`는 루트와 그 owned 관계의 모든 행을 삭제한다(*Proposed:* 유스케이스가 그 행들을 로드했는지와 무관하게). owned가 아닌 행은 건드리지 않으므로, 삭제된 행을 여전히 참조하는 행이 있으면 커밋이 `ForeignKeyViolation`으로 실패한다(§10.12). 같은 유스케이스에서 그 행을 먼저 삭제하거나 다른 행을 가리키게 한다. DELETE는 엔진이 낸다(`ON DELETE CASCADE` 없음). *(Proposed)* 삭제되는 루트의 테이블마다 문장 하나가 모든 owned 관계와 루트를 삭제한다: `WITH c1 AS (DELETE FROM items WHERE order_id = ANY($1)), ... DELETE FROM orders WHERE id = ANY($1)`. 그래서 루트가 자기 owned 테이블을 가리키는 FK(`User.default_address_id`)와 owned 테이블 사이의 FK에는 순서가 필요 없고(NO ACTION FK는 문장 전체가 끝난 뒤 검사한다. PostgreSQL 18), 이 문장은 집계 안을 가리키는 참조를 없애는 모든 변경 뒤에 실행된다(§10.7). `expected_version`은 모든 쓰기와 마찬가지로 로드에서 검사하고, DELETE는 UPDATE처럼 기본 키로 한다. 삭제되는 루트에 대한 동시 `add`는 SERIALIZABLE에서도 REPEATABLE READ에서도 재시도되는 `40001`이다(`add`가 루트의 `version`을 올린다). 이 경합을 `ForeignKeyViolation`으로 바꿀 수 있는 것은 그 증가를 건너뛰거나 READ COMMITTED로 실행하는 Platina 밖의 쓰기 쪽뿐이다. 한 단계 안에서 한 스냅샷의 삭제와 `.set`은 `ConflictingWrites`다. `chain`에서 앞 단계의 `.set`과 뒤 단계의 `.delete()`는 삭제를 남긴다. 집합 단위의 `Order.where(...).delete()`는 집계 규칙을 결코 조용히 건너뛰지 않는다. 그 규칙을 어떻게 지키는지는 #33에서 정한다. 삭제된 집계의 이벤트는 #23에서 정한다.
-- **연산 모으기.** 관계 연산(`RelOp[Order]`)은 컬럼 연산(`Op[Order]`)이 아니므로, 집합 변경은 이를 타입으로 거부한다. 한 `.set`을 위해 둘을 모으는 리스트는 `list[Op[Order] | RelOp[Order]]`다 - *(Proposed)* 공개 별칭을 둔 `list[Write[Order]]`.
+- **owned 행은 루트를 통해서만 쓴다.** `owns_many` 관계의 행은 루트의 `version`을 올리는 `Order.items.add / update / remove`로 쓴다. 그 밖의 행은 모두 직접 쓴다: `insert(Payment(...))`, `payment.set(...)`, `payment.delete()`. owned가 아닌 관계에는 쓰기 연산이 없다. `Order.payments.add(...)`는 두 체커 모두에서 타입 에러다(스파이크 0007). owned 자식을 직접 쓰는 것 - `item.set(...)`, `item.delete()`, `insert(Item(...))` - 은 그 호출에서 `UsageError`이고, 대신 쓸 루트 연산을 알려 준다.
+- **새 엔티티, 로드한 엔티티, ref**는 한 타입을 공유하므로, 이들의 오용은 호출 시점에 검사하는 런타임 규칙이다: 새 엔티티에 대한 `.set`은 `UsageError`다(값은 생성자에, owned 자식은 `insert`에 넣는다). ref에 대한 `.set`과 `.delete()`는 `UnloadedReference`를 낸다. 단계에서 만들고 끝내 삽입하지 않은 엔티티는 그 단계가 반환할 때 `UsageError`다. 새 엔티티의 `.delete()`, 로드한 스냅샷이나 stub의 `insert`, 로드한 스냅샷의 `add`, 새 엔티티나 다른 루트의 자식에 대한 `update` / `remove`, 커밋 전 새 엔티티의 `identity` 키 읽기는 `UsageError`다. ref의 `insert`, `add`, `update`, `remove`는 `UnloadedReference`를 낸다. 빈 `.set()`이나 연산 없는 `update(item)`은 아무것도 바꾸지 않고 `version`도 올리지 않는다. `identity` 키를 가진 루트의 owned 자식은 Phase 1a에서 거부한다. 새 루트의 자식에는 `RETURNING`으로 받는 루트의 키가 필요하기 때문이다(`owns_many`를 선언한 `identity` 키 클래스는 `SealError`). 전체 표는 ADR-0010에 있다.
+- **삭제.** `order.delete()`는 유스케이스가 그 행들을 로드했는지와 무관하게 루트와 그 owned 관계의 모든 행을 삭제한다. owned가 아닌 행은 건드리지 않으므로, 삭제된 행을 여전히 참조하는 행이 있으면 커밋이 `ForeignKeyViolation`으로 실패한다(§10.12). 같은 유스케이스에서 그 행을 먼저 삭제하거나 다른 행을 가리키게 한다. DELETE는 엔진이 낸다(`ON DELETE CASCADE` 없음). 삭제되는 루트의 테이블마다 문장 하나가 모든 owned 관계와 루트를 삭제한다: `WITH c1 AS (DELETE FROM items WHERE order_id = ANY($1)), ... DELETE FROM orders WHERE id = ANY($1)`. 그래서 루트가 자기 owned 테이블을 가리키는 FK(`User.default_address_id`)와 owned 테이블 사이의 FK에는 순서가 필요 없고(NO ACTION FK는 문장 전체가 끝난 뒤 검사한다. PostgreSQL 18), 이 문장은 집계 안을 가리키는 참조를 없애는 모든 변경 뒤에 실행된다(§10.7). `expected_version`은 모든 쓰기와 마찬가지로 로드에서 검사하고, DELETE는 UPDATE처럼 기본 키로 한다. 삭제되는 루트에 대한 동시 `add`는 SERIALIZABLE에서도 REPEATABLE READ에서도 재시도되는 `40001`이다(`add`가 루트의 `version`을 올린다). 이 경합을 `ForeignKeyViolation`으로 바꿀 수 있는 것은 그 증가를 건너뛰거나 READ COMMITTED로 실행하는 Platina 밖의 쓰기 쪽뿐이다. owned가 아닌 행의 동시 삽입(`insert(Payment(order_id=...))`. `version`을 올리지 않는다)은, 그것이 먼저 커밋하면 어느 수준에서든 삭제 쪽에 `ForeignKeyViolation`을 주고, 삭제가 먼저 커밋하면 그 자신이 `40001`을 받는다. `ForeignKeyViolation`은 재시도하지 않는다. 재시도해도 커밋된 그 행을 다시 만나기 때문이다. 한 단계 안에서 한 스냅샷의 삭제와 `.set`은 `ConflictingWrites`다. `chain`에서 앞 단계의 `.set`과 뒤 단계의 `.delete()`는 삭제를 남긴다. 집합 단위의 `Order.where(...).delete()`는 집계 규칙을 결코 조용히 건너뛰지 않는다. 그 규칙을 어떻게 지키는지는 #33에서 정한다. 삭제된 집계의 이벤트는 #23에서 정한다.
+- **연산 모으기.** 관계 연산(`RelOp[Order]`)은 컬럼 연산(`Op[Order]`)이 아니므로, 집합 변경은 이를 타입으로 거부한다. 한 `.set`을 위해 둘을 모으는 리스트는 `list[Op[Order] | RelOp[Order]]`이고, 공개 별칭 `Write[O]`(작업용 이름. 최종 이름은 #13에서 정한다)로 `list[Write[Order]]`라고 쓴다.
 - 필드 이름은 속성 참조라 오타가 타입 에러가 되고, 값 타입도 검사된다. 연산은 자신이 속한 엔티티도 함께 지닌다. `order.set(Wallet.balance.to(m))`, `Order.where(...)` 안의 다른 엔티티 연산이나 `Order.items.update(item, ...)` 안의 다른 엔티티 연산, 잘못된 타입의 자식은 타입 에러다(ADR-0004).
 - 한 단계 안에서는 `+`로 변경을 모은다: `order.set(...) + wallet.set(...) + emit(...)`. 한 함수는 하나의 스냅샷만 보므로 오래된 값을 읽을 여지가 없다. 같은 필드를 두 번 쓰면 `ConflictingWrites`다.
 - **임베디드 경로**는 `Order.total.path(Money.amount)`(`Column[Order, Decimal]`)로 쓴다. 다른 클래스의 필드를 넘기면 타입 에러다. 값 객체의 일부는 경로를 통해 증감하고(`Wallet.balance.path(Money.amount).add(n)`), 값 전체는 `Order.total.to(Money(...))`로 쓴다. `Order.total.amount`는 제네릭 컬럼으로 타입을 붙일 수 없고, 값 객체에 두 번째 증감 문법을 두는 안은 기각했다(ADR-0004).
@@ -511,7 +511,7 @@ def checkout(order: PayableOrder, coupon: Annotated[Coupon, Load()],
 - **이동 표시**는 별칭 방어용으로 남는다. `o = order`처럼 chain 전에 만든 별칭으로 필드를 읽으면 `MovedSnapshotAccess`다. 변경 전 값이 필요하면 `c.original(order)`.
 - **블록을 벗어난 뒤**: 뷰는 최종 상태로 고정되어 **읽기는 허용**(`Changes.returning(order.total)` 등), **`.set`과 `.delete()`는 에러**다. 블록 밖의 쓰기는 `c.changes`에 들어가지 않고 조용히 사라지기 때문이다.
 - `c.changes`는 원래 스냅샷 대비 최종 차이로 합쳐진다. 이벤트는 발생 순서대로 모두 남는다.
-- **chain 안의 삽입과 삭제**([ADR-0010](../adr/0010-writes-beyond-set.md), Proposed): 앞 단계의 `.set`과 뒤 단계에서 같은 행의 `.delete()`는 삭제를 남기고, 앞 단계가 그 루트의 owned 자식에 한 연산은 버려진다(연쇄 삭제가 이를 덮는다). 앞 단계가 삭제한 행에 쓰면 `UsageError`이고, 그 뷰를 읽는 것은 여전히 허용된다. 새 엔티티는 chain 뷰가 아니다. 새 엔티티에 대한 `.set`과 `.delete()`는 어느 단계에서든 `UsageError`이므로, 새 엔티티를 만드는 단계가 그 owned 자식 전부와 함께 삽입한다.
+- **chain 안의 삽입과 삭제**([ADR-0010](../adr/0010-writes-beyond-set.md)): 앞 단계의 `.set`과 뒤 단계에서 같은 행의 `.delete()`는 삭제를 남기고, 앞 단계가 그 루트의 owned 자식에 한 연산은 버려진다(연쇄 삭제가 이를 덮는다). 앞 단계가 삭제한 행에 쓰면 `UsageError`이고, 그 뷰를 읽는 것은 여전히 허용된다. 새 엔티티는 chain 뷰가 아니다. 새 엔티티에 대한 `.set`과 `.delete()`는 어느 단계에서든 `UsageError`이므로, 새 엔티티를 만드는 단계가 그 owned 자식 전부와 함께 삽입한다.
 - **단계끼리 `+`는 타입 에러다.** 단계 호출 결과(`StepResult`)에는 `+`가 없다. 데코레이터 없는 헬퍼끼리의 `+`는 린트(`PRL001`)로 잡는다.
 
 #### 커밋 후 별도 트랜잭션 (JPA `REQUIRES_NEW`, `AFTER_COMMIT`에 해당)
@@ -565,13 +565,13 @@ async with app.read(consistency="snapshot") as r:                    # REPEATABL
 | 호출자 키를 다른 인자로 재사용 (재생 경로에서 핑거프린트 불일치) | `IdempotencyKeyReuse`, 재시도 없음 (#58) |
 | 호출자 키와 함께 정규 직렬화가 없는 인자 | 아무것도 실행하기 전에 `app.run`이 `UsageError` (#58) |
 | COMMIT 중 연결 끊김 | 같은 실행 ID로 재실행 (위 참조) |
-| ref의 필드 읽기 / ref에 `.set`이나 `.delete()` / ref에 `==`나 `hash()` (*Proposed:* ref의 `insert`, `add`, `update`, `remove`) | `UnloadedReference` |
+| ref의 필드 읽기 / ref에 `.set`이나 `.delete()` / ref에 `==`나 `hash()` (ref의 `insert`, `add`, `update`, `remove`) | `UnloadedReference` |
 | 이동된 원본(별칭)으로 필드 읽기 (`==`, `hash()` 포함) | `MovedSnapshotAccess` |
 | 커밋 전 `identity` 키 새 엔티티의 `hash()` | `UsageError` (ADR-0003) |
 | chain 블록 밖에서 뷰에 `.set`이나 `.delete()` | `ChainClosed` |
-| 한 단계 안에서 같은 필드를 두 번 씀; 한 단계 안에서 한 스냅샷의 `.delete()`와 `.set`(또는 `.delete()` 두 번); *(Proposed)* 한 새 엔티티를 두 번 삽입 | `ConflictingWrites` |
-| 새 엔티티에 `.set`; 끝내 삽입하지 않은 새 엔티티(단계가 반환할 때); `Entity.where(*preds)`에서 언팩한 술어 리스트가 빔; *(Proposed, [ADR-0010](../adr/0010-writes-beyond-set.md))* 새 엔티티에 `.delete()`, 로드한 스냅샷의 `insert`, 로드한 스냅샷의 `add`, 다른 루트의 자식에 대한 `update` / `remove`, owned 자식을 직접 씀(`item.set`, `item.delete()`, `insert(Item(...))`), 새 엔티티의 `identity` 키 읽기, chain의 앞 단계가 삭제한 행에 씀 | 호출 시점에 `UsageError`, 재시도 없음 |
-| 23503 / 23001 외래 키 위반 (삭제된 행을 여전히 참조하는 행, 또는 손으로 넘긴 키가 가리키는 행이 없음) | `ForeignKeyViolation`(`DatabaseError`), 재시도 없음 ([ADR-0010](../adr/0010-writes-beyond-set.md), Proposed) |
+| 한 단계 안에서 같은 필드를 두 번 씀; 한 단계 안에서 한 스냅샷의 `.delete()`와 `.set`(또는 `.delete()` 두 번); 한 새 엔티티를 두 번 삽입 | `ConflictingWrites` |
+| 새 엔티티에 `.set`; 끝내 삽입하지 않은 새 엔티티(단계가 반환할 때); `Entity.where(*preds)`에서 언팩한 술어 리스트가 빔; [ADR-0010](../adr/0010-writes-beyond-set.md)에 따라: 새 엔티티에 `.delete()`, 로드한 스냅샷의 `insert`, 로드한 스냅샷의 `add`, 다른 루트의 자식에 대한 `update` / `remove`, owned 자식을 직접 씀(`item.set`, `item.delete()`, `insert(Item(...))`), 새 엔티티의 `identity` 키 읽기, chain의 앞 단계가 삭제한 행에 씀 | 호출 시점에 `UsageError`, 재시도 없음 |
+| 23503 / 23001 외래 키 위반 (삭제된 행을 여전히 참조하는 행, 또는 손으로 넘긴 키가 가리키는 행이 없음) | `ForeignKeyViolation`(`DatabaseError`), 재시도 없음 ([ADR-0010](../adr/0010-writes-beyond-set.md)) |
 | 같은 유스케이스 안의 집합 변경·행 변경 겹침 (플래너가 해소하는 삭제의 연쇄는 제외, [ADR-0010](../adr/0010-writes-beyond-set.md)) | `IntraUsecaseConflict` |
 | 취소 (클라이언트 끊김, 바깥 cancel scope) | 로드·계산 중이면 롤백. 커밋 배치는 shield돼서 끝까지 진행 |
 
@@ -658,7 +658,7 @@ await app.run_batch(apply_interest)   # 청크마다 커밋, 체크포인트는 
 
 집합 변경의 `emit_each`는 `UPDATE … RETURNING id, version`의 결과로 이벤트 순서 번호를 채워 outbox INSERT에 넘긴다(한 문장의 CTE).
 
-- **`insert_all`은 행이 더 많은 `insert`가 아니다**([ADR-0010](../adr/0010-writes-beyond-set.md)). `insert(entity)`는 파이프라인 커밋 배치 안에서 행 하나를 쓰고, 다른 행 변경처럼 계획된다(§4.4). `insert_all(...)`은 많은 행을 COPY나 청크로, 파이프라인 밖에서, 행 단위 계획 없이 스트리밍한다(#33, 2차). 동작이 다르므로 이름이 다르다. `insert_all`은 owned 자식을 받지 않는다. 이를 추가할 방법이 없고, owned 자식을 넘기면 `UsageError`다(*Proposed*).
+- **`insert_all`은 행이 더 많은 `insert`가 아니다**([ADR-0010](../adr/0010-writes-beyond-set.md)). `insert(entity)`는 파이프라인 커밋 배치 안에서 행 하나를 쓰고, 다른 행 변경처럼 계획된다(§4.4). `insert_all(...)`은 많은 행을 COPY나 청크로, 파이프라인 밖에서, 행 단위 계획 없이 스트리밍한다(#33, 2차). 동작이 다르므로 이름이 다르다. `insert_all`은 owned 자식을 받지 않는다. 이를 추가할 방법이 없고, owned 자식을 넘기면 `UsageError`다.
 
 ### 4.9 TypedSQL과 t-string
 
@@ -778,7 +778,7 @@ def test_merge_deletes_the_source():                       # 스파이크 0002 �
     src, dst = Order.stub(status=PENDING, items=[Item.stub()]), Order.stub(status=PENDING)
     r = merge(src, dst, None)
     assert r.removed(src)       # owned 항목과 티켓도 함께 삭제되며, 행이 아니라 "src의 모든
-                                # owned 자식"으로 기록된다 (Proposed, ADR-0010: src의 로드된 자식에
+                                # owned 자식"으로 기록된다 (ADR-0010: src의 로드된 자식에
                                 # 대해서는 r.removed(item)이 참이고, 로드되지 않은 자식은 나열되지 않는다)
 
 def test_transfer_inserts_the_root_and_its_legs():         # 스파이크 0002 유스케이스 8
@@ -1004,7 +1004,7 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
 - `.pyi` 스텁 생성은 기각했다. 스텁은 생성자만 덧씌우지 못하고 모듈의 타입을 통째로 대신해서, 필드를 추가하고 다시 생성하기 전까지 에디터가 예전 모습을 보여 준다.
 - 엔티티는 타입 수준에서 해시 가능하다(`frozen_default=True`. 이것이 없으면 `{order}`에 대해 pyright와 mypy의 판단이 갈린다). 런타임 규칙(스파이크 9.4의 데이터를 바탕으로 #54에서 결정, ADR-0003 Decision 4): 동등성은 엔티티 타입과 컬럼 값만 비교한다(임베디드 값 포함. 관계와 로드 상태는 비교하지 않으므로, 같은 값을 가진 stub과 로드된 스냅샷은 같고, 한 행을 두 경로로 로드한 두 스냅샷도 같다). 아직 값이 없는 컬럼(서버 기본값이나 새 엔티티의 `identity` 키)은 양쪽 모두 값이 없을 때만 같다. 해시는 엔티티 타입과 기본 키다(`add` 전의 owned 자식의 부모 키에는 아직 값이 없다: #76). ref는 `UnloadedReference`를 내고, `identity` 키를 가진 새 엔티티는 커밋 전에 해시가 없으며(`UsageError`), chain 뷰는 최신 상태를 비교하고, 이동된 별칭은 `MovedSnapshotAccess`를 낸다. `version`은 컬럼이고 owned 자식이 바뀌면 루트의 버전이 올라가므로, 한 행의 커밋 전과 후의 두 스냅샷은 다르다. 정체성 동등성(타입과 키, Django와 Rails)은 기각했다. 변경 뒤에도 `assert before == after`가 통과해 버린다. `==`는 자식을 비교하지 않는다. 집계 전체의 비교는 테스트 키트 헬퍼다(#27). 남는 대가: `identity` 키 새 엔티티는 커밋 전에 set 원소나 dict 키가 될 수 없고, 값이 같은 두 새 엔티티는 같다고 비교되므로, 엔진과 플래너는 새 행을 `==`가 아니라 객체 정체성으로 구별한다.
 - **owned 자식의 키는 부모가 채운다**(#49): 자식은 이 키를 자신의 필드 지정자 `parent_fk(lambda: Order)`(작업용 이름. #9에서 확정)로 선언하고, 이 키는 생성자 파라미터가 아니며, `Order.items.add(Item(...))`이 채운다. owned가 아닌 관계의 자식은 평범한 필수 파라미터인 `fk(lambda: Order)`를 그대로 쓴다. `fk`에 플래그를 다는 방식(`fk(..., parent=True)`)은 기각했다: 지정자 하나가 두 가지를 뜻하게 되므로 이름을 달리한다("설정으로 의미를 바꾸지 않는다"). 근거: 스파이크 0002에서 모든 owned 자식이 부모 키를 손으로 넘겼고, 한 부모에 다른 부모의 키를 가진 자식을 추가해도 두 체커가 모두 받아들였다. 파라미터가 없으면 새 자식을 다른 부모의 키로 만들 수 없다("감지보다 제거"). [스파이크 0006](../spikes/0006-parent-fk-and-column-operands.md)이 두 체커에서 확인했다.
-- 새 루트의 owned 자식은 `insert(t, Transfer.legs.add(...), ...)`로 쓰고, owned가 아닌 관계에는 `add`가 없다(#60에서 결정, [ADR-0010](../adr/0010-writes-beyond-set.md)). seal은 `owns_many`, `parent_fk`, `aggregate_root=True`를 서로 대조해 검사한다([ADR-0010](../adr/0010-writes-beyond-set.md), Proposed).
+- 새 루트의 owned 자식은 `insert(t, Transfer.legs.add(...), ...)`로 쓰고, owned가 아닌 관계에는 `add`가 없다(#60에서 결정, [ADR-0010](../adr/0010-writes-beyond-set.md)). seal은 `owns_many`, `parent_fk`, `aggregate_root=True`를 서로 대조해 검사한다([ADR-0010](../adr/0010-writes-beyond-set.md)).
 - 미결: `Order.stub(...)`의 키워드는 타입 검사되지 않는다(#50). 추가되기 전 owned 자식의 부모 키 읽기(#76), `parent_fk`와 `owns_many`의 최종 이름, 그리고 여전히 타입 검사를 통과하는, 기존 자식을 다른 부모로 옮기는 일(스파이크 0006 O9)(#9).
 
 **의존 로드: 선언형만, 제너레이터 없음**
@@ -1030,10 +1030,10 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
 - ref에 대한 `.set`과 `.delete()`도 `UnloadedReference`로 막는다. 필드를 읽지 않는 쓰기라 그냥 두면 로드와 `@invariant` 검사를 건너뛰는 쓰기가 된다. 로드 없는 쓰기는 `Order.where(Order.id == x).set(...)` 집합 변경으로 명시한다.
 - 대가: ref의 필드를 호출 측에서 읽으면 런타임에서만(즉시, 결정적으로) 에러가 난다.
 
-**쓰기 문법: 로드한 행에는 `.set`, 새 행에는 `insert`, 그리고 `.delete()`** ([ADR-0010](../adr/0010-writes-beyond-set.md), Proposed)
+**쓰기 문법: 로드한 행에는 `.set`, 새 행에는 `insert`, 그리고 `.delete()`** ([ADR-0010](../adr/0010-writes-beyond-set.md))
 - 결정: 쓰기 연산마다 방법은 하나다. 로드한 행은 `order.set(Order.status.to(PAID), Order.paid_at.to(now))`처럼 필드 연산을 넘겨 수정하고, 루트의 owned 자식은 같은 `.set` 안에서 그 관계 연산 `Order.items.add/remove/update`로 수정한다. 새 행은 `insert(entity)`로, owned 자식을 가진 새 루트는 `insert(t, Transfer.legs.add(...), ...)`로 쓴다. 로드한 행은 `.delete()`로 삭제하며, 루트는 그 owned 관계와 함께 삭제된다. owned 관계의 행은 루트를 통해서만 쓰고, 그 밖의 행은 모두 직접 쓰며, owned가 아닌 관계에는 쓰기 연산이 없다. 집합 변경도 같은 필드 연산을 받는다(`Order.where(...).set(...)`).
 - 근거: `Col[T]` 디스크립터 덕분에 `Column[Owner, T].to(v: T)`로 이름과 타입이 코드젠 없이 검사되고, 스냅샷은 타입 수준에서도 불변으로 남는다. 삽입과 삭제는 생성과 수정처럼 별개의 연산이다(ADR-0003). 새 엔티티에는 `.set`할 행이 없고, 삭제에는 넘길 필드가 없다. owned 행을 루트를 통해서만 쓰면 집계의 모든 변경에서 루트의 `version` 증가가 유지되고, 그 밖의 행을 직접 쓰면 그것을 삽입하는 두 번째 방법(로드한 부모의 아무 관계에나 하는 `add`, 스파이크 0002 X3)과 자식을 쓰는 두 번째 방법(X11)이 사라진다.
-- 타입이 닿지 않는 곳의 런타임 규칙(새 엔티티, 로드한 스냅샷, ref가 한 타입이다): 새 엔티티에 대한 `.set`과 만들고 끝내 삽입하지 않은 엔티티는 `UsageError`다. *(Proposed)* 새 엔티티의 `.delete()`, 로드한 스냅샷의 `insert`, owned 자식을 직접 쓰는 것도 각각 그 호출에서 `UsageError`다(ADR-0010의 표). `owns_many`를 선언한 `identity` 키 루트는 Phase 1a에서 `SealError`다.
+- 타입이 닿지 않는 곳의 런타임 규칙(새 엔티티, 로드한 스냅샷, ref가 한 타입이다): 새 엔티티에 대한 `.set`과 만들고 끝내 삽입하지 않은 엔티티는 `UsageError`다. 새 엔티티의 `.delete()`, 로드한 스냅샷의 `insert`, owned 자식을 직접 쓰는 것도 각각 그 호출에서 `UsageError`다(ADR-0010의 표). `owns_many`를 선언한 `identity` 키 루트는 Phase 1a에서 `SealError`다.
 - 검토 후 기각한 대안:
   - `.set(status=PAID)` 키워드 방식: 필드 이름 오타를 타입 체커가 못 잡는다.
   - `with order.edit() as o:`(Self 반환)로 대입: 대입을 허용하려면 컬렉션 필드 타입이 `list`여야 해서, 스냅샷의 `order.items.append()`까지 타입상 통과한다.
@@ -1041,11 +1041,11 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
   - owned 자식을 위해 새 엔티티에 `.set`(`insert(t) + t.set(Transfer.legs.add(...))`, #60의 후보 A): 두 번째 런타임 규칙(새 엔티티의 `.set`은 관계 연산만 받는다)이 필요하다. 후보 B는 `insert`가 컬럼 연산과 `add`가 아닌 연산을 타입으로 거부하게 한다(스파이크 0007).
   - 루트 하나에 대한 대량 `insert_all`(스파이크 0002 유스케이스 8): COPY는 파이프라인 밖에서 실행되므로 커밋 배치를 함께 쓸 수 없다(§4.8).
 - 변천: ADR-0010 전까지 쓰기 문법은 "`.set(Column 연산)` 하나"였고, `add`는 어느 관계에서나 허용했으며, 대량 경로 밖에서는 루트의 삽입도 루트의 삭제도 없었다.
-- 대가: 대입 문법보다 길고, 동사가 하나가 아니라 셋이며, 한 `.set`을 위해 컬럼 연산과 관계 연산을 모으는 리스트는 `list[Op[O] | RelOp[O]]`다(*Proposed:* 별칭 `Write[O]`). 익숙함보다 연산마다 "방법은 하나"와 타입 안전을 택했다.
+- 대가: 대입 문법보다 길고, 동사가 하나가 아니라 셋이며, 한 `.set`을 위해 컬럼 연산과 관계 연산을 모으는 리스트는 `list[Op[O] | RelOp[O]]`다(별칭 `Write[O]`. 작업용 이름이며 최종 이름은 #13에서 정한다). 익숙함보다 연산마다 "방법은 하나"와 타입 안전을 택했다.
 
 **집계 경계: `aggregate_root`와 `owns_many`**
 - 결정: `class Order(Entity, table="orders", aggregate_root=True)`와 `items: Owned[list[Item]] = owns_many(...)`로 집계 경계를 선언한다(`owned=` 플래그 없음. #60에서 결정). 하나의 선언이 다섯 곳에 쓰인다: ① owned 자식의 변경이 루트 `version`을 올림, ② `@event(aggregate=...)`의 순서 번호, ③ 모듈 경계 검사, ④ 어떤 쓰기 연산이 있는지(owned 행은 루트를 통해서만), ⑤ 루트의 `.delete()`가 무엇을 삭제하는지. owned 관계의 자식 쪽은 키를 `parent_fk`로 선언한다(§4.2).
-- [ADR-0010](../adr/0010-writes-beyond-set.md)의 제안(Proposed): 소유는 한 단계 깊이다(owned 자식은 `owns_many`를 선언하지 않으므로, 자식 갱신은 컬럼 연산만 받고 삭제는 한 단계만 연쇄된다). seal은 선언들을 서로 대조해 검사한다 - 평범한 `fk` 위의 `owns_many`, 어느 `owns_many`도 가리키지 않거나 둘이 가리키거나 다른 클래스를 대상으로 하는 `parent_fk`, `aggregate_root=True`가 없는 클래스의 `owns_many`, 그리고 `parent_fk`를 가진 클래스가 집계 루트이거나 자식을 소유하거나 두 번째 `parent_fk`를 가지면 `SealError`다. `parent_fk` 위의 `many_to_one`(자식이 자기 루트를 읽는 것)은 허용한다(최종 이름: #9).
+- [ADR-0010](../adr/0010-writes-beyond-set.md)에서 정했다: 소유는 한 단계 깊이다(owned 자식은 `owns_many`를 선언하지 않으므로, 자식 갱신은 컬럼 연산만 받고 삭제는 한 단계만 연쇄된다). seal은 선언들을 서로 대조해 검사한다 - 평범한 `fk` 위의 `owns_many`, 어느 `owns_many`도 가리키지 않거나 둘이 가리키거나 다른 클래스를 대상으로 하는 `parent_fk`, `aggregate_root=True`가 없는 클래스의 `owns_many`, 그리고 `parent_fk`를 가진 클래스가 집계 루트이거나 자식을 소유하거나 두 번째 `parent_fk`를 가지면 `SealError`다. `parent_fk` 위의 `many_to_one`(자식이 자기 루트를 읽는 것)은 허용한다(최종 이름: #9).
 - 근거: 편집 화면이 주문과 항목을 같이 다룰 때 항목만 바뀐 경우도 요청 사이 낙관적 락에 걸려야 한다(JPA `OPTIMISTIC_FORCE_INCREMENT`). 하지만 모든 FK 자식에 적용하면 게시글에 댓글만 달아도 게시글 행을 갱신하게 되고, SERIALIZABLE 기본값에서 곧 핫 로우가 된다. 그래서 집계에 속한 자식으로만 한정한다.
 
 **큰 집계의 부분 로드**
@@ -1077,8 +1077,8 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
 - 결정: ① 집합 기반 변경(선언 순) → ② 행 단위 변경을 **FK와 유니크 키 의존성 그래프로 위상 정렬**한 순서 → ③ inline 프로젝션 → ④ outbox → ⑤ 실행 결과 기록. 같은 테이블·연산·컬럼 집합끼리는 배치로 묶는다(§10.7).
 - 근거: Hibernate의 ActionQueue는 정해진 순서로 SQL을 실행해 배칭을 자동 적용하지만, 고정 순서에는 컬렉션을 비우고 새 행을 넣을 때 INSERT가 DELETE보다 먼저 실행돼 유니크 위반이 나는 함정이 있다. 그래서 유니크 키 값을 비우는 변경을 그 값을 차지하는 변경보다 먼저 실행한다.
 - 순환(두 행이 유니크 값을 맞바꾸는 경우 등)은 에러로 보고하고 `DEFERRABLE INITIALLY DEFERRED` 제약을 안내한다.
-- 루트의 `.delete()`(루트 키로 owned 관계와 루트를 삭제하는 문장 하나)는 집합 단위 SQL이지만, 행 단위 그래프의 노드로서 ②에서 계획된다. 집계의 테이블을 가리키는 참조를 없애는 모든 변경 뒤에 와야 하는데, ①에서는 너무 일찍 실행되기 때문이다([ADR-0010](../adr/0010-writes-beyond-set.md), Proposed. 간선은 §10.7).
-- 겹침 처리: 집합 갱신이 `version`을 올리므로, 같은 행의 엔티티 갱신과 겹치면 재시도하지 않는 `IntraUsecaseConflict`(프로그래밍 오류)로 보고한다. 집계의 삭제는 이런 뜻의 집합 변경이 아니다. 같은 유스케이스가 삭제하는 루트의 owned 자식에 대한 연산은, chain의 앞 단계에서 왔으면 계획에서 버려지고, 한 단계 안이면 `ConflictingWrites`나 `UsageError`다([ADR-0010](../adr/0010-writes-beyond-set.md), Proposed).
+- 루트의 `.delete()`(루트 키로 owned 관계와 루트를 삭제하는 문장 하나)는 집합 단위 SQL이지만, 행 단위 그래프의 노드로서 ②에서 계획된다. 집계의 테이블을 가리키는 참조를 없애는 모든 변경 뒤에 와야 하는데, ①에서는 너무 일찍 실행되기 때문이다([ADR-0010](../adr/0010-writes-beyond-set.md). 간선은 §10.7).
+- 겹침 처리: 집합 갱신이 `version`을 올리므로, 같은 행의 엔티티 갱신과 겹치면 재시도하지 않는 `IntraUsecaseConflict`(프로그래밍 오류)로 보고한다. 집계의 삭제는 이런 뜻의 집합 변경이 아니다. 같은 유스케이스가 삭제하는 루트의 owned 자식에 대한 연산은, chain의 앞 단계에서 왔으면 계획에서 버려지고, 한 단계 안이면 `ConflictingWrites`나 `UsageError`다([ADR-0010](../adr/0010-writes-beyond-set.md)).
 
 **합성: 단계는 `chain`으로만**
 - 결정: 단계를 잇는 방법은 `with chain(order, wallet) as (c, order, wallet):` 하나다. 돌려받는 값은 chain의 최신 상태를 가리키는 뷰이고, 같은 이름으로 다시 묶어 원본을 가린다. `+`는 한 단계 안에서만 쓰고, 단계 호출 결과(`StepResult`)에는 `+`가 없어 단계끼리 `+`는 타입 에러다. chain 전에 만든 별칭은 이동 표시로 막는다(`MovedSnapshotAccess`). 블록을 벗어난 뷰는 읽기만 허용하고 `.set`과 `.delete()`는 `ChainClosed`다.
@@ -1286,7 +1286,7 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
 범위가 넓다는 지적을 반영한 제안에서 출발했고, 메인테이너가 2026-11-26에 #6에서 §9.1-9.4의 판정과 그로부터 나온 결정 이슈의 권고를 보고 확정했다. 1차는 처음으로 동작하는 `app.run`을 기준으로 둘로 나눈다. 어떤 부분이 아직 열려 있는 결정 이슈에 달려 있으면 그 이슈의 결정을 따른다.
 - **Phase 1a - Core execution path**: 순수 유스케이스와 실행 엔진, PostgreSQL 방언, 실행 ID(#9-#22), 그다음 릴리스 파이프라인과 동작하는 0.0.1(#44, #30).
   - 종료 조건: [스파이크 0002](../spikes/0002-use-cases-on-paper.md)의 유스케이스 6(주문 병합, 루트 삭제), 8(계좌 이체, 새 루트 INSERT), 9(프로필 편집)가 PostgreSQL 위 통합 테스트로 로드 배치 1회와 커밋 배치 1회 안에서, 재시도와 실행 ID를 갖춘 SERIALIZABLE로 통과한다.
-  - 그것이 막고 있는 구현 이슈보다 먼저: #49와 #51을 위한 타입 스파이크(완료: [스파이크 0006](../spikes/0006-parent-fk-and-column-operands.md)); 결정 #48, #54, #57, #58, #59, #60, #61, #63과 #48, #57, #59, #60의 형태를 위한 별도 타입 스파이크(완료: [스파이크 0007](../spikes/0007-phase-1a-type-shapes.md); 메인테이너가 2026-11-26에 `owns_many`, 새 루트의 owned 자식에 대한 후보 B, `Entity.where`의 필수 술어를 정했다. 첫 번째 후속 ADR인 [ADR-0010](../adr/0010-writes-beyond-set.md)(Proposed, `.set` 너머의 쓰기, #57과 #60)은 §4.2-4.4 / 4.6 / 4.8 / 4.12 / 8.2 / 8.3 / 10.7 / 10.12를 바꾸고 1a 종료 조건의 유스케이스 6, 8, 9를 막고 있다. 두 번째(#59)는 §4.7과 8.2 "의존 로드"를 바꾸고 row set이 partial `.where` 로드를 대체하는지를 정한다), 그리고 이 결정들이 요구하는 ADR(그중 하나는 #61의 실행 예산); #65 이후의 ADR-0007; #63이 스키마를 고정하기 전에 실행 ID 테이블의 정리 비용(#72). 이 결정들이 구현 이슈에 더하는 것은 각 결정을 따른다.
+  - 그것이 막고 있는 구현 이슈보다 먼저: #49와 #51을 위한 타입 스파이크(완료: [스파이크 0006](../spikes/0006-parent-fk-and-column-operands.md)); 결정 #48, #54, #57, #58, #59, #60, #61, #63과 #48, #57, #59, #60의 형태를 위한 별도 타입 스파이크(완료: [스파이크 0007](../spikes/0007-phase-1a-type-shapes.md); 메인테이너가 2026-11-26에 `owns_many`, 새 루트의 owned 자식에 대한 후보 B, `Entity.where`의 필수 술어를 정했다. 첫 번째 후속 ADR인 [ADR-0010](../adr/0010-writes-beyond-set.md)(2026-11-26 수락, `.set` 너머의 쓰기, #57과 #60)은 §4.2-4.4 / 4.6 / 4.8 / 4.12 / 8.2 / 8.3 / 10.7 / 10.12를 바꾸고 1a 종료 조건의 유스케이스 6, 8, 9를 막고 있다. 두 번째(#59)는 §4.7과 8.2 "의존 로드"를 바꾸고 row set이 partial `.where` 로드를 대체하는지를 정한다), 그리고 이 결정들이 요구하는 ADR(그중 하나는 #61의 실행 예산); #65 이후의 ADR-0007; #63이 스키마를 고정하기 전에 실행 ID 테이블의 정리 비용(#72). 이 결정들이 구현 이슈에 더하는 것은 각 결정을 따른다.
   - `expected_version`, `VersionMismatch`, owned 자식 변경 시 루트 `version` 증가는 #11, #13, #15, #17에 속한다. outbox가 들어오기 전(#23)까지 이벤트를 내는 유스케이스는 조용히 버리지 않고 거부한다. 시점(seal 또는 실행)은 #21에서 정한다.
 - **Phase 1b - Events, queries and tooling**: inline 프로젝션과 outbox 로그(#23), Query 경로(TypedSQL, #24), 스키마 도구(선택 extra, #25, CLI #26), 테스트 키트(#27), §9.5 측정(#28), 테스트로서의 문서 예제(#29). 종료 조건: 도입 3단계(§6).
   - 1b에 함께 들어가는 것: 집합 로드 구현(#59를 따름), #23 전에 outbox 로그의 정리 비용(#73), SSI 부하에서 `53200`의 분류(#74. 아무것도 막지 않으며, 그때까지는 재시도하지 않고 `DatabaseError`로 드러난다).
@@ -1518,7 +1518,7 @@ ChangeSet
   → 의존성 그래프
        · FK: 부모 INSERT → 자식 INSERT,  자식 DELETE → 부모 DELETE
        · 유니크 키: 값을 비우는 연산(DELETE, 값 변경) → 같은 값을 차지하는 연산
-       · AggregateDelete(루트 테이블, 루트 키) - ADR-0010, Proposed: 루트 키로 모든 owned 관계와
+       · AggregateDelete(루트 테이블, 루트 키) - ADR-0010: 루트 키로 모든 owned 관계와
            루트를 삭제하는 문장 하나 (WITH ... DELETE);
            집계의 테이블을 가리키는 FK를 가진 행의 DELETE, 그런 FK를 바꾸거나 비우는 UPDATE
            → AggregateDelete;
@@ -1526,14 +1526,14 @@ ChangeSet
            없는 유니크 제약에 한한다 (플래너가 볼 수 없는 값을 비운다: 자식은 로드되지 않았다);
            X의 테이블이 Y의 테이블을 가리키는 FK를 가지면 AggregateDelete(X) → AggregateDelete(Y)
            (레지스트리에서 얻는다. 행은 로드되지 않았다); 서로 참조하는 집계는 한 문장으로
-           합친다 (PostgreSQL에서 검증하지 않음)
+           합친다 (PostgreSQL 18에서 확인함)
   → 위상 정렬 (동률이면 테이블·연산·컬럼 집합으로 묶이게 정렬)
   → 배치 묶기: multi-row INSERT / unnest UPDATE / DELETE … WHERE id = ANY($1)
   → Pipeline 명령 (COPY는 별도 명령)
 ```
 
 - 순환이 생기면 `CommitCycle` 에러로 어떤 행·제약 때문인지 보고하고, `DEFERRABLE INITIALLY DEFERRED` 제약을 안내한다.
-- `insert(root, *children)`는 루트의 Insert와 자식마다 하나씩의 Insert이며, FK 간선으로 순서가 정해진다. `root.delete()`는 루트 테이블마다 하나의 `AggregateDelete`이고, 삭제되는 루트들에 걸쳐 배치로 묶인다(`WITH c1 AS (DELETE FROM items WHERE order_id = ANY($1)), c2 AS (DELETE FROM tickets WHERE order_id = ANY($1)) DELETE FROM orders WHERE id = ANY($1)`). 루트가 자기 owned 테이블을 가리키는 FK와 owned 테이블 사이의 FK는 그 안에서 순서가 필요 없다. NO ACTION FK는 문장 전체가 끝난 뒤 검사하기 때문이다. 삭제되는 루트의 owned 자식에 대해 chain의 앞 단계에서 온 RowOp(Update, `remove`에서 온 Delete, `add`에서 온 Insert)는 버려진다. 그 문장이 이를 덮기 때문이다(자식의 `parent_fk`를 바꾸는 연산은 #9가 이동을 정할 때까지 대신 `UsageError`다). 한 단계 안의 그런 쌍은 에러이고, 결코 버려지지 않는다([ADR-0010](../adr/0010-writes-beyond-set.md), Proposed).
+- `insert(root, *children)`는 루트의 Insert와 자식마다 하나씩의 Insert이며, FK 간선으로 순서가 정해진다. `root.delete()`는 루트 테이블마다 하나의 `AggregateDelete`이고, 삭제되는 루트들에 걸쳐 배치로 묶인다(`WITH c1 AS (DELETE FROM items WHERE order_id = ANY($1)), c2 AS (DELETE FROM tickets WHERE order_id = ANY($1)) DELETE FROM orders WHERE id = ANY($1)`). 루트가 자기 owned 테이블을 가리키는 FK와 owned 테이블 사이의 FK는 그 안에서 순서가 필요 없다. NO ACTION FK는 문장 전체가 끝난 뒤 검사하기 때문이다. 삭제되는 루트의 owned 자식에 대해 chain의 앞 단계에서 온 RowOp(Update, `remove`에서 온 Delete, `add`에서 온 Insert)는 버려진다. 그 문장이 이를 덮기 때문이다(자식의 `parent_fk`를 바꾸는 연산은 #9가 이동을 정할 때까지 대신 `UsageError`다). 한 단계 안의 그런 쌍은 에러이고, 결코 버려지지 않는다([ADR-0010](../adr/0010-writes-beyond-set.md)).
 - 플래너는 순수 함수라 속성 기반 테스트의 주 대상이다(§11.3).
 
 ### 10.8 스냅샷, ref, 이동 표시
@@ -1596,7 +1596,7 @@ PlatinaError
 (사용자 도메인 예외는 감싸지 않고 그대로 전파)
 ```
 
-`IdempotencyKeyReuse`(#58)와 `RunTimeout`(#61)은 결정됐고, 각각 #22와 #17에서 `platina.core.errors`에 추가한다. `ForeignKeyViolation`(23503, 그리고 RESTRICT 외래 키에서 오는 23001)은 [ADR-0010](../adr/0010-writes-beyond-set.md)이 제안한다. `UniqueViolation`, `CheckViolation`처럼 드라이버가 SQLSTATE로 타입을 정하는 `DatabaseError`이고, 재시도하지 않는다 - 유스케이스가 읽지 않은 행에 달려 있기 때문이다. owned가 아닌 행을 손으로 넘긴 키로 직접 쓰고, 삭제가 그런 행을 유스케이스에 맡기게 되면 흔해진다. PostgreSQL의 진단 정보는 참조하는 테이블과 제약을 알려 준다. 이 에러는 제약 이름이 #25의 이름 규칙을 따르면 참조하는 엔티티와 필드를(그렇지 않으면 테이블을) 알려 주고, 그 행들을 먼저 삭제하거나 다른 행을 가리키게 하라는 힌트를 준다. 엔진은 이 에러를 그것을 낸 psycopg 호출이 아니라 문장의 위치로 귀속시킨다(파이프라인에서는 뒤의 호출이 이를 낼 수 있다). #18에서 추가한다. 쓰기의 `UsageError`(새 엔티티에 대한 `.set`이나 `.delete()`, 로드한 스냅샷의 `insert`, owned 자식을 직접 씀, 만들고 끝내 삽입하지 않은 엔티티)는 `hint`를 가진 평범한 `UsageError`다(ADR-0010).
+`IdempotencyKeyReuse`(#58)와 `RunTimeout`(#61)은 결정됐고, 각각 #22와 #17에서 `platina.core.errors`에 추가한다. `ForeignKeyViolation`(23503, 그리고 RESTRICT 외래 키에서 오는 23001)은 [ADR-0010](../adr/0010-writes-beyond-set.md)에서 결정했다. `UniqueViolation`, `CheckViolation`처럼 드라이버가 SQLSTATE로 타입을 정하는 `DatabaseError`이고, 재시도하지 않는다 - 유스케이스가 읽지 않은 행에 달려 있기 때문이다. owned가 아닌 행을 손으로 넘긴 키로 직접 쓰고, 삭제가 그런 행을 유스케이스에 맡기게 되면 흔해진다. PostgreSQL의 진단 정보는 참조하는 테이블과 제약을 알려 준다. 이 에러는 제약 이름이 #25의 이름 규칙을 따르면 참조하는 엔티티와 필드를(그렇지 않으면 테이블을) 알려 주고, 그 행들을 먼저 삭제하거나 다른 행을 가리키게 하라는 힌트를 준다. 엔진은 이 에러를 그것을 낸 psycopg 호출이 아니라 문장의 위치로 귀속시킨다(파이프라인에서는 뒤의 호출이 이를 낼 수 있다). #18에서 추가한다. 쓰기의 `UsageError`(새 엔티티에 대한 `.set`이나 `.delete()`, 로드한 스냅샷의 `insert`, owned 자식을 직접 씀, 만들고 끝내 삽입하지 않은 엔티티)는 `hint`를 가진 평범한 `UsageError`다(ADR-0010).
 
 모든 예외는 메시지 외에 구조화된 필드(`usecase`, `entity`, `field`, `location`, `hint`, 그리고 추가 줄을 담는 `details`)를 가진다. CLI·IDE 연동이나 테스트 단언에서 문자열 파싱이 필요 없다. 필드의 타입, 생성자, 렌더링은 [ADR-0006](../adr/0006-exception-fields-and-rendering.md)이 정한다.
 

@@ -1,6 +1,6 @@
 # ADR-0010: Writes beyond `.set`: `insert`, `delete`, and owned rows only through their root
 
-- Status: Proposed
+- Status: Accepted (maintainer, 2026-11-26)
 - Date: 2026-11-26
 - Related: design sections 4.2, 4.3, 4.4, 4.6, 4.8, 4.12, 8.2 ("Write syntax", "Aggregate
   boundaries", "Field type surface", "Creation syntax"), 8.3, 9.6, 10.7, 10.12, 11.3, 11.8; issues
@@ -36,12 +36,17 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
       sibling owned tables with an FK between them in all 24 orders of the sub-statements. NO
       ACTION FKs are checked once, after all sub-statements (PostgreSQL docs 7.8.4 and 38.1,
       `AfterTriggerEndQuery`). RESTRICT also passes inside one statement (a PostgreSQL deviation
-      documented only in `ri_triggers.c`); as separate statements it fails with `23001`.
+      documented only in `ri_triggers.c`); as separate statements it fails with `23001`. Two root
+      tables that reference each other fail as two statements in either order (`23503`) and are
+      deleted by one merged statement (independent review of PR #81, rerun in `n3_review.py`).
     - **P2.** A child insert racing a delete, with the writer bumping the root's `version` as
       `Order.items.add` does: the deleter or the writer gets `40001` under SERIALIZABLE and under
       REPEATABLE READ, in every interleaving, also against a READ COMMITTED writer. `23503` came
-      from a race only when the writer did not bump the root and ran REPEATABLE READ, or ran READ
-      COMMITTED (code outside Platina).
+      from a race with an owned-child insert only when the writer did not bump the root and ran
+      REPEATABLE READ, or ran READ COMMITTED (code outside Platina). A **non-owned** insert bumps
+      no root - also Platina's own `insert(Payment(order_id=x))`: when it commits first, the
+      deleter gets `23503` under SERIALIZABLE and REPEATABLE READ alike; when the delete goes
+      first, the insert gets `40001` (independent review, rerun in `n3_review.py`).
     - **P3.** `23503` is raised at the end of the statement (a deferred FK: at `COMMIT`);
       `diag.table_name` / `constraint_name` name the **referencing** table and constraint. In a
       pipeline a later psycopg call can raise an earlier statement's error; the queued `COMMIT`
@@ -50,11 +55,11 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
       (the NO ACTION check reads the child table with the same predicate), as separate statements
       or in one; without an index on the parent key both take a relation lock. Load rates could
       not separate the variants (noise; fast profile).
-  - Not verified (the spike's list): the durable profile, pipelined batches under load, deferred
-    constraints, a version check over several roots, partitioned tables, the async connection.
     - **P5.** `DELETE ... AND version = $2` matching no row is `DELETE 0`, not an error; with
       `COMMIT` queued the batch commits the rest. A concurrent committed UPDATE after the load
       makes the DELETE fail with `40001` first.
+  - Not verified (the spike's list): the durable profile, pipelined batches under load, deferred
+    constraints, a version check over several roots, partitioned tables, the async connection.
 
 ## Decision
 
@@ -81,7 +86,7 @@ Sources: #57 [decision](https://github.com/devgyurak/platina/issues/57#issuecomm
 8. Events of a deleted aggregate: #23. The set-level delete: #33, which must not skip the
    aggregate rule silently.
 
-### Proposed
+### Proposals, accepted by the maintainer (2026-11-26)
 1. **Ownership is one level deep**: only an `aggregate_root=True` class declares `owns_many`, and
    a class with a `parent_fk` is not an aggregate root (seal, proposal 2). So
    `OwnedRelation.update(item, *ops: Op[E])` takes column operations only (A1), and X15 and
@@ -103,8 +108,8 @@ Sources: #57 [decision](https://github.com/devgyurak/platina/issues/57#issuecomm
    removes them (A3) but is a fourth declaration of ownership, a second way to declare an entity
    (ADR-0003) and takes `Item.where` from #59 (Alternatives).
 4. **New, loaded and ref are runtime states of one type** (a constructor builds a *new* entity;
-   the loader and `stub` a *loaded* one; `ref` and Finders a *ref*). Rows marked "decided" are
-   the maintainer's; the others are proposed. Each fails at the call:
+   the loader and `stub` a *loaded* one; `ref` and Finders a *ref*). Rows marked "decided" were
+   decided on #57 / #60; the others by this ADR. Each fails at the call:
 
    | Misuse | Error |
    |---|---|
@@ -149,15 +154,20 @@ Sources: #57 [decision](https://github.com/devgyurak/platina/issues/57#issuecomm
      acyclic). Between the delete statements of two root tables in one use case,
      `AggregateDelete(X)` runs before `AggregateDelete(Y)` when a table of X has an FK into a table
      of Y (from the registry, since the rows are not loaded); aggregates that reference each other
-     are merged into one statement, for P1's reason (not verified for two root tables). Operations
+     are merged into one statement, for P1's reason (P1). Operations
      on owned children of a deleted root from **earlier chain steps** are dropped, as a `.set` followed by a `.delete()` leaves a delete; within one step they are
      `ConflictingWrites` or proposal 4's `UsageError`, never dropped. A write to a row an earlier
      step deleted is a `UsageError`. `IntraUsecaseConflict` does not apply. An earlier-step
      operation that changes a child's `parent_fk` (a move, still open in #9) is not dropped but a
      `UsageError` until #9 decides moves, so a moved child is never deleted silently.
    - **Concurrency.** A concurrent `add` to the deleted root is a retried `40001` under
-     SERIALIZABLE and REPEATABLE READ (P2). Writers outside Platina that skip the root's `version`
-     or run READ COMMITTED can turn the race into `23503`.
+     SERIALIZABLE and REPEATABLE READ (P2). A concurrent insert of a **non-owned** row that
+     references the root or one of its children bumps no root - Platina's own
+     `insert(Payment(order_id=x))` included - so when it commits first the delete fails with
+     `ForeignKeyViolation` at either level (P2); when the delete goes first, the insert gets
+     `40001`. Writers outside Platina that skip the root's `version` or run READ COMMITTED can do
+     the same to an owned-child insert. Not retrying the `23503` is still right: a retry would
+     find the committed referrer and fail again.
    - **`Changes` and tests** record "every owned child of this root", per relation, not rows.
      `r.removed(src)` is true, and so is `r.removed(item)` for a loaded child of `src`; unloaded
      children are not listed.
@@ -173,11 +183,11 @@ Sources: #57 [decision](https://github.com/devgyurak/platina/issues/57#issuecomm
    error names the referencing entity and field where the constraint name follows #25's naming
    rule, otherwise the table; a deferred FK fails at `COMMIT`, where the error can still name the
    entity and field but not the operation. Recorded in
-   design 10.12, proposed to #18.
+   design 10.12, handed to #18.
 8. **`Write[O] = Op[O] | RelOp[O]`**, a public alias for what `.set` takes. A list that collects
    both kinds must be annotated - under mypy an unannotated one is `list[object]` and `.set(*ops)`
    fails (A2) - and `list[Write[Order]]` is the short form (use cases 2, 6, 9). It widens no
-   receiver (A2). A name, not a second way to write; the name is open.
+   receiver (A2). A name, not a second way to write. `Write` is a working name; #13 fixes it (see Open).
 
 ### The Phase 1a exit use cases
 Spike 0007's `uc06_order_merge.py`, `uc08_transfer_b.py` and `uc09_profile_edit.py` are written in
@@ -185,8 +195,9 @@ this syntax (with `Write` in place of the union); design 4.4 shows the transfer 
 delete. Use case 6 deletes `src`'s items without loading their allocations: if one exists, the
 commit fails with `ForeignKeyViolation` naming `Allocation.item_id`, and the use case must load and
 delete or re-point the allocations first, which the planner orders before the delete statement.
-The Phase 1a integration test of use case 6 should cover both, and a delete of a `User` with a
-default address (P1).
+The Phase 1a integration test of use case 6 should cover both, a concurrent non-owned insert
+that references `src` (an allocation or a payment committed just before the delete:
+`ForeignKeyViolation`, not retried; P2), and a delete of a `User` with a default address (P1).
 
 ## Consequences
 - Every kind of row has one way to be written: `.set` (and owned relations through it) for a
@@ -197,6 +208,10 @@ default address (P1).
   see one delete statement per root table, not the child rows.
 - Runtime rules stand where types cannot reach (proposals 3, 4); each fails at its line in every
   test that runs the path.
+- The one-statement delete relies on data-modifying CTEs, a dialect capability
+  (`DialectCapabilities.data_modifying_cte`, design 10.6). MySQL has none (8.6), so a MySQL
+  dialect needs another strategy for the delete of an aggregate that references itself or whose
+  owned tables reference each other (#39).
 - Deep aggregates (`Order -> Shipment -> ShipmentLine`) own the grandchild from the root (its
   `parent_fk` to the order, a plain `fk` to the shipment) or split the aggregate. Allowing nesting
   later relaxes a seal error, which is backward compatible.
@@ -216,7 +231,7 @@ default address (P1).
   `line.delete()`, `MLine.where`, `insert(MLine(...))` and `insert_all([MLine(...)])`. Costs: a
   fourth declaration of ownership that seal must compare too, a second way to declare an entity
   next to ADR-0003's single base, no `Item.where` for #59, and `RowSet[MLine]` still nameable
-  unless `RowSet` is bounded by `Entity`. It is the "remove" option; the maintainer may prefer it.
+  unless `RowSet` is bounded by `Entity`. It is the "remove" option; the maintainer rejected it for these costs (2026-11-26).
 - **A `UsageError` at `insert(t, *children)` for `identity` roots now** (proposal 5's relaxation):
   precise, but it fails only when the children list is non-empty, which depends on the data.
 - **Requiring owned relations to be loaded before `.delete()`**: the tests could list the deleted
@@ -228,14 +243,15 @@ default address (P1).
   who owns the schema (#57).
 - **No alias for `list[Op[O] | RelOp[O]]`**: possible; three of ten spike use cases spell it.
 
-## Open for the maintainer
-1. Ownership depth: one level (proposed) or nested.
-2. Direct writes of an owned child: a runtime `UsageError` (proposed) or the `Part` base (A3).
-3. `identity`-key roots in Phase 1a: a `SealError` (proposed) or a `UsageError` at
-   `insert(t, *children)`.
-4. Unloaded owned relations: deleted without loading (proposed) or loading required.
-5. `Write[O]`: adopt, its name (`Write`, `SetArg`, `RowWrite`), or no alias.
-6. `ForeignKeyViolation` for `23503` and `23001`: the name, and a `DatabaseError` (proposed).
+## Decisions of the maintainer (2026-11-26)
+Every proposal as written: ownership one level deep; a runtime `UsageError` for direct writes of
+an owned child (the `Part` base stays a rejected alternative); a `SealError` for `identity`-key
+roots with owned relations in Phase 1a; unloaded owned relations deleted without loading; the
+`Write[O]` alias; `ForeignKeyViolation(DatabaseError)` for `23503` / `23001`.
+
+## Open
+- The final name of `Write[O]` (#13). `insert` and `.delete()` are writes too and are not in the
+  alias, so `Write` names more than it covers.
 
 ## History
 - 2026-11-26 - created (Proposed) from spike 0007 and the maintainer's decisions on #57 and #60.
@@ -245,3 +261,7 @@ default address (P1).
   seal error, empty writes as no-ops, PostgreSQL scripts kept in the repository.
 - 2026-11-26 - after the architect review, round 2: ordering between the delete statements of two
   root tables, no silent drop of a child move, wording.
+- 2026-11-26 - after the independent review of PR #81: a non-owned insert racing a delete (P2),
+  two root tables that reference each other (P1, verified), the dialect capability, P5's place.
+- 2026-11-26 - accepted by the maintainer, every proposal as written; the name of `Write[O]` is
+  left to #13.
