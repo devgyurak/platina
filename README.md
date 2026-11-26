@@ -30,10 +30,13 @@ await app.run(pay.bind(order=Order.ref(order_id), wallet=wallets.by_user(user_id
 
 **Design settled, implementation just started.** Only the exception hierarchy
 (`platina.PlatinaError` and its subclasses) exists so far; the code above is the target syntax,
-not a working API. The type-surface spike ([`docs/spikes/0001-type-surface.md`](docs/spikes/0001-type-surface.md))
-and the ten use cases on paper ([`docs/spikes/0002-use-cases-on-paper.md`](docs/spikes/0002-use-cases-on-paper.md))
-are done; the remaining experiments in the design document (SSI concurrency, Alembic round trip,
-measurements) come before the rest of the prototype.
+not a working API. Four spikes are done: the type surface
+([`docs/spikes/0001-type-surface.md`](docs/spikes/0001-type-surface.md)), ten real use cases on
+paper ([`docs/spikes/0002-use-cases-on-paper.md`](docs/spikes/0002-use-cases-on-paper.md)), SSI
+concurrency ([`docs/spikes/0003-ssi-internal-tables.md`](docs/spikes/0003-ssi-internal-tables.md))
+and the Alembic round trip
+([`docs/spikes/0004-alembic-round-trip.md`](docs/spikes/0004-alembic-round-trip.md)); the remaining
+measurements of the design document come before the rest of the prototype.
 
 - Design document: [`docs/design/design.md`](docs/design/design.md)
 - Current architecture: [`docs/architecture.md`](docs/architecture.md)

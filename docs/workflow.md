@@ -151,7 +151,7 @@ uv run python -m tools.guards --changed
 ## 8. GitHub setup (maintainer, one-time)
 
 **Current state (2026-11-25):** done. `develop` is the default branch, both rulesets are active,
-and the milestones, labels and roadmap issues (#1-#66; #47, #53, #56, #62 and #66 are pull requests) exist. The local pre-push hook
+and the milestones, labels and roadmap issues (#1-#67; #47, #53, #56, #62, #66 and #67 are pull requests) exist. The local pre-push hook
 (`make hooks-install`) stays as a second line of defence. Agents change GitHub settings,
 milestones and labels only when the maintainer asks.
 
@@ -168,10 +168,10 @@ milestones and labels only when the maintainer asks.
       `area:core`, `area:sql`, `area:app`, `area:runners`, `area:drivers`, `area:outbox`,
       `area:migrate`, `area:codegen`, `area:testing`, `area:integrations`, `area:cli`,
       `area:tooling`.
-- [x] Roadmap issues #1-#66: the design section 9 experiments, then every package and feature of
+- [x] Roadmap issues #1-#67: the design section 9 experiments, then every package and feature of
       design sections 3-11 with dependencies (#1 tracks this setup; #48-#52, #54 and #55 come from
-      spike 0001, #57-#61 from spike 0002, #63 from spike 0004; #47, #53, #56, #62 and #66 are pull
-      requests).
+      spike 0001, #57-#61 from spike 0002, #63 from spike 0004, #64-#65 from spike 0003; #47, #53,
+      #56, #62, #66 and #67 are pull requests).
 - [x] Decide ADR-0001 (assembly package and seal) and ADR-0002 (new IDs from an injected
       source) before the first implementation - both accepted.
 
