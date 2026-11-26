@@ -168,6 +168,16 @@ when_none = Load.when(
 )
 assert_type(Wallet.user_id == Order.user_id, Pred[Wallet | Order])  # #51 shape, as given
 assert_type(Stock.variant_id.in_([]), Pred[Stock])
+assert_type(Stock.allocated <= Stock.quantity, Pred[Stock])  # #51, spike 0006's overloads
+
+
+def variants_tuple(order: Order) -> tuple[Variant, ...]:
+    return tuple(Variant.ref(i.variant_id) for i in order.items)  # S6: any Sequence of refs
+
+
+variants_seq_load = Load.after(
+    variants_tuple, Variant.stocks
+)  # S6 round 4: Sequence, not only list
 
 type ActiveHolds = Annotated[Sequence[SeatHold], holds_load]
 type PointWallet = Annotated[Wallet | None, wallet_load]

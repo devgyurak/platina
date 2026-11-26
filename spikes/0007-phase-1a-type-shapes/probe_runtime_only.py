@@ -17,12 +17,34 @@ from domain import (
     Money,
     Order,
     OrderStatus,
+    PaymentMethod,
     Seat,
     SeatHold,
     Transfer,
     User,
+    Wallet,
+    wallets,
 )
-from lib import INJECTED, Changes, Id, Load, Now, Profile, RowSet, insert, insert_all, usecase
+from lib import (
+    INJECTED,
+    Changes,
+    Col,
+    Entity,
+    Id,
+    Load,
+    Now,
+    Owned,
+    Profile,
+    RowSet,
+    column,
+    fk,
+    insert,
+    insert_all,
+    one_to_many,
+    parent_fk,
+    pk,
+    usecase,
+)
 
 NOW = datetime(2026, 11, 26)
 
@@ -119,3 +141,43 @@ def r14(src: Account, amount: Money) -> Changes:
 
 # R15 #59 point 1: a flat path list - ambiguous, made a seal error by the decision
 r15 = Profile(Order.items, Item.allocations)
+
+
+# R16 #59: `missing="none"` where the result is not optional - on a function returning one ref
+# that is never None, and on `Load.when` declared for a non-optional parameter (seal)
+def wallet_of(order: Order) -> Wallet:
+    return wallets.by_user(order.user_id) if order.user_id is not None else Wallet.ref(order.id)
+
+
+r16a = Load.after(wallet_of, missing="none")
+r16b = Load.when(
+    Order.paid_with == PaymentMethod.WALLET, match=Wallet.user_id == Order.user_id, missing="none"
+)
+
+
+@usecase
+def r16(order: Annotated[Order, Load()], wallet: Annotated[Wallet, r16b] = INJECTED) -> Changes:
+    return wallet.delete()
+
+
+# R17 #57 / #59: a row set without predicates - every row of the table (set-level delete or set)
+def r17(m: Money) -> Changes:
+    return Order.where().delete() + Order.where().set(Order.total.to(m))
+
+
+# R18 #49 / #60: the owned declaration, the child's `parent_fk` and `aggregate_root` disagree -
+# none of it is checked by type (spike 0006's open item, #9)
+class R18Child(Entity, table="r18_children"):
+    id: Col[Id[R18Child]] = pk()
+    root_id: Col[Id[R18Root]] = fk(lambda: R18Root)  # a plain fk under an owned relation
+    other_id: Col[Id[R18Other]] = parent_fk(lambda: R18Other)  # a parent_fk under no owned relation
+    note: Col[str] = column()
+
+
+class R18Root(Entity, table="r18_roots"):  # owned children, but not aggregate_root=True
+    id: Col[Id[R18Root]] = pk()
+    children: Owned[list[R18Child]] = one_to_many(lambda: R18Child.root_id, owned=True)
+
+
+class R18Other(Entity, table="r18_others", aggregate_root=True):
+    id: Col[Id[R18Other]] = pk()

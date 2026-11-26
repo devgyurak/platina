@@ -14,9 +14,9 @@ uv run python -m tools.typetests "$D/lib.pyi" "$D/domain.py" "$D/pass_r2.py" "$D
 
 # 2. Per checker: raw fail output and Annotated metadata.
 for f in fail_r2 probe_annotated_repro; do
-  (cd "$D" && uv run pyright "$f.py" >"$ROOT/$R/$f-pyright.txt" 2>&1 || true)
+  (cd "$D" && uv run pyright "$f.py" >"$ROOT/$R/$f-pyright.txt" 2>&1 || test $? -eq 1)
   (cd "$D" && uv run mypy --strict --show-error-codes --no-incremental "$f.py" \
-    >"$ROOT/$R/$f-mypy.txt" 2>&1 || true)
+    >"$ROOT/$R/$f-mypy.txt" 2>&1 || test $? -eq 1)
 done
 
 # 3. Variants: one TypeVar made covariant each; print error lines lost / gained.

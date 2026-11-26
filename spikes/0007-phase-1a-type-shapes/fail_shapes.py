@@ -25,6 +25,7 @@ from domain import (
     Transfer,
     Variant,
     Wallet,
+    Warehouse,
     wallets,
 )
 from lib import (
@@ -159,4 +160,9 @@ class F28Order(Entity, table="f28_orders"):
 class F29Entity(Entity, table="f29"):
     id: Col[Id[F29Entity]] = pk()
     delete: Col[int] = column()  # expect-error[reportIncompatibleMethodOverride, assignment]: F29 `delete` is a reserved name, like `set`
+
+
+# --- round 4 (independent review): a column is not a load path
+column_as_path = Order.items.load(Item.quantity)  # expect-error[reportArgumentType, arg-type]: F30 a column is not a load path
+column_as_path_many_to_one = Stock.warehouse.load(Warehouse.group)  # expect-error[reportArgumentType, arg-type]: F31 the same under a many-to-one
 # fmt: on

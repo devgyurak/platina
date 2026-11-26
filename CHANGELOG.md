@@ -80,12 +80,15 @@ All notable changes are documented here. Format: [Keep a Changelog](https://keep
 - GitHub organization icon in `docs/assets/` (see its README): a hallmark-style plate with a
   "Pt" ligature, platinum `#E5E4E2` on graphite `#15171B`, as SVG master and 1024 / 500 px PNGs.
 - Spike 0007 (#79, design 9.6: the type shapes of #48, #57, #59 and #60 under pyright and mypy):
-  write-up `docs/spikes/0007-phase-1a-type-shapes.md`, reviewed by architect and reproduced by
-  type-reviewer. Holds under three conditions: the owner of a relation operation and of a load
-  path must be invariant (both checkers otherwise accept another entity's operation in
-  `insert(...)` and another entity's path in `Load.after(...)`), and a relation operation is not a
-  column operation. Spike 0002's use cases 3, 6 and 8 become expressible. No design text changes
-  yet: the edits and two ADRs (#60 point 4, #59 point 2) follow after the maintainer's reading.
+  write-up `docs/spikes/0007-phase-1a-type-shapes.md`, reviewed by architect (two rounds) and an
+  independent review session, reproduced by type-reviewer. Holds on the lines it wrote under three
+  conditions: the owner of a relation operation and of a `Load.after` path must be invariant (both
+  checkers otherwise accept another entity's operation in `insert(...)` and another entity's path
+  in `Load.after(...)`), `relation.load(...)` takes relations only (a covariant `LoadPath`), and a
+  relation operation is not a column operation. Known checker differences remain (mypy accepts a
+  declared type that widens a relation's owner; inline `Annotated` metadata). Spike 0002's use
+  cases 3, 6 and 8 become expressible. Design 9.6 links the write-up; the design edits and two ADRs
+  (#60 point 4, #59 point 2) follow after the maintainer's reading, with four choices open.
 - Phase 1 scope decided (#6, maintainer, 2026-11-26): design 9.6 splits Phase 1 at the first
   working `app.run` into 1a (core execution path, #9-#22, release) and 1b (events, queries and
   tooling, #23-#29); `platina pull` and migration fidelity move to Phase 2 (#71, #70); the

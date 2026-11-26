@@ -56,34 +56,123 @@ class Column(OwnedExpr[_O_co], Generic[_O_co, _T]):  # noqa: UP046 - finding L6:
     def to(self, value: _T, /) -> Op[_O_co]: ...
     def add(self, delta: _T, /) -> Op[_O_co]: ...
     def path[U](self, field: Column[_T, U], /) -> Column[_O_co, U]: ...
-    # [0007] #51's decided overloads (decision comment), on __eq__ only: column-to-column with the
-    # [0007] same value type up to nullability is a predicate over both owners
-    @overload  # type: ignore[override]  # [0007]
-    def __eq__[O2](self, other: Column[O2, _T], /) -> Pred[_O_co | O2]: ...  # [0007]
-    @overload  # [0007]
-    def __eq__[O2](self, other: Column[O2, _T | None], /) -> Pred[_O_co | O2]: ...  # [0007]
-    @overload  # [0007]
-    def __eq__[O2, U](  # [0007]
-        self: Column[_O_co, U | None], other: Column[O2, U], /
-    ) -> Pred[_O_co | O2]: ...  # [0007]
-    @overload  # [0007]
-    def __eq__(self, other: _T, /) -> Pred[_O_co]: ...  # pyright: ignore[reportIncompatibleMethodOverride]  # [0007] finding L2; pyright reports the last overload, mypy the first
-    def __ne__(self, other: _T, /) -> Pred[_O_co]: ...  # type: ignore[override]  # finding L2
+    # [0007] #51: spike 0006's final overloads on all six operators (copied, not re-probed)
+    # Spike 0006 (#51): a value is exactly `_T`; a column of the same value type (up to
+    # nullability) gives a predicate over both owners.
+    @overload  # type: ignore[override]  # finding L2  # [0007] from spike 0006
+    def __eq__[O2](  # [0007] from spike 0006
+        self, other: Column[O2, _T], /
+    ) -> Pred[_O_co | O2]: ...  # [0007] from spike 0006
+    @overload  # [0007] from spike 0006
+    def __eq__[O2](  # [0007] from spike 0006
+        self, other: Column[O2, _T | None], /
+    ) -> Pred[_O_co | O2]: ...  # [0007] from spike 0006
+    @overload  # [0007] from spike 0006
+    def __eq__[O2, U](  # [0007] from spike 0006
+        self: Column[_O_co, U | None],
+        other: Column[O2, U],
+        /,  # [0007] from spike 0006
+    ) -> Pred[_O_co | O2]: ...  # [0007] from spike 0006
+    @overload  # [0007] from spike 0006
+    def __eq__(self, other: _T, /) -> Pred[_O_co]: ...  # pyright: ignore[reportIncompatibleMethodOverride]  # L2, spike 0006 S1  # [0007] from spike 0006
+    @overload  # type: ignore[override]  # finding L2  # [0007] from spike 0006
+    def __ne__[O2](  # [0007] from spike 0006
+        self, other: Column[O2, _T], /
+    ) -> Pred[_O_co | O2]: ...  # [0007] from spike 0006
+    @overload  # [0007] from spike 0006
+    def __ne__[O2](  # [0007] from spike 0006
+        self, other: Column[O2, _T | None], /
+    ) -> Pred[_O_co | O2]: ...  # [0007] from spike 0006
+    @overload  # [0007] from spike 0006
+    def __ne__[O2, U](  # [0007] from spike 0006
+        self: Column[_O_co, U | None],
+        other: Column[O2, U],
+        /,  # [0007] from spike 0006
+    ) -> Pred[_O_co | O2]: ...  # [0007] from spike 0006
+    @overload  # [0007] from spike 0006
+    def __ne__(self, other: _T, /) -> Pred[_O_co]: ...  # pyright: ignore[reportIncompatibleMethodOverride]  # L2, spike 0006 S1  # [0007] from spike 0006
+    @overload  # [0007] from spike 0006
+    def __lt__[O2](  # [0007] from spike 0006
+        self, other: Column[O2, _T], /
+    ) -> Pred[_O_co | O2]: ...  # [0007] from spike 0006
+    @overload  # [0007] from spike 0006
+    def __lt__[O2](  # [0007] from spike 0006
+        self, other: Column[O2, _T | None], /
+    ) -> Pred[_O_co | O2]: ...  # [0007] from spike 0006
+    @overload  # [0007] from spike 0006
+    def __lt__[O2, U](  # [0007] from spike 0006
+        self: Column[_O_co, U | None],
+        other: Column[O2, U],
+        /,  # [0007] from spike 0006
+    ) -> Pred[_O_co | O2]: ...  # [0007] from spike 0006
+    @overload  # [0007] from spike 0006
+    def __lt__(self, other: _T, /) -> Pred[_O_co]: ...  # [0007] from spike 0006
+    @overload  # [0007] from spike 0006
+    def __le__[O2](  # [0007] from spike 0006
+        self, other: Column[O2, _T], /
+    ) -> Pred[_O_co | O2]: ...  # [0007] from spike 0006
+    @overload  # [0007] from spike 0006
+    def __le__[O2](  # [0007] from spike 0006
+        self, other: Column[O2, _T | None], /
+    ) -> Pred[_O_co | O2]: ...  # [0007] from spike 0006
+    @overload  # [0007] from spike 0006
+    def __le__[O2, U](  # [0007] from spike 0006
+        self: Column[_O_co, U | None],
+        other: Column[O2, U],
+        /,  # [0007] from spike 0006
+    ) -> Pred[_O_co | O2]: ...  # [0007] from spike 0006
+    @overload  # [0007] from spike 0006
+    def __le__(self, other: _T, /) -> Pred[_O_co]: ...  # [0007] from spike 0006
+    @overload  # [0007] from spike 0006
+    def __gt__[O2](  # [0007] from spike 0006
+        self, other: Column[O2, _T], /
+    ) -> Pred[_O_co | O2]: ...  # [0007] from spike 0006
+    @overload  # [0007] from spike 0006
+    def __gt__[O2](  # [0007] from spike 0006
+        self, other: Column[O2, _T | None], /
+    ) -> Pred[_O_co | O2]: ...  # [0007] from spike 0006
+    @overload  # [0007] from spike 0006
+    def __gt__[O2, U](  # [0007] from spike 0006
+        self: Column[_O_co, U | None],
+        other: Column[O2, U],
+        /,  # [0007] from spike 0006
+    ) -> Pred[_O_co | O2]: ...  # [0007] from spike 0006
+    @overload  # [0007] from spike 0006
+    def __gt__(self, other: _T, /) -> Pred[_O_co]: ...  # [0007] from spike 0006
+    @overload  # [0007] from spike 0006
+    def __ge__[O2](  # [0007] from spike 0006
+        self, other: Column[O2, _T], /
+    ) -> Pred[_O_co | O2]: ...  # [0007] from spike 0006
+    @overload  # [0007] from spike 0006
+    def __ge__[O2](  # [0007] from spike 0006
+        self, other: Column[O2, _T | None], /
+    ) -> Pred[_O_co | O2]: ...  # [0007] from spike 0006
+    @overload  # [0007] from spike 0006
+    def __ge__[O2, U](  # [0007] from spike 0006
+        self: Column[_O_co, U | None],
+        other: Column[O2, U],
+        /,  # [0007] from spike 0006
+    ) -> Pred[_O_co | O2]: ...  # [0007] from spike 0006
+    @overload  # [0007] from spike 0006
+    def __ge__(self, other: _T, /) -> Pred[_O_co]: ...  # [0007] from spike 0006
     def in_(  # [0007]
         self, values: Iterable[_T], /
     ) -> Pred[_O_co]: ...  # [0007] #59 "needs an `in_` operand"
-    def __lt__(self, other: _T, /) -> Pred[_O_co]: ...
-    def __ge__(self, other: _T, /) -> Pred[_O_co]: ...
-    def __gt__(self, other: _T, /) -> Pred[_O_co]: ...  # [0002] 4.3 shows `<` and `>=` only
-    def __le__(self, other: _T, /) -> Pred[_O_co]: ...  # [0002]
 
 _O_inv = TypeVar("_O_inv")  # [0007] invariant on purpose: see RelOp
 _P_inv = TypeVar("_P_inv")  # [0007] invariant on purpose: see Path
+_LP_co = TypeVar("_LP_co", covariant=True)  # [0007] see LoadPath
 
 class Path(Generic[_P_inv]):  # noqa: UP046  # [0007] a load-path step owned by _P_inv; Load.after's arguments
     """[0007] Invariant in its owner: with the covariant OwnedExpr[E] as the type of load
     arguments, both checkers accepted `Load.after(point_wallet, Order.items)` (E solved from two
     arguments, spike 0001 P-A). Invariance leaves the returned entity as the only solution."""
+
+class LoadPath(Generic[_LP_co]):  # noqa: UP046  # [0007] a step of `relation.load(...)`; covariant
+    """[0007] Only relations derive from it, so a column is not a load path. Round 3 typed
+    `relation.load` with `OwnedExpr`, which columns also are: both checkers accepted
+    `Order.items.load(Item.quantity)` (independent review). Covariant, so a nullable
+    many-to-one (`T | None`) still takes a path of T."""
 
 class RelOp(Generic[_O_inv]):  # noqa: UP046  # [0007] #60: a relation operation; not an Op
     """[0007] A relation operation on the owned children of a row of _O_inv.
@@ -96,7 +185,9 @@ class RelOp(Generic[_O_inv]):  # noqa: UP046  # [0007] #60: a relation operation
 class AddOp(RelOp[_O_inv]):  # [0007] `add` - the only relation operation `insert` takes
     """[0007] Adds an owned child."""
 
-class Relation[O, E](OwnedExpr[O], Path[O]):  # [0007] bases OwnedExpr[O], Path[O] (was Expr)
+class Relation[O, E](  # [0007]
+    OwnedExpr[O], Path[O], LoadPath[O]
+):  # [0007] bases OwnedExpr, Path, LoadPath (was Expr)
     """Class access of a collection relation of O with children E (`Order.items`).
 
     [0007] #60 point 4: a relation that is not `owned` has no write operations; only
@@ -107,8 +198,8 @@ class Relation[O, E](OwnedExpr[O], Path[O]):  # [0007] bases OwnedExpr[O], Path[
     # [0002] partial loads of section 8.2 ("`.exists()`, `.where(...)`"); no signature in the design
     def where(self, *preds: Pred[E]) -> Relation[O, E]: ...  # [0002]
     def exists(self) -> Expr: ...  # [0002]
-    # [0007] #59 point 1: the receiver fixes E, so the covariant OwnedExpr suffices here
-    def load(self, *paths: OwnedExpr[E]) -> Relation[O, E]: ...  # [0007]
+    # [0007] #59 point 1: the receiver fixes E, so a covariant path type suffices here
+    def load(self, *paths: LoadPath[E]) -> Relation[O, E]: ...  # [0007]
 
 class OwnedRelation[O, E](Relation[O, E]):  # [0007] #60 point 4: the relation type of `owned=True`
     def add(self, item: E, /) -> AddOp[O]: ...  # [0007] (was on Relation, returning Op[O])
@@ -118,11 +209,13 @@ class OwnedRelation[O, E](Relation[O, E]):  # [0007] #60 point 4: the relation t
     ) -> RelOp[O]: ...  # [0007] (was on Relation)
     # [0007] `where` / `load` are inherited: they return the read-only Relation[O, E]
 
-class RelColumn[O, T](OwnedExpr[O], Path[O]):  # [0007] bases OwnedExpr[O], Path[O] (was Expr)
+class RelColumn[O, T](  # [0007]
+    OwnedExpr[O], Path[O], LoadPath[O]
+):  # [0007] bases OwnedExpr, Path, LoadPath (was Expr)
     """Class access of a single-valued relation (`Order.user`)."""
 
     # [0007] #59 point 1: covariant, so a `T | None` relation takes a path of T (round 3)
-    def load(self, *paths: OwnedExpr[T]) -> RelColumn[O, T]: ...  # [0007]
+    def load(self, *paths: LoadPath[T]) -> RelColumn[O, T]: ...  # [0007]
 
 # --------------------------------------------------------------------------- field descriptors
 class Col[T]:
@@ -188,7 +281,7 @@ def fk[T](target: Callable[[], type[object]], /) -> Col[T]: ...
 @overload  # [0002] a nullable FK with a default (4.2 shows only required FKs)
 def fk[T](target: Callable[[], type[object]], /, *, default: T) -> Col[T]: ...  # [0002]
 def parent_fk[T](  # [0007]
-    target: Callable[[], type[object]],
+    target: Callable[[], type[object]],  # [0007]
     /,
     *,
     init: Literal[False] = False,  # [0007]
@@ -341,7 +434,7 @@ class Load:
     @overload  # [0007]
     @staticmethod  # [0007]
     def after[**P, E: Entity](  # [0007]
-        fn: Callable[P, list[E]],
+        fn: Callable[P, Sequence[E]],  # [0007] round 4: was list[E]
         /,
         *paths: Path[E],
     ) -> Load: ...  # [0007]

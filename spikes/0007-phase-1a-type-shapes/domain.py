@@ -225,7 +225,8 @@ class Stock(Entity, table="stocks"):
     warehouse: Rel[Warehouse] = many_to_one(via=lambda: Stock.warehouse_id)
 
     # spike 0002: `Check(lambda: Stock.allocated <= Stock.quantity)` was rejected by both checkers
-    # (#51, spike 0002's fail_findings.py); #51's overloads accept it - not used here
+    # (#51, spike 0002's fail_findings.py). [0007] round 4: with spike 0006's overloads on all six
+    # operators both accept the comparison (pass_shapes.py); the Check is not declared here
 
 
 class Allocation(Entity, table="allocations"):

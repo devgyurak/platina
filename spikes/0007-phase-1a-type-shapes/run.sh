@@ -12,24 +12,31 @@ uv run python -m tools.typetests "$D/lib.pyi" "$D/domain.py" "$D/pass_shapes.py"
   "$D/fail_shapes.py" "$D/probe_runtime_only.py" "$D/uc01_payment.py" "$D/uc02_refund.py" \
   "$D/uc03_coupon_checkout.py" "$D/uc04_stock_allocation.py" "$D/uc05_seat_hold.py" \
   "$D/uc06_order_merge.py" "$D/uc07_expire_orders.py" "$D/uc08_transfer_a.py" \
-  "$D/uc08_transfer_b.py" "$D/uc09_profile_edit.py" 2>&1 | tee "$R/typetests.txt"
+  "$D/uc08_transfer_b.py" "$D/uc09_profile_edit.py" "$D/uc10_payment_approval.py" 2>&1 \
+  | tee "$R/typetests.txt"
 
 # 2. The checkers disagree inside Annotated[...] metadata by design: run the probe directly.
-(cd "$D" && uv run pyright probe_annotated.py >"results/probe_annotated-pyright.txt" 2>&1 || true)
+(cd "$D" && uv run pyright probe_annotated.py >"results/probe_annotated-pyright.txt" 2>&1 || test $? -eq 1)
 (cd "$D" && uv run mypy --strict --show-error-codes --no-incremental probe_annotated.py \
-  >"results/probe_annotated-mypy.txt" 2>&1 || true)
+  >"results/probe_annotated-mypy.txt" 2>&1 || test $? -eq 1)
+# Round 4 (independent review): `owned=` given a bool, and a declared type widening an owner.
+for f in probe_owned_flag probe_owner_widen; do
+  (cd "$D" && uv run pyright "$f.py" >"results/$f-pyright.txt" 2>&1 || test $? -eq 1)
+  (cd "$D" && uv run mypy --strict --show-error-codes --no-incremental "$f.py" \
+    >"results/$f-mypy.txt" 2>&1 || test $? -eq 1)
+done
 
 # 3. Variants: one TypeVar made covariant, nothing else changed. For each, the error lines of
 #    fail_shapes.py are compared with the main stub's; the variant stub itself must stay clean
 #    under both checkers.
 errors() { # $1 dir -> "checker line" per error in fail_shapes.py, sorted
-  (cd "$1" && uv run pyright --outputjson fail_shapes.py 2>/dev/null || true) | uv run python -c '
+  (cd "$1" && uv run pyright --outputjson fail_shapes.py 2>/dev/null || test $? -eq 1) | uv run python -c '
 import json, sys
 d = json.load(sys.stdin)
 for x in d["generalDiagnostics"]:
     if x["severity"] == "error":
         print("pyright", x["file"].rsplit("/", 1)[-1], x["range"]["start"]["line"] + 1)'
-  (cd "$1" && uv run mypy --strict --show-error-codes --no-incremental fail_shapes.py 2>&1 || true) \
+  (cd "$1" && uv run mypy --strict --show-error-codes --no-incremental fail_shapes.py 2>&1 || test $? -eq 1) \
     | sed -nE 's/^([^:]+):([0-9]+): error: .*/mypy \1 \2/p'
 }
 errors "$D" | sort -u >"$R/errors-main.txt"

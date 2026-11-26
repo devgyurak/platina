@@ -52,6 +52,7 @@ def test_transfer_inserts_the_root_with_two_legs() -> None:
     dst = Account.stub(balance=Money(Decimal("0")))
     r = transfer(src, dst, Money(Decimal("30")))
     assert r.updated(src)[Account.balance] == Add(Decimal("-30"))
+    assert r.updated(dst)[Account.balance] == Add(Decimal("30"))
     assert len(r.inserted(Transfer)) == 1
     assert sorted(leg.side.value for leg in r.inserted(Leg)) == ["credit", "debit"]
 
