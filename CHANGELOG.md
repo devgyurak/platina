@@ -79,16 +79,6 @@ All notable changes are documented here. Format: [Keep a Changelog](https://keep
     `review-change`, `architecture-guard` and `commit` skills follow.
 - GitHub organization icon in `docs/assets/` (see its README): a hallmark-style plate with a
   "Pt" ligature, platinum `#E5E4E2` on graphite `#15171B`, as SVG master and 1024 / 500 px PNGs.
-- Spike 0007 (#79, design 9.6: the type shapes of #48, #57, #59 and #60 under pyright and mypy):
-  write-up `docs/spikes/0007-phase-1a-type-shapes.md`, reviewed by architect (two rounds) and an
-  independent review session, reproduced by type-reviewer. Holds on the lines it wrote under three
-  conditions: the owner of a relation operation and of a `Load.after` path must be invariant (both
-  checkers otherwise accept another entity's operation in `insert(...)` and another entity's path
-  in `Load.after(...)`), `relation.load(...)` takes relations only (a covariant `LoadPath`), and a
-  relation operation is not a column operation. Known checker differences remain (mypy accepts a
-  declared type that widens a relation's owner; inline `Annotated` metadata). Spike 0002's use
-  cases 3, 6 and 8 become expressible. Design 9.6 links the write-up; the design edits and two ADRs
-  (#60 point 4, #59 point 2) follow after the maintainer's reading, with four choices open.
 - Phase 1 scope decided (#6, maintainer, 2026-11-26): design 9.6 splits Phase 1 at the first
   working `app.run` into 1a (core execution path, #9-#22, release) and 1b (events, queries and
   tooling, #23-#29); `platina pull` and migration fidelity move to Phase 2 (#71, #70); the
@@ -160,7 +150,21 @@ All notable changes are documented here. Format: [Keep a Changelog](https://keep
     to autogenerate when the internal schema is the default schema; the internal-schema downgrade
     is forward-only (expand/contract stays open in #63); #22 runs on test-only DDL and does not
     wait for #72.
-
+- Spike 0007 (#79, design 9.6: the type shapes of #48, #57, #59 and #60 under pyright and mypy):
+  write-up `docs/spikes/0007-phase-1a-type-shapes.md`, reviewed by architect (two rounds) and two
+  independent review sessions, reproduced by type-reviewer (five rounds). Holds on the lines it
+  wrote under three conditions: the owner of a relation operation and of a `Load.after` path must
+  be invariant (both checkers otherwise accept another entity's operation in `insert(...)` and
+  another entity's path in `Load.after(...)`), `relation.load(...)` takes relations only (a
+  covariant `LoadPath`), and a relation operation is not a column operation. Known checker
+  differences remain (mypy accepts a declared type that widens a relation's owner; inline
+  `Annotated` metadata; an `owned=` flag given a literal-initialised constant). Spike 0002's use
+  cases 3, 6 and 8 become expressible. The maintainer decided (2026-11-26): `owns_many(...)`
+  declares an owned relation (no `owned=` flag), candidate B writes the owned children of a new
+  root through `insert(root, *children)`, and `Entity.where` requires a predicate. Design 9.6
+  links the write-up; §4.3 / 4.4 / 4.7 / 4.8 / 8.2 change with the two follow-up ADRs (#60 point 4,
+  #59 point 2), the second of which also decides whether row sets replace partial `.where`
+  loads.
 ### Changed
 - Entity syntax (ADR-0003, accepted): entities inherit `Entity` with table options as class
   keywords instead of an `@entity` decorator, are created with the keyword constructor

@@ -165,4 +165,12 @@ class F29Entity(Entity, table="f29"):
 # --- round 4 (independent review): a column is not a load path
 column_as_path = Order.items.load(Item.quantity)  # expect-error[reportArgumentType, arg-type]: F30 a column is not a load path
 column_as_path_many_to_one = Stock.warehouse.load(Warehouse.group)  # expect-error[reportArgumentType, arg-type]: F31 the same under a many-to-one
+
+
+# --- round 5 (maintainer, 2026-11-26): `Entity.where` requires one predicate
+no_predicate = Order.where()  # expect-error[reportCallIssue, reportUnknownVariableType, call-arg]: F32 a row set needs one predicate
+def f_delete_every_row() -> Changes:
+    return Order.where().delete()  # expect-error[reportCallIssue, reportUnknownMemberType, reportUnknownVariableType, call-arg]: F33 delete every row
+def f_set_every_row(m: Money) -> Changes:
+    return Order.where().set(Order.total.to(m))  # expect-error[reportCallIssue, reportUnknownMemberType, reportUnknownVariableType, call-arg]: F34 set every row
 # fmt: on

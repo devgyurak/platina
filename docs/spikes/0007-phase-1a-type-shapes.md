@@ -66,34 +66,39 @@ which pins them; rounds 1-3 had #51's overloads on `__eq__` only, from its decis
     its subclass, is the only kind `insert` takes. `Entity.set(*ops: Op[Self] | RelOp[Self])`;
     `RowSet.set(*ops: Op[E])` takes column operations only.
   - A descriptor `Owned[T]` (class access `OwnedRelation[O, E]`, instance access `Sequence[E]`);
-    `one_to_many` gets two overloads, `owned: Literal[True]` -> `Owned[T]` and `owned:
-    Literal[False] = ...` -> `Rel[T]`. Alternative probed next to it: `owns_many(...) -> Owned[T]`,
-    a separate specifier without a flag.
+    `owns_many(...) -> Owned[T]` declares it (chosen by the maintainer, round 5), next to
+    `one_to_many(...) -> Rel[T]`. The rejected alternative, two `one_to_many` overloads on
+    `owned: Literal[True]` -> `Owned[T]` / `owned: Literal[False] = ...` -> `Rel[T]`, stays in the
+    stub, marked, only for its probes (F8, F9, `probe_owned_flag.py`).
   - `parent_fk` (#49) as a field specifier.
   - `RowSet[E]`, declared **invariant**, with `set(*ops) -> SetChange[E]` and `delete() ->
-    Changes`; `Entity.where(...) -> RowSet[Self]` (was `SetChange[Self]`); `Entity.delete() ->
+    Changes`; `Entity.where(pred, /, *preds) -> RowSet[Self]` (was `SetChange[Self]`; one
+    predicate required since round 5); `Entity.delete() ->
     Changes`; `insert[E: Entity](entity: E, /, *children: AddOp[E]) -> Changes` (candidate A uses
-    no `children`, candidate B uses them). Spike 0002's placeholders `UNDECIDED_insert` /
+    no `children`, candidate B - chosen - uses them). Spike 0002's placeholders `UNDECIDED_insert` /
     `UNDECIDED_delete` are gone.
   - `Load.when(..., missing=)`; `Load.after` as three overloads: `fn` returning `RowSet[E]`,
     `Sequence[E]` (round 4; was `list[E]`) or `E | None`, each with `*paths: Path[E]`, `missing=`
     only on the last.
-  - Domain: the four `owned=True` relations are annotated `Owned[list[...]]`, and their children's
+  - Domain: the four owned relations are annotated `Owned[list[...]]` and declared with
+    `owns_many(...)` (round 5; before, `one_to_many(..., owned=True)`), and their children's
     foreign keys are `parent_fk(...)`; three stale comments updated. Final hashes: `lib.pyi`
-    `c4ea74464353eb68...`, `domain.py` `4abdfda57ba3ff08...`.
+    `9c0de329717a2ac2...`, `domain.py` `05862bf0dad939ae...`.
 
 ## Method
 1. This Question was written before the probes ran.
 2. Files (all under `spikes/0007-phase-1a-type-shapes/`):
    - `pass_shapes.py` - lines both checkers must accept, with `assert_type` on what they infer.
    - `fail_shapes.py` - lines both must reject, each marked `# expect-error[<pyright rule>, <mypy
-     code>]` with the codes observed (F1-F20 in round 1, F21-F29 in round 2).
+     code>]` with the codes observed (F1-F20 in round 1, F21-F29 in round 2, F30-F31 in round 4,
+     F32-F34 in round 5).
    - `probe_runtime_only.py` - misuse the decisions reject at seal or at run time; both checkers
      must accept every line (R1-R18; R8 of round 1 became F27).
    - `probe_annotated.py` - four misuse lines written inside `Annotated[...]` metadata, run per
      checker (they disagree by design, spike 0002 X1).
-   - `probe_owned_flag.py`, `probe_owner_widen.py` (round 4) - run per checker: `owned=` given a
-     `bool` that is not a literal, and a declared type that widens a relation's owner.
+   - `probe_owned_flag.py`, `probe_owner_widen.py` (round 4; the first extended in round 5) - run
+     per checker: `owned=` given a constant (call- and literal-initialised), and a declared type
+     that widens a relation's owner.
    - The use cases: `uc03_coupon_checkout.py`, `uc04_stock_allocation.py`, `uc05_seat_hold.py`,
      `uc06_order_merge.py`, `uc07_expire_orders.py`, `uc08_transfer_a.py`, `uc08_transfer_b.py`
      (the rewrites), and `uc01_payment.py`, `uc02_refund.py`, `uc09_profile_edit.py`,
@@ -162,6 +167,8 @@ checkers differ on other lines, the sections below say so.
 | S4 | F9 `items: Owned[list[Item]] = one_to_many(...)` (no `owned=True`) | rejected (`reportAssignmentType`) | rejected (`assignment`) |
 | S4 alt | `items: Owned[list[Item]] = owns_many(...)` / F28 `items: Rel[list[Item]] = owns_many(...)` | `OwnedRelation[S4bOrder, Item]` / rejected (`reportAssignmentType`) | the same / rejected (`assignment`) |
 | S1 | F29 a field named `delete` | rejected (`reportIncompatibleMethodOverride`) | rejected (`assignment`) |
+| S2 | F32-F34 `Order.where()`, `Order.where().delete()`, `Order.where().set(...)` - no predicate (round 5: `where(pred, /, *preds)`) | rejected (`reportCallIssue`) | rejected (`call-arg`: too few arguments) |
+| S2 | `Order.where(*preds)`, `preds: list[Pred[Order]]` (R17) | accepted | accepted |
 | - | F12 `Leg(transfer_id=t.id, ...)` (#49 as given) | rejected (`reportCallIssue`) | rejected (`call-arg`) |
 | S5 | `Order.items.load(Item.allocations.load(Allocation.stock))` | `Relation[Order, Item]` | the same |
 | S5 | `Seat.tickets.load(Ticket.order)` / `Ticket.order.load(Order.items)` | `Relation[Seat, Ticket]` / `RelColumn[Ticket, Order]` | the same |
@@ -233,13 +240,18 @@ solve their entity type from more than one argument: `insert` from the entity an
   - Declaring the relation types invariant does not change it (the reproduction's
     `variant_ownedrel_inv/`): it is how mypy infers a descriptor's class access under an expected
     type, not variance. A known gap for ADR-0004's amendment, not closed here.
-- **`owned=` given a `bool` that is not a literal** (`probe_owned_flag.py`, round 4). The
-  independent review reported "pyright accepts it, mypy rejects it". Rerun: in strict mode both
-  checkers reject every line, for different reasons. pyright evaluates the call to the union of
-  both overloads' results (`Owned[list[Item]] | Rel[Unknown]`) and rejects the declaration
-  (`reportAssignmentType`), or, with no declared type, only reports the unknown part
-  (`reportUnknownVariableType`). mypy rejects the call (`call-overload`). Outside strict mode
-  pyright would accept the unannotated form.
+- **`owned=` given a constant instead of a literal** (`probe_owned_flag.py`; the rejected
+  `owned=` alternative). Two cases, both observed:
+  - A constant initialised from a literal (`ANNOTATED: bool = True`, `BARE = True`; G3, G4 - the
+    independent review's case, added in round 5): pyright narrows it to the literal and accepts
+    the declaration (no error); mypy rejects the call (`call-overload`). **The checkers split.**
+  - A constant initialised from a call (`FLAG: bool = flag()`; G0-G2, round 4): both reject in
+    strict mode, for different reasons - pyright evaluates the call to the union of both
+    overloads' results (`Owned[list[Item]] | Rel[Unknown]`) and rejects the declaration
+    (`reportAssignmentType`), or with no declared type only reports the unknown part
+    (`reportUnknownVariableType`); mypy rejects the call (`call-overload`).
+  Round 4 recorded only the second case and called the review's report different; it tested a
+  different input. Both observations hold.
 - **An alternative fix, from the reproducer**: `Load.after(fn, missing=...) -> LoadAfter[E]` with
   the paths attached by `.load(*paths)`, so the receiver fixes `E`. Both checkers then also reject
   these lines (Reproduction, `variant_after_receiver/`).
@@ -264,7 +276,7 @@ Both checkers accept every line; the decision names the check that catches it in
 | R14 | `insert_all([t, Leg(...)])` (a root and an owned child through the bulk path) | not decided (#33) |
 | R15 | `Profile(Order.items, Item.allocations)` (the flat path) | seal (#59 point 1) |
 | R16 | `missing="none"` where the result is not optional: `Load.after` of a function returning `Wallet`, and `Load.when(..., missing="none")` for a parameter declared `Wallet` (round 4, observed by the independent review, rerun) | seal (#59) |
-| R17 | `Order.where().delete()`, `Order.where().set(...)` - a row set without predicates, every row (round 4) | not decided (an open question, below) |
+| R17 | `Order.where(*preds)` with `preds: list[Pred[Order]]` - an unpacked list that may be empty at run time (round 5) | run time: "at least one predicate" (the maintainer's decision) is a type error only for a literal call (F32-F34) |
 | R18 | the owned declaration, the child's `parent_fk` and `aggregate_root=True` disagree: a plain `fk` under an `Owned` relation, a `parent_fk` under no owned relation, owned children on a class that is not an aggregate root (round 4) | seal - spike 0006's open item "how `owned=True` and `parent_fk` are kept consistent" (#9) |
 
 Under both candidates `t.set(...)` on a new entity type-checks (a new entity and a loaded snapshot
@@ -308,8 +320,8 @@ is rejected by both, once the conditions below hold. Where the checkers still di
 - inside `Annotated[...]` metadata mypy checks nothing (X1);
 - mypy accepts a declared type written directly on a relation's class access that widens its
   owner, and then F11 and F21 pass (`probe_owner_widen.py`);
-- `owned=` given a plain `bool`: both reject in strict mode, for different reasons
-  (`probe_owned_flag.py`);
+- `owned=` (the rejected alternative) given a literal-initialised constant: pyright accepts, mypy
+  rejects (`probe_owned_flag.py`);
 - on F13-F17 and F21 mypy names a misleading reason (the instance type, or the function); for a
   predicate over another entity in `where` built from two columns
   (`Order.where(Stock.allocated <= Stock.quantity)`) mypy reports the operator (`Unsupported
@@ -336,77 +348,84 @@ form accepted a path of another entity. Both the architect and the type-reviewer
 | Shape | Verdict | Condition or cost |
 |---|---|---|
 | S1 `Entity.delete()` | holds | `.delete()` on a ref is a runtime error (R1), as `.set` on a ref; `delete` is a reserved field name (F29) - as every `Entity` method name is (the reproduction found `set` rejected the same way) |
-| S2 `RowSet[Self]` | holds | declared invariant; a relation operation in a set change is rejected only because `RelOp` is not an `Op` (F27) |
-| S3 `insert`, candidate A | holds | needs a runtime rule for `.set` on a new entity (R5) |
-| S3 `insert`, candidate B | holds | only with an invariant `RelOp` and `AddOp` children (F10, F11, F24); `.set` on a new entity is a runtime error (R13) |
-| S4 owned-only operations | holds | read-only `where` / `load` views (F25, F26); either `Owned[...]` + `owned=True` (the annotation, the specifier and its flag - checked against each other, F8 / F9) or `owns_many(...)` (the annotation and the specifier, two statements without a flag, F28); owned children can still be written directly (R10-R12); the declaration's consistency with `parent_fk` and the root is seal's (R18) |
+| S2 `RowSet[Self]` | holds | declared invariant; a relation operation in a set change is rejected only because `RelOp` is not an `Op` (F27); one predicate is required (round 5, F32-F34), an unpacked possibly-empty list stays a runtime rule (R17) |
+| S3 `insert`, candidate A (**rejected**, maintainer 2026-11-26) | holds | needs a runtime rule for `.set` on a new entity (R5); kept as a record in `uc08_transfer_a.py` |
+| S3 `insert`, candidate B (**chosen**) | holds | only with an invariant `RelOp` and `AddOp` children (F10, F11, F24); `.set` on a new entity is a runtime error (R13) |
+| S4 owned-only operations | holds | read-only `where` / `load` views (F25, F26); declared with **`owns_many(...)`** (chosen; the annotation and the specifier, F28; the domain uses it since round 5). The rejected `owned=True` flag (F8, F9) splits the checkers for a literal-initialised constant (`probe_owned_flag.py`). Owned children can still be written directly (R10-R12); the declaration's consistency with `parent_fk` and the root is seal's (R18) |
 | S5 nested paths | holds | with the covariant `LoadPath` on `relation.load` (round 4; F30, F31); checked by mypy only outside `Annotated[...]` (X1); the flat form is a seal error (R15) |
 | S6 `Load.after` forms | holds | **only with the invariant `Path`** (F17, F21, F22); the same X1 condition; parameter type vs function result and `missing="none"` on a non-optional result stay seal checks (R9, R16) |
 | S7 `missing` on `Load.when` | holds | - |
 | S8 `= INJECTED` on dependent loads | holds | passing them to `bind`, leaving them out of a direct call, and a misplaced `INJECTED` are runtime / seal errors (R2-R4) |
 
-Consequence for the design: **no edit in this change.** These sections wait for the maintainer to
-read this verdict (#79):
-- design 4.3 (`Entity.where` is a row set), 4.4, 4.7, 4.8, 4.12 (`r.removed` cannot see cascaded
-  rows) and 8.2 (#48 needs no follow-up: PR #77 records it in 4.5 / 9.1);
-- closing #57 / #59 / #60.
+Consequence for the design: **no edit to §4.2 / 4.3 / 4.4 / 4.7 / 4.8 / 8.2 in this change.** They
+change with the two follow-up ADRs; #57 / #59 / #60 close after them. §9.6 links this write-up and
+the maintainer's decisions (#48 needs no follow-up: PR #77 recorded it in 4.5 / 9.1).
 
-Two ADRs follow, in these directions.
+### Maintainer decisions (2026-11-26)
+1. **`owns_many(...)`** declares an owned relation; `one_to_many(..., owned=True)` goes away (#9
+   removes the flag; the stub keeps it only as the rejected alternative's probe). The argument is
+   the one #49 used for `parent_fk` over `fk(parent=True)`: if behaviour differs, the name
+   differs - the declaration decides version bumps, cascade delete and which write operations
+   exist. And the flag splits the checkers for a literal-initialised constant (above).
+2. **Candidate B**: the owned children of a new root are written `insert(t,
+   Transfer.legs.add(...), ...)`; `.set` is for loaded snapshots only, and `.set` on a new entity
+   is a runtime error (R13). One runtime rule instead of two (R13 replaces A's R5), and `insert`
+   rejects column and non-`add` operations by type (F10, F24). The cost, accepted: a new child
+   cannot bring owned children of its own.
+3. **A row set needs a predicate**: `Entity.where(pred, /, *preds)`. `Order.where()` with
+   `.delete()` / `.set(...)` is a type error in both checkers (F32-F34); an unpacked list that
+   may be empty is not caught by types (R17). Only `Entity.where` changes - a relation's
+   `.where(...)` (partial loads) and the query path's `where` are unchanged.
 
+Open: whether row sets replace partial `.where` loads (ADR 2, below).
+
+### ADR directions
 1. **Writes beyond `.set`: `insert`, `delete`, and relation operations only through an owned
    root** (#57, #60 points 1, 3, 4).
    - Changes design 8.2 "Write syntax: a single `.set`" (`insert` and `.delete()` are write verbs
      outside `.set`; ADR-0003's "creation and modification are different operations" is the
-     argument), "Aggregate boundaries", "Field type surface" (`Owned[...]` next to `Rel[...]`)
-     and 4.4.
-   - Amends ADR-0003 (`delete` reserved, F29; every `Entity` method name is) and ADR-0004: Decision 3, the variance of `RelOp`,
-     `Path` and `RowSet` pinned by type tests; Decision 4, two new places where the owner is
-     solved from several arguments and still checked by type, thanks to invariance. Its known gap goes in too: under mypy a declared type written on a relation's class access widens the owner and gets past both (`probe_owner_widen.py`).
-   - Proposes:
-     - An `owned` relation has `add` / `remove` / `update`. Every other relation is read and load
-       only, and its rows are written directly: `insert`, `row.set`, `row.delete()`.
-     - Candidate A or B for owned children of a new root (open for the maintainer, below). What
-       separates them is not what the types reject: both reject another entity's operation
-       (F11 under A: `t.set(Order.items.add(item))` is rejected by `Entity.set`'s receiver, as
-       under B by `insert`). B's gain is one runtime rule instead of two - "`.set` on a new entity
-       is an error" (R13) replaces A's "takes relation operations only" (R5) - and `insert`
-       rejecting column and non-`add` operations (F10, F24). B's cost: a new child cannot bring
-       owned children of its own (below).
-   - Decides:
-     - `Owned[...]` + `owned=True` vs `owns_many(...)` (open for the maintainer, below). "If
-       behaviour differs, the name differs" is the argument for `owns_many`, now that the
-       declaration decides version bumps, cascade delete and which write operations exist.
-     - What R10-R12 raise (a direct write of an owned child), or a type-level marker for owned
-       children (not probed).
-     - That `insert_all` is the bulk path only (Phase 2, #33), whether it rejects owned children
-       (R14), and that `insert_all` in the commit batch (#60 point 2) stays with #33.
-     - The rejection of `identity`-key roots with owned children in Phase 1a.
-     - Nested relation operations (spike 0002 X15): `OwnedRelation.update` takes `Op[E] |
+     argument), "Aggregate boundaries", "Field type surface" (`Owned[...]` / `owns_many` next to
+     `Rel[...]` / `one_to_many`), 4.3 (`Entity.where` needs a predicate) and 4.4.
+   - Amends ADR-0003 (`delete` reserved, F29; every `Entity` method name is) and ADR-0004:
+     Decision 3, the variance of `RelOp`, `Path` and `RowSet` pinned by type tests; Decision 4,
+     two new places where the owner is solved from several arguments and still checked by type,
+     thanks to invariance - with its known gap: under mypy a declared type written on a
+     relation's class access widens the owner and gets past both (`probe_owner_widen.py`).
+   - **Decided by the maintainer (2026-11-26)**: `owns_many`; candidate B (`.set` on a new
+     entity is an error; a new child brings no children of its own); `Entity.where` requires a
+     predicate.
+   - **Still for the ADR to decide:**
+     - that seal checks `owns_many`, the child's `parent_fk` and `aggregate_root=True` against
+       each other (types do not, R18), and the final names (#9);
+     - what R10-R12 raise (a direct write of an owned child), or a type-level marker for owned
+       children (not probed);
+     - `insert_all` and owned children: the bulk path only (Phase 2, #33), whether it rejects
+       owned children (R14), and that `insert_all` in the commit batch (#60 point 2) stays with
+       #33;
+     - the rejection of `identity`-key roots with owned children in Phase 1a;
+     - nested relation operations (spike 0002 X15): `OwnedRelation.update` takes `Op[E] |
        RelOp[E]`, so an operation on an owned grandchild type-checks - allowed or not, and
-       whether it bumps the root's version.
-     - Under candidate B a new child cannot bring owned children of its own (`add(item)` takes
-       none, and `.set` on a new entity is R13's error): out of scope, or `add(item, *children:
-       AddOp[E])`.
-   - **#57's open semantics**, which gate the Phase 1a exit (use case 6):
-     - `src.delete()` also deletes `Order.tickets`, an owned relation the use case did not load;
-     - a non-owned row (an `Allocation` of a deleted item) still pointing at a deleted child makes
-       the commit fail on a foreign key - say which error the caller gets;
-     - whether `.delete()` checks `version` / `expected_version`;
-     - `.delete()` on a new entity;
-     - `.delete()` and `.set` of one row in one step (`ConflictingWrites` per the decision);
-     - the alternative of requiring owned relations to be loaded, which would also let the test
-       API list the deleted children;
-     - the set-level `RowSet.delete()` and the owned children it never reads (Phase 2, #33, but
-       the same decision);
+       whether it bumps the root's version;
+     - **#57's open semantics**, which gate the Phase 1a exit (use case 6): `src.delete()` also
+       deletes `Order.tickets`, an owned relation the use case did not load; whether `.delete()`
+       checks `version` / `expected_version`; `.delete()` on a new entity; `.delete()` and `.set`
+       of one row in one step (`ConflictingWrites` per the decision); the alternative of requiring
+       owned relations to be loaded (the test API could then list the deleted children); the
+       set-level `RowSet.delete()` and the owned children it never reads (Phase 2, #33, the same
+       decision);
      - the cascade DELETE of a root's owned children is itself a set-level statement (by the
        root's key): how it meets `IntraUsecaseConflict` (an update of one of those children in
        the same use case) and the commit planner's edges (#15: child DELETE before the root's);
-     - the error class of a `23503` (a foreign key still pointing at a deleted row): a
-       `DatabaseError` subclass, or a `UsageError` that names the non-owned relation to clear.
+     - the error class of a `23503` (a non-owned row still pointing at a deleted child, e.g. an
+       `Allocation` of a deleted item): a `DatabaseError` subclass, or a `UsageError` that names
+       the non-owned relation to clear.
+   - Phase 1a's exit (use cases 6, 8, 9) waits on ADR 1 only: none of them uses a row-set load or
+     another ADR 2 form, so ADR 2 can follow with the set-load implementation in Phase 1b (§9.6).
 2. **Row-set loads and the dependent-load forms** (#59 points 2, 3).
    - Changes design 8.2 "Dependent loads" and "Partial loads of large aggregates", and 4.7.
    - Proposes:
-     - `Entity.where(...)` is a `RowSet[E]`, used as a set change, a set-level delete or a load.
+     - `Entity.where(...)` is a `RowSet[E]` (with at least one predicate), used as a set change, a
+       set-level delete or a load.
      - A `Load.after` function returns a `RowSet[E]`, a `Sequence[E]` of refs or `E | None`, and
        `missing=` applies only to one ref (and only to an optional result - a seal rule, R16).
      - Its load arguments: either `*paths: Path[E]` with an invariant `Path` (condition 2), or the
@@ -416,18 +435,22 @@ Two ADRs follow, in these directions.
        receiver form adds a `LoadAfter[E]` type and a second call). One observation in favour of
        the receiver form (independent review): there mypy's message points at the wrong path,
        while with `*paths: Path[E]` it blames the function (F17, F21).
-   - **Must name the invariants it bends.** Three forms can load the same rows, and no check can
+   - **Open (not decided by the maintainer): do row sets replace partial `.where` loads?** The
+     ADR must name the invariants it bends. Three forms can load the same rows, and no check can
      tell them apart (a function body is opaque to seal):
      - a partial load `Load(Order.items.where(Item.status == ACTIVE))` and a `Load.after`
        returning `Item.where(Item.order_id == order.id, Item.status == ACTIVE)`;
      - `Load.when(..., match=...)` and `Load.after(point_wallet)`.
 
-     That is "one way per operation" kept by a documented rule, not by structure. The primary
-     alternative to weigh: row sets *replace* partial `.where` loads (keeping `.count()` /
-     `.exists()`). It removes one overlap and closes the hole of a module-level partial load that
-     calls the clock once, since a `Load.after` function runs again on every attempt with a fresh
-     `Now`. Use case 5 would not lose anything, because it uses whole relations. `Load.when`
-     stays the form that folds into a subquery with no extra round trip.
+     That is "one way per operation" kept by a documented rule, not by structure. Replacing
+     partial `.where` loads (keeping `.count()` / `.exists()`) removes one overlap and closes the
+     hole of a module-level partial load that calls the clock once, since a `Load.after` function
+     runs again on every attempt with a fresh `Now`. **Its cost to weigh:** a constant filter that
+     is today part of load stage 1 (a partial load folds into the first round trip) becomes a
+     `Load.after`, which adds a load stage - one more round trip per such load, against design
+     8.3's "two round trips" (1 load batch + 1 commit batch). Use case 5 would not lose anything,
+     because it uses whole relations. `Load.when` stays the form that folds into a subquery with
+     no extra round trip.
    - States the transactional consequences:
      - load arguments and nested paths on `Load.after` results add no stage;
      - row-set results are ordered by primary key, so the bodies are deterministic across retries
@@ -449,17 +472,6 @@ Two ADRs follow, in these directions.
 
 Both ADRs carry X1's consequence: write load declarations as named values, because mypy does not
 check them inline in `Annotated[...]`.
-
-**Open for the maintainer** (the spike records the choices; it does not choose):
-1. `owns_many(...)` instead of `Owned[...]` + `owned=True` - answer changes ADR 1, design 4.2 /
-   8.2 "Field type surface", the stub's `one_to_many` overloads.
-2. Candidate B for owned children of a new root (and with it, whether a new child may bring
-   children: `add(item, *children)`) - ADR 1, design 4.4 / 8.2 "Write syntax".
-3. Row sets replace partial `.where` loads (keeping `.count()` / `.exists()`) - ADR 2, design 4.7
-   / 8.2 "Partial loads of large aggregates".
-4. A row set without predicates (`Entity.where()`, R17) a type error (at least one `Pred`
-   required: `where(first: Pred[Self], /, *rest: Pred[Self])`) or allowed as "every row" - ADR 1
-   / ADR 2, design 4.3.
 
 ## Reproduction
 
@@ -822,7 +834,7 @@ operation inside `update`), is rejected by both (`reportArgumentType` / `arg-typ
 | (b) | `fail_r4.py` F30 (12), F31 (13); own G1, a column one level deeper (14); own G2, a column inside `Profile` (15); the nullable nested loads (`pass_nullable.py`) | `reportArgumentType`; nullable accepted | `arg-type` (`expected "LoadPath[Item]"`); nullable accepted | agree. On the reproducer's round-3 stub (`OwnedExpr`), lines 12-15 are accepted by both (`on-round3-stub/`) |
 | (c) | `pass_r4.py`: `Load.after` of a function returning `tuple[Variant, ...]` and one returning `Sequence[Variant]`; F17 (`fail_r2.py` 113); own G4, the tuple form with a wrong path (`fail_r4.py` 17); covariant `Path` variant | accepted; rejected; variant loses 113, 134, 135, 158 and `fail_r4.py` 17 | the same | agree: F17, F21, F22 are lost (plus E9 and G4, the same forms); nothing gained; the `RelOp` variant loses only F11 and E6 |
 | (d) | `probe_owner_widen_repro.py`, `probe_widen_cause.py`, `probe_widen_path.py` | rejects every widening (`reportAssignmentType`) | accepts the widening and what follows it | **agree on the observation, disagree on its cause and scope** (discrepancy 1) |
-| (e) | `probe_owned_flag_repro.py`: `owned=` given a `bool` variable, under an `Owned[...]` annotation (16), a `Rel[...]` annotation (17), and no annotation (20) | 16, 17 `reportAssignmentType` (+ `reportUnknownVariableType`); 20 only `reportUnknownVariableType`. In the default mode (run outside the repository) 16 and 17 are rejected and 20 is accepted | `call-overload` on all three | agree |
+| (e) | `probe_owned_flag_repro.py`: `owned=` given a `bool` variable, under an `Owned[...]` annotation (16), a `Rel[...]` annotation (17), and no annotation (20) | 16, 17 `reportAssignmentType` (+ `reportUnknownVariableType`); 20 only `reportUnknownVariableType`. In the default mode (run outside the repository) 16 and 17 are rejected and 20 is accepted | `call-overload` on all three | agree for a call-initialised `bool`; round 5 adds the literal-initialised case, where the checkers split (Observations) |
 | (f) | `pass_runtime_r4.py`: R16 (`Load.after` of a function returning `Wallet` with `missing="none"`; a `Load.when(..., missing="none")` parameter declared `Wallet`); R17 (`Order.where().delete()`, `Order.where().set(...)`); R18 (a plain `fk` under an `Owned` relation, a `parent_fk` with no owned relation, owned children on a class without `aggregate_root=True`) | all accepted | all accepted | agree |
 | (g) | `uc10_payment_approval.py` against spike 0002's file; `uc08_transfer_a.py` line 56, `uc08_transfer_b.py` line 55 | - | - | agree. Only marked statements changed. `decline_payment` drops `order`, and no R10 requirement reads the order on a decline. The destination assertion matches spike 0002's line 77 |
 | (h) | `repro/types/round3/run.sh` | - | - | **agree; the bug was the reproducer's.** Round 3's stage 2 named `probe_annotated_repro.py`, which the reproducer never copied into `round3/`, and `\|\| true` hid the failure. The added file is identical to the round-2 probe, and the script now exits 0 with output. `\|\| test $? -eq 1` fails on a checker exit of 2 and passes on 1 (checked). Rounds 1 and 2 still use `\|\| true`; their stage-2 files exist, so nothing is masked today |
@@ -879,6 +891,42 @@ operation inside `update`), is rejected by both (`reportArgumentType` / `arg-typ
     `OwnedRelation` invariant does not close it.
   - No disagreement with a shape verdict under pyright. Under mypy, conditions 1 and 2 hold only on
     lines that do not annotate a relation with a wider owner.
+
+### Type reproduction, round 5 (type-reviewer)
+- **Who / date:** the `type-reviewer` sub-agent, 2026-11-26, on the round-5 state (rebased after
+  #77), changed claims only.
+- **Sources:** `repro/types/round5/`. The stub is the reproducer's round-4 stub with
+  `Entity.where(cls, pred: Pred[Self], /, *preds: Pred[Self])`; in the domain, the four owned
+  relations are declared with `owns_many(...)` instead of `owned=True`.
+- **Adapted lines:** two of the reproducer's earlier lines used a predicate-less `where()` and
+  were adapted:
+  - E13 now returns `Entity.where(Stock.quantity > 0)` and still tests `RowSet`'s invariance;
+  - the round-4 R17 line moved to the new probes.
+- **Rerun:** raw output in `results/repro-types/round5/`; rerun with
+  `bash spikes/0007-phase-1a-type-shapes/repro/types/round5/run.sh` (exit 0). Gates clean.
+
+| Item | Reproducer's lines | pyright | mypy | vs. write-up |
+|---|---|---|---|---|
+| (a) | `probe_owned_flag_r5.py`: `owned=ANNOTATED` (`ANNOTATED: bool = True`, line 21) and `owned=BARE` (`BARE = True`, line 22) under `Owned[...]`; `owned=FLAG` (`FLAG: bool = flag()`, line 24) | 21, 22 no error; 24 `reportAssignmentType` (+ `reportUnknownVariableType`) | 21, 22, 24 `call-overload` | agree: the checkers split on literal-initialised constants, and both reject `FLAG`. Two of the reproducer's own lines: a `Final` constant (23) is accepted by **both**; `ANNOTATED` under `Rel[...]` (25) is rejected by both (pyright narrows it to `True` and reports `Owned[Unknown]`) |
+| (b) | `fail_r5.py`: F32 `Order.where()`, F33 `.delete()`, F34 `.set(Order.total.to(m))`; own H1 `Entity.where()`, H2 `Order.where(pred=...)` (positional-only); `pass_r5.py`: `Order.where(*preds)` with `preds: list[Pred[Order]]` and its `.delete()` / `.set(...)`, a two-predicate `where`, `Order.items.where()`, `select(...).where()` | F32-F34, H1, H2 `reportCallIssue` (+ `reportUnknownMemberType` on F33, F34); `pass_r5.py` accepted, `Order.where(*preds)` is `RowSet[Order]`, `Order.items.where()` is `Relation[Order, Item]` | `call-arg` on all five; `pass_r5.py` accepted | agree |
+| (c) | the reproducer's rounds 1-4 files on the `owns_many` domain; the author's `run.sh` | `0 problem(s) in 12 file(s)`; the variants lose the same lines as in round 4 | the same | agree. The author's script exits 0 with `0 problem(s) in 16 file(s)` and the variant lines 112 and 127, 134, 135, nothing gained |
+| (d) | `lib.pyi` / `domain.py`; the marker check (`stub-markers.txt`) | - | - | agree on the hashes (`4aee56a8992cbd1e...`, `05862bf0dad939ae...`). **Partly** on the markers (discrepancy 1) |
+
+**Discrepancies** (text only)
+1. **`Entity.where` (`lib.pyi` 386-388) is marked on its last line only.** Its first line, `def
+   where(`, has no `# [0007]`, against the convention that a wrapped declaration is marked on its
+   first and last line.
+
+   Also, line 378 still labels `owns_many` "S4 alternative" in `field_specifiers`, though it is now
+   the chosen form, and `OwnedRelation` / `Owned` (204, 239) still describe themselves as "of
+   `owned=True`".
+
+- **Verdict:**
+  - Agree on (a), (b), (c) and (d)'s hashes.
+  - The marker point is cosmetic.
+  - Observations now states round 4's discrepancy 1 correctly: the descriptor as the cause, F21 in
+    scope, and the invariant variant cited.
+  - No disagreement with a verdict.
 
 ## Review
 
@@ -1009,10 +1057,32 @@ the round-2 files.
     predicates); four questions recorded as open for the maintainer.
   - `repro/types/round3/run.sh` stage 2 had a missing file and swallowed the failure: the file is
     there, and both scripts now accept a checker exit of 1 (type errors) and fail on anything else.
-- **Rerun differently from the review:** `owned=` with a plain `bool` - the review saw "pyright
-  accepts, mypy rejects"; in strict mode both reject every line, pyright through the declared type
-  or the unknown-type rule, mypy on the call. The mypy owner widening reproduced as reported; its
+- **Rerun differently from the review:** `owned=` with a plain `bool` - round 4 tested a
+  call-initialised constant, where both checkers reject; the review had tested a
+  literal-initialised one, where they split (pyright accepts, mypy rejects). Both hold; round 5
+  records both (corrected by the second independent review). The mypy owner widening reproduced as reported; its
   cause (the descriptor's owner solved from the declared type, not variance) and its reach (F21
   too) came from the round-4 reproduction and were rerun.
 - **Not applied:** nothing of the review's own list; the four choices it marked for the maintainer
   are recorded, not made.
+
+### Second independent review and maintainer decisions, round 5 (2026-11-26)
+- **Second independent review** (head `68cf9d4`): confirmed the `LoadPath` fix and CI. One
+  correction: round 4's "the review saw pyright accept, both reject in strict mode" compared two
+  different inputs. The review had passed literal-initialised constants (`ANNOTATED: bool = True`,
+  `BARE = True`), where pyright accepts and mypy rejects (`call-overload`); round 4 tested
+  `FLAG: bool = flag()`, where both reject. Both hold. `probe_owned_flag.py` now has both (G3,
+  G4 rerun here: pyright no error, mypy `call-overload`), and Observations, S4 and the round-4
+  notes say so.
+- **Maintainer decisions** (recorded in the Verdict): `owns_many` (the domain uses it; the stub
+  keeps `owned=` only as the rejected alternative's probe); candidate B (`uc08_transfer_a.py`
+  marked as the rejected record); `Entity.where(pred, /, *preds)` - F32-F34 rejected by both
+  (pyright `reportCallIssue`, mypy `call-arg`), an unpacked possibly-empty list accepted by both
+  (R17, a runtime rule); relation `.where(...)` and the query path unchanged. Open: row sets vs
+  partial `.where` loads (ADR 2, with the extra-load-stage cost against 8.3's two round trips).
+- **Rebased onto `develop` after PR #77** (`ac6aa81`): the only conflict was `design-KO.md`'s
+  i18n header (re-stamped); the CHANGELOG entry moved after #77's; `docs/workflow.md` (+ KO)
+  issue ranges aligned with `AGENTS.md` (#1-#80).
+- **After the round-5 reproduction:** its only finding (a stub marker on `Entity.where`'s first
+  line and three stale comments calling `owns_many` an alternative or owned relations "`owned=True`")
+  is fixed; the stub hash in Setup is the fixed one.

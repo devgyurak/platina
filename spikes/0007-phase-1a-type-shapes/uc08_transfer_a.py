@@ -1,5 +1,8 @@
 """Use case 8 (spike 0002) in the spike 0007 shapes, candidate A of #60 point 3 - account transfer.
 
+REJECTED CANDIDATE (maintainer, 2026-11-26: candidate B, `uc08_transfer_b.py`). Kept as the record of
+what candidate A looked like; it still type-checks.
+
 Requirements R8.1-R8.6. Changed from spike 0002: the new root is `insert(t)` instead of the bulk
 `insert_all((t, credit, debit))`, the legs are owned children written through the root, and they
 take their parent key from `Transfer.legs.add` (#49, as given). R8.5 (a reused key with other

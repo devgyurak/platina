@@ -1,5 +1,6 @@
 """Spike 0007: spike 0002's domain (sha256 caf83036e63451df...) with two changes, marked `# [0007]`:
-an `owned=True` relation is annotated `Owned[...]` (#60 point 4, the relation type probed here),
+an owned relation is annotated `Owned[...]` and declared with `owns_many(...)` (#60 point 4; since
+round 5, the maintainer's choice over `one_to_many(..., owned=True)`),
 and the foreign key of an owned child is `parent_fk(...)`, not a constructor parameter (#49's
 decision, used as given).
 
@@ -34,6 +35,7 @@ from lib import (
     invariant,
     many_to_one,
     one_to_many,
+    owns_many,  # [0007] round 5
     parent_fk,  # [0007]
     pk,
     server_now,
@@ -95,7 +97,7 @@ class User(Entity, table="users", aggregate_root=True):
     last_name: Col[str] = column(length=100)
     language: Col[str] = column(default="ko")
     default_address_id: Col[Id[Address] | None] = fk(lambda: Address, default=None)
-    addresses: Owned[list[Address]] = one_to_many(lambda: Address.user_id, owned=True)  # [0007]
+    addresses: Owned[list[Address]] = owns_many(lambda: Address.user_id)  # [0007]
     # [0007] spike 0002 declared it for use case 3, which now loads a row set instead; unused
     redemptions: Rel[list[CouponRedemption]] = one_to_many(lambda: CouponRedemption.user_id)
     version: Col[int] = version_column()
@@ -124,10 +126,10 @@ class Order(Entity, table="orders", aggregate_root=True):
     expires_at: Col[datetime] = column()
     expired_at: Col[datetime | None] = column(default=None)
     user: Rel[User | None] = many_to_one(via=lambda: Order.user_id)  # nullable FK
-    items: Owned[list[Item]] = one_to_many(  # [0007]
-        lambda: Item.order_id, owned=True, order_by=lambda: Item.position
+    items: Owned[list[Item]] = owns_many(  # [0007]
+        lambda: Item.order_id, order_by=lambda: Item.position
     )
-    tickets: Owned[list[Ticket]] = one_to_many(lambda: Ticket.order_id, owned=True)  # [0007]
+    tickets: Owned[list[Ticket]] = owns_many(lambda: Ticket.order_id)  # [0007]
     payments: Rel[list[Payment]] = one_to_many(lambda: Payment.order_id)
     refunds: Rel[list[Refund]] = one_to_many(lambda: Refund.order_id)
     show: Rel[Show | None] = many_to_one(via=lambda: Order.show_id)
@@ -287,7 +289,7 @@ class Account(Entity, table="accounts"):
 class Transfer(Entity, table="transfers", aggregate_root=True):
     id: Col[Id[Transfer]] = pk(generated="uuid7")
     amount: Col[Money] = embedded(prefix="amount_")
-    legs: Owned[list[Leg]] = one_to_many(lambda: Leg.transfer_id, owned=True)  # [0007]
+    legs: Owned[list[Leg]] = owns_many(lambda: Leg.transfer_id)  # [0007]
 
 
 class Leg(Entity, table="legs"):

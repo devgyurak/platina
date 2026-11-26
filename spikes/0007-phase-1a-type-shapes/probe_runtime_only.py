@@ -34,13 +34,14 @@ from lib import (
     Load,
     Now,
     Owned,
+    Pred,
     Profile,
     RowSet,
     column,
     fk,
     insert,
     insert_all,
-    one_to_many,
+    owns_many,
     parent_fk,
     pk,
     usecase,
@@ -160,9 +161,10 @@ def r16(order: Annotated[Order, Load()], wallet: Annotated[Wallet, r16b] = INJEC
     return wallet.delete()
 
 
-# R17 #57 / #59: a row set without predicates - every row of the table (set-level delete or set)
-def r17(m: Money) -> Changes:
-    return Order.where().delete() + Order.where().set(Order.total.to(m))
+# R17 (round 5): a row set from an unpacked predicate list, which may be empty at run time - both
+# checkers accept it (see the write-up); the decision "at least one predicate" is then a runtime rule
+def r17(preds: list[Pred[Order]], m: Money) -> Changes:
+    return Order.where(*preds).delete() + Order.where(*preds).set(Order.total.to(m))
 
 
 # R18 #49 / #60: the owned declaration, the child's `parent_fk` and `aggregate_root` disagree -
@@ -176,7 +178,7 @@ class R18Child(Entity, table="r18_children"):
 
 class R18Root(Entity, table="r18_roots"):  # owned children, but not aggregate_root=True
     id: Col[Id[R18Root]] = pk()
-    children: Owned[list[R18Child]] = one_to_many(lambda: R18Child.root_id, owned=True)
+    children: Owned[list[R18Child]] = owns_many(lambda: R18Child.root_id)
 
 
 class R18Other(Entity, table="r18_others", aggregate_root=True):

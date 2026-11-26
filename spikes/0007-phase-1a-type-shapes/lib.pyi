@@ -201,7 +201,7 @@ class Relation[O, E](  # [0007]
     # [0007] #59 point 1: the receiver fixes E, so a covariant path type suffices here
     def load(self, *paths: LoadPath[E]) -> Relation[O, E]: ...  # [0007]
 
-class OwnedRelation[O, E](Relation[O, E]):  # [0007] #60 point 4: the relation type of `owned=True`
+class OwnedRelation[O, E](Relation[O, E]):  # [0007] #60 point 4: an owned relation's type
     def add(self, item: E, /) -> AddOp[O]: ...  # [0007] (was on Relation, returning Op[O])
     def remove(self, item: E, /) -> RelOp[O]: ...  # [0007] (was on Relation)
     def update(  # [0007]
@@ -236,7 +236,7 @@ class Rel[T]:
     def __get__(self, instance: object, owner: type[object], /) -> T: ...
     def __set__(self, instance: Never, value: T, /) -> None: ...
 
-class Owned[T]:  # [0007] #60 point 4: annotation of an `owned=True` collection relation
+class Owned[T]:  # [0007] #60 point 4: annotation of an owned collection relation (`owns_many`)
     @overload  # [0007]
     def __get__[O, E](  # [0007]
         self: Owned[list[E]], instance: None, owner: type[O], /
@@ -289,6 +289,9 @@ def parent_fk[T](  # [0007]
 def embedded[T](*, prefix: str) -> Col[T]: ...
 def version_column(*, init: Literal[False] = False) -> Col[int]: ...
 def many_to_one[T](*, via: Callable[[], Expr], init: Literal[False] = False) -> Rel[T]: ...
+
+# [0007] REJECTED ALTERNATIVE (maintainer, 2026-11-26: `owns_many` below). The `owned=` overloads
+# [0007] stay only so that F8, F9 and probe_owned_flag.py keep running; #9 removes the flag.
 @overload  # [0007] #60 point 4: `owned=True` gives the `Owned[...]` annotation
 def one_to_many[T](  # [0007]
     target: Callable[[], Expr],  # [0007]
@@ -307,7 +310,7 @@ def one_to_many[T](  # [0007] the overload for relations that are not owned
     order_by: Callable[[], Expr] | None = ...,
     init: Literal[False] = False,
 ) -> Rel[T]: ...  # [0007]
-def owns_many[T](  # [0007] S4 alternative: a separate specifier instead of `owned=True`
+def owns_many[T](  # [0007] S4, chosen (maintainer, 2026-11-26): an owned relation's specifier
     target: Callable[[], Expr],  # [0007]
     /,  # [0007]
     *,  # [0007]
@@ -372,7 +375,7 @@ def insert_all(entities: Iterable[Entity], /) -> Changes: ...  # [0002] 4.8 `ins
         version_column,
         many_to_one,
         one_to_many,
-        owns_many,  # [0007] S4 alternative
+        owns_many,  # [0007] S4, chosen
     ),  # [0007] + parent_fk
 )
 class Entity:
@@ -380,7 +383,9 @@ class Entity:
     @classmethod
     def ref(cls, id: UUID, /, *, expected_version: int | None = ...) -> Self: ...
     @classmethod
-    def where(cls, *preds: Pred[Self]) -> RowSet[Self]: ...  # [0007] was SetChange[Self]
+    def where(  # [0007]
+        cls, pred: Pred[Self], /, *preds: Pred[Self]
+    ) -> RowSet[Self]: ...  # [0007] was SetChange[Self]; round 5: one predicate required
     @classmethod
     def stub(cls, **fields: object) -> Self: ...
     def set(  # [0007] + RelOp[Self]
