@@ -1,4 +1,4 @@
-<!-- i18n: source=docs/design/design.md source-sha256=8c9039fd75ca translation-sha256=5c9f006c5930 -->
+<!-- i18n: source=docs/design/design.md source-sha256=33d9fd3f95b6 translation-sha256=0a5958d52e36 -->
 # Platina 설계 문서
 
 > **Platina**: 백금(platinum)의 옛 스페인어 이름. 백금이 산에도 녹지 않고 반응하지 않듯, 도메인 코드는 DB와 반응하지 않는다.
@@ -1330,7 +1330,7 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
   - 그것이 막고 있는 구현 이슈보다 먼저: #49와 #51을 위한 타입 스파이크(완료: [스파이크 0006](../spikes/0006-parent-fk-and-column-operands.md)); 결정 #48, #54, #57, #58, #59, #60, #61, #63과 #48, #57, #59, #60의 형태를 위한 별도 타입 스파이크(완료: [스파이크 0007](../spikes/0007-phase-1a-type-shapes.md); 메인테이너가 2026-11-26에 `owns_many`, 새 루트의 owned 자식에 대한 후보 B, `Entity.where`의 필수 술어를 정했다. 첫 번째 후속 ADR인 [ADR-0010](../adr/0010-writes-beyond-set.md)(2026-11-26 수락, `.set` 너머의 쓰기, #57과 #60)은 §4.2-4.4 / 4.6 / 4.8 / 4.12 / 8.2 / 8.3 / 10.7 / 10.12를 바꾸고 1a 종료 조건의 유스케이스 6, 8, 9를 막고 있다. 두 번째인 [ADR-0011](../adr/0011-row-set-loads.md)(2026-11-26 수락됨, #59)은 §4.7과 §8.2의 의존 로드를 바꾸고, 상수 술어를 쓴 부분 `.where` 로드는 유지한다), 그리고 이 결정들이 요구하는 ADR(그중 하나는 #61의 실행 예산); #65 이후의 ADR-0007; #63이 스키마를 고정하기 전에 실행 ID 테이블의 정리 비용(#72). 이 결정들이 구현 이슈에 더하는 것은 각 결정을 따른다.
   - `expected_version`, `VersionMismatch`, owned 자식 변경 시 루트 `version` 증가는 #11, #13, #15, #17에 속한다. outbox가 들어오기 전(#23)까지 이벤트를 내는 유스케이스는 조용히 버리지 않고 거부한다. 시점(seal 또는 실행)은 #21에서 정한다.
 - **Phase 1b - Events, queries and tooling**: inline 프로젝션과 outbox 로그(#23), Query 경로(TypedSQL, #24), 스키마 도구(선택 extra, #25, CLI #26), 테스트 키트(#27), §9.5 측정(#28), 테스트로서의 문서 예제(#29). 종료 조건: 도입 3단계(§6).
-  - 1b에 함께 들어가는 것: 집합 로드 구현(#59와 [ADR-0011](../adr/0011-row-set-loads.md)을 따름), #23 전에 outbox 로그의 정리 비용(#73), SSI 부하에서 `53200`의 분류(#74. 아무것도 막지 않으며, 그때까지는 재시도하지 않고 `DatabaseError`로 드러난다).
+  - 1b에 함께 들어가는 것: 집합 로드 구현(#83, #59와 [ADR-0011](../adr/0011-row-set-loads.md)을 따름), #23 전에 outbox 로그의 정리 비용(#73), SSI 부하에서 `53200`의 분류(#74. 아무것도 막지 않으며, 그때까지는 재시도하지 않고 `DatabaseError`로 드러난다).
   - 1차의 스키마 도구([스파이크 0004](../spikes/0004-alembic-round-trip.md)): 왕복되는 것은 Alembic이 생성한다(생성, 컬럼 추가·삭제, 타입 변경, `version` 트리거). 제약·인덱스 이름 규칙은 1b에서, 첫 이름이 만들어지기 전에 정한다. Alembic이 보지 못하는 것은 shadow 스키마 카탈로그 diff가 보고한다. `platina migrate`를 쓰는 프로젝트에서는 `platina check`가 CI에서 이를 실행하며, Platina가 마이그레이션하지 않는 DB의 선언된 테이블도 검사할 수 있다. rename, 바뀐 CHECK나 부분 인덱스는 손으로 쓰는 마이그레이션이고 drift 보고가 이를 잡는다. 내부 테이블은 #63을 따른다([ADR-0009](../adr/0009-internal-tables-owned-by-the-core.md): 전용 스키마의 버전 붙은 SQL, #72 이후에만 제공).
   - `platina gen`은 기존 DB를 스키마 소스로 받는다(#24).
 - **2차**: async 프로젝션, `then`·`@process`와 작업 파이프라인, 배치 유스케이스와 집합 변경(#33. 집합 단위 삭제와 `insert_all`은 [ADR-0010](../adr/0010-writes-beyond-set.md)를 따른다), 마이그레이션 충실도(rename, 파생 이름, CHECK·부분 인덱스 변경, #70), `platina pull`(#71). 1차에는 외부 세계와의 경계가 없다. 스파이크 0002의 유스케이스 넷에 필요한 `@process` 핸들러는 여기서 들어온다.
