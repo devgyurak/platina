@@ -1,4 +1,4 @@
-<!-- i18n: source=docs/design/design.md source-sha256=e0bb9889353a translation-sha256=f672e6500004 -->
+<!-- i18n: source=docs/design/design.md source-sha256=85474d8a8444 translation-sha256=9f909ae222af -->
 # Platina 설계 문서
 
 > **Platina**: 백금(platinum)의 옛 스페인어 이름. 백금이 산에도 녹지 않고 반응하지 않듯, 도메인 코드는 DB와 반응하지 않는다.
@@ -1169,7 +1169,7 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
 - [x] 작업 ID를 실행 ID로 쓴 `run_claim` 펜싱(동시 완료 시 대기·23505 거동), inline 프로젝션의 재시도율 - 성립: 두 번째 claim은 기다렸다가 상대가 커밋하면 23505, 롤백하면 진행한다(`run_claim`을 읽지 않는 한); 서로 겹치지 않는 프로젝션 키는 재시도를 늘리지 않고, 인기 키는 늘린다(Zipf에서 시도의 약 27 %, 키 하나면 80 %)
 - [x] 테이블이 작은 초기 상태(테이블 단위 잠금)에서의 거동 - 부분 성립: 릴레이션 단위 잠금은 크기가 아니라 순차 스캔 계획(작거나 빈, ANALYZE된 테이블)에서 생기며, 내부 테이블은 영향을 받지 않는다
 - [x] 대표 워크로드에서 SERIALIZABLE 기본값의 처리량·재시도율 (REPEATABLE READ + version 대비) - 성립: 균등 접근에서 REPEATABLE READ 처리량의 약 10 % 이내, 커밋당 시도 1.007회 이하; 편중 접근의 재시도는 대부분 두 수준이 함께 겪는 같은 행 충돌이며, REPEATABLE READ는 write skew 불변식을 깼다
-- [x] 핫 로우 한 행([ADR-0005](../adr/0005-hot-rows-under-serializable.md)): `lock="for_update"` 유무에 따른 재시도율, `RetryExhausted` 비율, `57014` 비율을 내구성 프로필에서 잰다. 진짜 핫 로우를 위한 ADR-0005 후보들의 비교는 이 측정을 기준선으로 쓰는 #64이며, 9.2에 포함되지 않는다 - 측정: 워커 8 / 32 / 64에서 시도의 약 31-41 / 75-78 / 90 %가 실패하고 커맨드의 7-10 / 35-41 / 64-69 %가 `RetryExhausted`로 끝나며, `lock="for_update"` 유무와 무관하다. 2초 타임아웃에서 `57014`는 없었다
+- [x] 핫 로우 한 행([ADR-0005](../adr/0005-hot-rows-under-serializable.md)): `lock="for_update"` 유무에 따른 재시도율, `RetryExhausted` 비율, `57014` 비율을 내구성 프로필에서 잰다 - 측정: 워커 8 / 32 / 64에서 시도의 약 31-41 / 75-78 / 90 %가 실패하고 커맨드의 7-10 / 35-41 / 64-69 %가 `RetryExhausted`로 끝나며, `lock="for_update"` 유무와 무관하다. 2초 타임아웃에서 `57014`는 없었다. 진짜 핫 로우를 위한 ADR-0005 후보들의 비교는 9.2에 포함되지 않으며, 이 측정을 기준선으로 쓰는 #64가 맡는다
 
 ### 9.3 MetaData → Alembic 왕복
 엔티티 레지스트리를 SQLAlchemy `MetaData`로 변환해 Alembic autogenerate가 다음을 손실 없이 왕복하는지 본다. 결과: [스파이크 0004](../spikes/0004-alembic-round-trip.md)(pg-researcher가 독립적으로 재현함) - 부분적으로 성립하며, 이 결과로 바뀐 결정은 없다. 남는 선택은 #25에서 정한다(§8.5).

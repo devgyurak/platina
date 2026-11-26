@@ -83,13 +83,14 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
    decisions for the maintainer in #64.
 4. 7.3 lists candidates for genuinely hot rows, to be compared in #64 with spike 0003's C4 as the
    baseline; which direction the design takes - a different model, a lock taken before the
-   transaction, or accepting the retries - is decided there, not here. Candidates: append-only rows with a total computed on read (a
-   ledger of legs - which helps only writers that do not read the total; an overdraft check that
-   sums an account's legs under SERIALIZABLE conflicts with concurrent inserts of legs for that
-   account), an async projection of the total, a counter kept outside the SERIALIZABLE
-   transaction, and a session-level advisory lock taken before `BEGIN` (Alternatives, unverified).
-   An inline projection is not a candidate: it updates its target row inside the same SERIALIZABLE
-   transaction and meets the same `40001` (which is why 8.4 restricts inline keys).
+   transaction, or accepting the retries - is decided there, not here. Candidates: append-only rows
+   with a total computed on read (a ledger of legs - which helps only writers that do not read the
+   total; an overdraft check that sums an account's legs under SERIALIZABLE conflicts with
+   concurrent inserts of legs for that account), an async projection of the total, a counter kept
+   outside the SERIALIZABLE transaction, and a session-level advisory lock taken before `BEGIN`
+   (Alternatives, unverified). An inline projection is not a candidate: it updates its target row
+   inside the same SERIALIZABLE transaction and meets the same `40001` (which is why 8.4 restricts
+   inline keys).
 
 ## Consequences
 - The design stops promising something PostgreSQL does not do: users with a hot row learn early
@@ -184,7 +185,7 @@ unverified.
 - 2026-11-25 - at the maintainer's decision, without changing the direction: Consequences now
   splits the 9.2 work - spike 0003 measures the single hot row (retry, `RetryExhausted` and
   `57014` rates with and without `for_update`); the comparison of point 4's candidates moves to a
-  follow-up issue with that measurement as its baseline.
+  follow-up issue (#64) with that measurement as its baseline.
 - 2026-11-26 - at the maintainer's decision, without changing the direction: the "until / after
   9.2" wording of Decisions 2-4, Consequences and Alternatives now states what 9.2 (spike 0003,
   C4) measured - `for_update` does not reduce the failures on a hot row, `RetryExhausted` occurs

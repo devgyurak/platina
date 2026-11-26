@@ -5,7 +5,7 @@
 - Related: design sections 4.2 (`pk(generated=...)`, "Client-generated IDs are the default"),
   7.3, 8.3 (internal-table rule), 9.2, 9.5; ADR-0002 (injected ID source), ADR-0003 (its
   `pk(generated="uuid7")` example); spike 0003 (`docs/spikes/0003-ssi-internal-tables.md`, A6,
-  C3); issues #3, #58
+  A7, C3); issues #3, #58, #65
 
 The bar for this document: the maintainer reads it and is convinced. Keep it short.
 
@@ -59,7 +59,7 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
 - Not measured: uuid4 itself beyond C3/A6 (its ~0.1 % is at 100k rows, about 400 leaves; small
   tables with random keys share few leaves, and A5 adds relation locks from sequential scans);
   the insert-side cost of random keys on this stack (page splits, WAL after each checkpoint,
-  cache misses once the index exceeds `shared_buffers`) - no 9.5 item covers it yet; how common
+  cache misses once the index exceeds `shared_buffers`) - measured by the 9.5 item (#65); how common
   the pattern is in real use cases. REPEATABLE READ is not affected (it has no SSI).
 
 ## Decision
