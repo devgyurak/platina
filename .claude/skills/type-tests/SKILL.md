@@ -49,11 +49,19 @@ names no <checker> code`. To see why, run the checker directly:
   `# type: ignore`. Prefer a construct both understand; otherwise record the gap and the chosen
   fallback in the design document (section 8.2 lists fallbacks) or an ADR.
 - Every misuse listed in design section 11.8 gets a line as soon as the construct exists.
+- A rejected comparison stands in an `assert` statement in a fail file: anywhere else pyright
+  strict adds a second code (`reportUnusedExpression`, `reportUnknownVariableType`,
+  `reportUnknownArgumentType`), while in an `assert` both checkers report the operator code alone
+  and an accepted comparison reports nothing (spike 0006).
 
 ## The spike's reference surface (design section 9.1)
 Spike 0001 is done (`docs/spikes/0001-type-surface.md`, ADR-0003, ADR-0004). Its stubs are the
 reference for the real public surface: `spikes/0001-type-surface/round2/lib_final_declared.pyi`
 (with `domain_final_declared.py` and the pinned `pass_final_declared.py` / `fail_final_declared.py`)
 shows the decided shape - `Entity` base, `Order(...)`, `Column[Owner, T]` with fixed variance,
-`path(Money.amount)`. Rewrite them under `src/` and `tests/typing/` through the feature loop (#9);
-never move or import the spike files.
+`path(Money.amount)`. Spike 0006 (`docs/spikes/0006-parent-fk-and-column-operands.md`) extends that
+stub with the decided comparison operands and the parent-set key of owned children:
+`spikes/0006-parent-fk-and-column-operands/lib.pyi` (`Column`'s comparison overloads, `parent_fk`)
+with `pass_parent_fk.py` / `fail_parent_fk.py` and `pass_operands.py` / `fail_operands.py`.
+Rewrite them under `src/` and `tests/typing/` through the feature loop (#9); never move or import
+the spike files.
