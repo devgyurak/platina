@@ -5,7 +5,8 @@
 - Related: design sections 4.2 (`Money`, `Meta.checks`), 4.3 (query, Finder), 4.4, 4.5, 4.7,
   8.2 ("Field type surface"), 9.1, 11.8; ADR-0003; issue #2; spike 0001
   (`docs/spikes/0001-type-surface.md`, item 4, F1, F3, P-A, P-C, L6); #51 and spike 0006
-  (`docs/spikes/0006-parent-fk-and-column-operands.md`, part B)
+  (`docs/spikes/0006-parent-fk-and-column-operands.md`, part B); ADR-0010 and spike 0007
+  (`docs/spikes/0007-phase-1a-type-shapes.md`, conditions 1-3, `probe_owner_widen.py`)
 
 The bar for this document: the maintainer reads it and is convinced. Keep it short.
 
@@ -57,12 +58,21 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
 3. **Variance.** `Column`'s owner parameter is covariant and its value parameter invariant, and
    type tests pin both under pyright and mypy. How the variance is fixed (old-style type variables
    with a ruff exception, or PEP 695 syntax with a member returning the value type) is chosen when
-   `Column` is implemented.
+   `Column` is implemented. The same holds for the types ADR-0010 adds, each declared and pinned:
+   `RelOp[O]` (and `AddOp[O]`) and `RowSet[E]` are **invariant** (inferred, `RowSet` came out
+   contravariant; with a covariant `RelOp` both checkers accepted another entity's operation in
+   `insert`, spike 0007 F11). For the dependent-load ADR (#59): spike 0007 found that
+   `Load.after`'s load arguments need an invariant `Path[O]` (F17, F21, F22) while
+   `relation.load(...)` needs a covariant `LoadPath[O]` that columns do not derive from (F30,
+   F31); they are pinned when that ADR adopts them.
 4. **Where the owner is checked.** Owner types are checked only where the receiver fixes the owner:
    `order.set(...)`, `Entity.where(...)`, `SetChange.set(...)`, `SetChange.emit_each(...)`,
-   relation operations (`Order.items.add/remove/update`), the Finders of `Repository[E]`, and
-   `path`. Where the owner would have to be inferred from several arguments of one call it is not
-   checked by types: queries (`select`/`join`/`where`) are validated when their description is
+   relation operations (`Order.items.add/remove/update`), `RowSet.set(...)`, the Finders of
+   `Repository[E]`, and `path`. Where the owner would have to be inferred from several arguments
+   of one call it is not checked by types, with one exception: `insert(entity, *children:
+   AddOp[E])` (ADR-0010) solves `E` from the entity and the children, and the invariant `AddOp`
+   leaves the given entity as the only solution, so both checkers reject another entity's `add`
+   (spike 0007 F11). Elsewhere: queries (`select`/`join`/`where`) are validated when their description is
    built (whether seal can also catch them is #52), and `Profile`, `Load`, `Index`, `Check` and
    `@invariant(fields=...)` are validated by seal. Reason: at those places pyright solves the owner
    to a union and mypy to the common base `Entity`, so the same misuse would be an error under one
@@ -108,6 +118,13 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
   `float` promotion applies to a `float` column. The column-as-value fallback does not occur there:
   mypy resolves a column on the right to a column overload (spike 0006, O4).
 
+- **Known gap (mypy):** a declared type written directly on a relation's class access widens its
+  owner - `rel: OwnedRelation[Transfer | Order, Item] = Order.items`, then `insert(t,
+  rel.add(item))` type-checks for a `Transfer` `t`; the same reaches `Load.after`. It is how mypy
+  infers a descriptor's class access under an expected type, not variance (declaring the relation
+  types invariant does not change it); pyright rejects the declaration, and so does mypy when the
+  relation goes through a variable first (spike 0007 `probe_owner_widen.py`, W1-W5). Not closed.
+
 ## Alternatives considered
 - A getter, `Order.total.path(lambda m: m.amount)` (spike item 4 b2; this ADR's first draft): holds
   in both checkers without `Col[...]` value fields, but needs a runtime rule that the lambda is an
@@ -149,3 +166,9 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
   direction: the constraint now forbids only a union parameter (`T | Column[O, T]`) and names
   separate overloads as the shape both checkers agree on; the comparison operands are stated
   (value exactly `T`, column of the same value type up to nullability, `Pred[O | O2]`).
+- 2026-11-26 - amended in place, without changing the direction, from spike 0007 and the shapes
+  decided on #57 / #60 (recorded in ADR-0010): Decision
+  3 lists the variance of `RelOp` / `AddOp` and `RowSet` (invariant) and records spike 0007's
+  `Path` / `LoadPath` finding for #59; Decision 4 adds `RowSet.set` and `insert(entity,
+  *children)`, an owner solved from several arguments that invariance keeps checkable; the mypy
+  gap of a declared type that widens a relation's owner is a Consequence.

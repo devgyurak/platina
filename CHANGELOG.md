@@ -165,6 +165,26 @@ All notable changes are documented here. Format: [Keep a Changelog](https://keep
   links the write-up; §4.3 / 4.4 / 4.7 / 4.8 / 8.2 change with the two follow-up ADRs (#60 point 4,
   #59 point 2), the second of which also decides whether row sets replace partial `.where`
   loads.
+- ADR-0010 (accepted by the maintainer 2026-11-26; #57, #60): writes beyond `.set`. Records the
+  decisions of #57 / #60 (`insert(entity, *children)` in the commit batch, `insert_all` a separate
+  bulk operation; owned rows only through their root and no write operations on other relations;
+  `owns_many`; candidate B; `Entity.where` needs a predicate; `order.delete()` with engine-issued
+  deletes of the owned children) and decides: ownership one level deep; seal checks of
+  `owns_many` / `parent_fk` / `aggregate_root`; a `UsageError` at the call for direct writes of
+  owned children (the `Part` base stays a rejected alternative) and for the misuse of new, loaded
+  and ref snapshots; a `SealError` for `identity`-key roots with owned relations in Phase 1a;
+  delete semantics (unloaded owned relations deleted, one `WITH ... DELETE` statement per root
+  table, key-only predicate, its planner edges, operations on deleted children dropped only
+  across chain steps); `ForeignKeyViolation` for `23503` / `23001`; a `Write[O]` alias (a working
+  name; #13 fixes it). Facts: a spike 0007 addendum - types A1-A3 (reproduced by type-reviewer)
+  and PostgreSQL 18 experiments with their scripts (one statement deletes a root that references
+  its own owned row, and two root tables that reference each other; a concurrent `add` with its
+  root bump is `40001` under SERIALIZABLE and REPEATABLE READ; a non-owned insert committed just
+  before a delete gives the delete `23503` at either level; `23503` names the referencing table; a
+  cascade that matches no row adds no predicate lock). Reviewed by architect (two rounds) and an
+  independent review. Design 4.2-4.4, 4.6, 4.8, 4.12, 8.2, 8.3, 9.6, 10.7, 10.8, 10.12, 11.3,
+  11.8 (EN + KO), ADR-0003 and ADR-0004 amended in place, the `design-invariants` and
+  `engine-and-concurrency` rules.
 ### Changed
 - Entity syntax (ADR-0003, accepted): entities inherit `Entity` with table options as class
   keywords instead of an `@entity` decorator, are created with the keyword constructor

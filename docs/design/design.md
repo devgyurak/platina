@@ -23,7 +23,7 @@ Translations: [Korean](design-KO.md)
 | Default isolation level | Command: **SERIALIZABLE + automatic retry** (escape hatch from SSI's read/write-dependency failures is REPEATABLE READ + version). Query: READ COMMITTED |
 | External IO | Forbidden inside use cases. External IO happens only in **process handlers** |
 | Composition | Steps only via **`with chain(a, b) as (c, a, b)`**. Rebinding the same names to latest-state views; aliases blocked by move marks. `+` only within a single step |
-| Call and write | `app.run(uc.bind(...), options)`. A ref is a placeholder that is an entity at the type level (JPA `getReference`, `.set` not allowed). Entities inherit `Entity`; fields are `Col[T]`, read on the class as `Column[Owner, T]`. Creation via the keyword constructor `Order(...)`, modification via `.set(Order.status.to(...))`, embedded paths `Order.total.path(Money.amount)` |
+| Call and write | `app.run(uc.bind(...), options)`. A ref is a placeholder that is an entity at the type level (JPA `getReference`, `.set` not allowed). Entities inherit `Entity`; fields are `Col[T]`, read on the class as `Column[Owner, T]`. Creation via the keyword constructor `Order(...)`; a loaded row is modified with `.set(Order.status.to(...))` and deleted with `.delete()`, a new row is written with `insert(order, *children)`; owned rows only through their root ([ADR-0010](../adr/0010-writes-beyond-set.md)); embedded paths `Order.total.path(Money.amount)` |
 | Commit order | Topological sort of the FK and unique key dependency graph + batching |
 | Round trips | 1 load batch + 1 commit batch (including writes, COMMIT and the LSN query) |
 | Run ID | Every `app.run` has a run ID (caller idempotency key or automatic uuid7). Claimed by INSERT without a lookup → idempotency and commit-outcome resolution (rerun) unified |
@@ -96,7 +96,7 @@ These priorities are used in real decisions. Example: making SERIALIZABLE the de
 - **The library owns the boundaries**: no session passed around as an argument. Use case = transaction.
 - **Only two kinds exist, pure and impure**: use cases (pure) and process handlers (external IO allowed). Nothing in between.
 - **Configuration does not change meaning**: no feature where the same code behaves differently depending on an option. If the meaning differs, the name (syntax) differs.
-- **Only one way to do it**: writes are `.set(...)`, step composition is `chain`, execution is `app.run`/`app.query`. No second syntax for the same thing.
+- **Only one way to do it**: per operation - a loaded row is modified with `.set(...)` and deleted with `.delete()`, a new row is written with `insert(...)` ([ADR-0010](../adr/0010-writes-beyond-set.md)), step composition is `chain`, execution is `app.run`/`app.query`. No second syntax for the same thing.
 - **Removal over detection**: rather than adding mechanisms that detect mistakes after the fact, remove the structures where mistakes can happen or turn them into type errors.
 - **SQL is a first-class citizen**: the ORM does not hide SQL; it makes SQL convenient to write.
 - **References instead of strings, codegen instead of runtime**.
@@ -131,7 +131,7 @@ These priorities are used in real decisions. Example: making SERIALIZABLE the de
 - **Call**: `app.run(uc.bind(...))`. `bind` has the same signature as the use case, so it is type-checked with ParamSpec alone
 - **Recursive loads**: `Load.recursive(...)` → `WITH RECURSIVE` (depth limit required, cycle detection)
 - **ChangeSet**: row-level changes / condition-based changes / chunk streams are all the same type
-- **Concurrency control**: SERIALIZABLE by default + automatic retry. `version` is used for optimistic locking across requests (`expected_version`), event ordering, overlap detection within a use case, and coexistence with other ORMs. Changes to `owned` children bump the root version
+- **Concurrency control**: SERIALIZABLE by default + automatic retry. `version` is used for optimistic locking across requests (`expected_version`), event ordering, overlap detection within a use case, and coexistence with other ORMs. Changes to owned children bump the root version
 - **Run ID**: every run gets an ID, claimed by INSERT without a lookup. A repeated request with the same key gets the stored result; connection loss or failover during COMMIT is handled by rerunning with the same ID
 - **2 round trips**: 1 load batch + 1 commit batch (an extra load stage only when there is a `Load.after`)
 - **Pessimistic locking**: `Load(..., lock=FOR_UPDATE)` takes the row lock at the load stage. On a hot row it does not avoid the same-row 40001 under SERIALIZABLE; it makes the conflict surface early ("fail early"); spike 0003 (§9.2) measured that it does not reduce the failures, it only moves them to the load statement. Whether `lock=` stays is decided in #64 ([ADR-0005](../adr/0005-hot-rows-under-serializable.md))
@@ -236,8 +236,8 @@ app.seal()   # validates load plans, module boundaries, invariants, projection k
 from decimal import Decimal
 from datetime import datetime
 from platina import (
-    Entity, value, event, Col, Id, Rel, pk, column, embedded, fk, parent_fk,
-    many_to_one, one_to_many, version_column, invariant, Check, Index, server_now,
+    Entity, value, event, Col, Id, Rel, Owned, pk, column, embedded, fk, parent_fk,
+    many_to_one, owns_many, version_column, invariant, Check, Index, server_now,
 )
 
 @value
@@ -254,7 +254,7 @@ class Order(Entity, table="orders", aggregate_root=True):
     total: Col[Money] = embedded(prefix="total_")        # total_amount, total_currency columns
     user_id: Col[Id[User]] = fk(lambda: User)
     user: Rel[User] = many_to_one(via=lambda: Order.user_id)
-    items: Rel[list[Item]] = one_to_many(lambda: Item.order_id, owned=True,
+    items: Owned[list[Item]] = owns_many(lambda: Item.order_id,       # owned children (ADR-0010)
                                          order_by=lambda: Item.position)
     version: Col[int] = version_column()
     created_at: Col[datetime] = column(server_default=server_now())
@@ -283,13 +283,13 @@ class OrderPaid:
     # Sequence numbers (aggregate version, position within the transaction) are filled in by the engine at commit. Never written by hand.
 ```
 
-- **Entities inherit `Entity`** and pass their table options as class keywords (ADR-0003). A class decorator can make a type checker synthesise a constructor but cannot add members, so `Order.ref`, `Order.where`, `Order.stub` and `order.set` need the base class (spike 0001).
+- **Entities inherit `Entity`** and pass their table options as class keywords (ADR-0003). A class decorator can make a type checker synthesise a constructor but cannot add members, so `Order.ref`, `Order.where`, `Order.stub`, `order.set` and `order.delete` need the base class (spike 0001).
 - **Every field is declared as `Col[T]`.** With a plain annotation (`status: OrderStatus = column(...)`), the type checker also sees class access (`Order.status`) as `OrderStatus`. For it to appear as `Column[Order, OrderStatus]` on the class (the column knows the class that declares it) and `OrderStatus` on the instance, the annotation itself must be a descriptor type. This is the same reason SQLAlchemy 2.0 uses `Mapped[T]`. Event fields and value-object fields are the same (`OrderPaid.user_id` in projection keys, `Money.amount` in embedded paths, ADR-0004).
-- **Snapshots are immutable.** `order.status = PAID` is an error; writes happen only through `.set(...)` (§4.4). Collection fields are a read-only `Sequence[Item]` on the instance.
+- **Snapshots are immutable.** `order.status = PAID` is an error; writes happen only through `.set(...)`, `insert(...)` and `.delete()` (§4.4). Collection fields are a read-only `Sequence[Item]` on the instance.
 - **Creation is the keyword constructor**: `Order(number="A-1", total=..., user_id=...)`, the same as events and values. A missing required field is a type error in both checkers; generated keys, `version_column()`, server defaults, relations and the parent key of an owned child are not parameters (§8.2 "Creation syntax", ADR-0003).
-- **The parent sets the key of an owned child.** The child declares it with `parent_fk(lambda: Order)` (working name; the final name is fixed in #9), so `Item(sku=..., price=..., position=...)` takes no `order_id` and `Order.items.add(item)` fills it; passing it is a type error in both checkers, so a new child cannot be created with another parent's key. A child of a relation that is not `owned` declares its key with `fk` and passes it to the constructor like any other column (#49, [spike 0006](../spikes/0006-parent-fk-and-column-operands.md)). Open: reading the key of a child that has not been added yet (#76); owned children of a new root and `add` on a relation that is not `owned` (#60); how `owned=True` and `parent_fk` are kept consistent (one derived from the other, or a seal check), and moving an existing child to another parent, which still type-checks (`Item.order_id.to(...)` in a child update or a set change, `add` of a child loaded under another parent; spike 0006 O9) (#9).
+- **The parent sets the key of an owned child.** The child declares it with `parent_fk(lambda: Order)` (working name; the final name is fixed in #9), so `Item(sku=..., price=..., position=...)` takes no `order_id` and `Order.items.add(item)` fills it; passing it is a type error in both checkers, so a new child cannot be created with another parent's key. A child of a relation that is not owned declares its key with `fk` and passes it to the constructor like any other column (#49, [spike 0006](../spikes/0006-parent-fk-and-column-operands.md)). Owned children of a new root are added in `insert(t, Transfer.legs.add(...))`, and a relation that is not owned has no `add` (§4.4, [ADR-0010](../adr/0010-writes-beyond-set.md)). Seal checks `owns_many`, `parent_fk` and `aggregate_root=True` against each other ([ADR-0010](../adr/0010-writes-beyond-set.md); the final names are #9's): both declarations stay, because the child's constructor needs its own field specifier and the root's operations need the `Owned[...]` annotation. Open: reading the key of a child that has not been added yet (#76); moving an existing child to another parent, which still type-checks (`Item.order_id.to(...)` in a child update or a set change; spike 0006 O9) (#9) - `add` of a loaded child is a `UsageError` ([ADR-0010](../adr/0010-writes-beyond-set.md)).
 - **Equality** (#54): two snapshots are equal when they are of the same entity type and all their column values are equal (embedded values included); relations and what is loaded are not compared. A column that has no value yet (a server default or an `identity` key of a new entity) is equal only when it has no value on both sides. The hash is the entity type plus the primary key. `==` and `hash()` on a ref raise `UnloadedReference` (ADR-0003 Decision 4). The parent key of an owned child that has not been added yet (`parent_fk`, before `add`) has no value either; how equality and the hash treat it is decided in #76.
-- **`owned=True`**: a child that belongs to the aggregate. When a child changes, the root's `version` is bumped as well (JPA `OPTIMISTIC_FORCE_INCREMENT`). So when an edit screen handles an order and its items together, a change to only the items is still caught by the optimistic lock across requests (§4.6). Ordinary FK children (e.g. comments on a post) are not `owned` and do not touch the root.
+- **`owns_many(...)`** (annotation `Owned[list[Item]]`) declares children that belong to the aggregate. When a child changes, the root's `version` is bumped as well (JPA `OPTIMISTIC_FORCE_INCREMENT`). So when an edit screen handles an order and its items together, a change to only the items is still caught by the optimistic lock across requests (§4.6). The rows of an owned relation are written only through the root, and deleting the root deletes them (§4.4). Ordinary FK children (e.g. comments on a post) are declared `Rel[list[...]]` with `one_to_many(...)`: they do not touch the root, have no write operations on the relation and are written directly (`insert(Comment(post_id=...))`). There is no `owned=` flag: the behaviour differs, so the name differs ([ADR-0010](../adr/0010-writes-beyond-set.md)). Decided in [ADR-0010](../adr/0010-writes-beyond-set.md): ownership is one level deep - only an `aggregate_root=True` class declares `owns_many`, so an owned child owns nothing itself.
 - **Client-generated IDs are the default.** Thanks to Python 3.14's `uuid.uuid7()`, the ID of a new entity is known inside the pure function. `generated="identity"` is also supported, but in that case the ID is only available from the commit result (`result.created(Order)`). The core never calls `uuid7()` itself: `Order(...)` takes the ID from the source the engine installs for the invocation; direct calls in tests and `Order.stub()` use a deterministic fallback sequence, and `Order(...)` outside any use case or step is a `UsageError` (ADR-0002). Under SERIALIZABLE an ever-increasing key (uuid7, identity) makes commands that read recent rows of a table (including a child's foreign-key check of a new parent) and insert into it conflict; [ADR-0007](../adr/0007-ever-increasing-entity-keys.md) (Proposed) proposes a random default.
 - Places that refer to other classes are evaluated late with a `lambda`. String references are not used.
 - Instances for tests: `Order.stub(...)`.
@@ -346,28 +346,46 @@ class WalletRepo(Repository[Wallet]):
 orders, wallets = OrderRepo(), WalletRepo()
 ```
 
-- **A ref is a placeholder.** `Order.ref(id)` and `orders.by_number("A-1")` are `Order` at the type level, but in reality they are a mark meaning "please load this row". Reading a field of a ref on the calling side, or **calling `.set` on a ref**, is an immediate `UnloadedReference` error. `.set` is blocked because it would be a write that skips the load and the `@invariant` checks. To write without loading, state it explicitly as a set change `Order.where(Order.id == x).set(...)` (it gets invariant checks at seal).
+- **A ref is a placeholder.** `Order.ref(id)` and `orders.by_number("A-1")` are `Order` at the type level, but in reality they are a mark meaning "please load this row". Reading a field of a ref on the calling side, or **calling `.set` or `.delete()` on a ref**, is an immediate `UnloadedReference` error. `.set` is blocked because it would be a write that skips the load and the `@invariant` checks. To write without loading, state it explicitly as a set change `Order.where(Order.id == x).set(...)` (it gets invariant checks at seal).
+- **`Order.where(pred, *preds)` is a `RowSet[Order]`**: the rows of `Order` that match, with `.set(...)` (a set change) and `.delete()`; it is not a `Changes`, so it cannot be returned or added with `+` by itself. At least one predicate is required: `Order.where()` is a type error in both checkers, and an unpacked list that turns out empty at run time (`Order.where(*preds)`) is a `UsageError` (spike 0007; [ADR-0010](../adr/0010-writes-beyond-set.md)). Only `Entity.where` changes; a relation's `.where(...)` (partial loads, §4.7) and a query's `where` do not. Whether a row set is also a load is decided with #59.
 - **Optimistic locking across requests**: if you pass `Order.ref(id, expected_version=v)`, a different loaded version raises `VersionMismatch`. This is the pattern of sending the version received when opening an edit screen along with the save request (HTTP `If-Match`).
 - Finder arguments are checked against the column type. There are no keyword strings. A Finder of `Repository[Order]` must be built on a column of `Order`; another entity's column is a type error (ADR-0004).
 - **A query may reference only the entities it selects from or joins.** A column of any other entity is rejected when the query description is built. This is not checked by types: in a call that receives columns of several entities, pyright and mypy infer the owner differently (ADR-0004); whether seal can also catch it is open (#52).
 - **Repository is optional.** Start by writing `Load(...)` directly in the use case signature, and move it to a `Profile` once the same load repeats.
 - **Module boundary**: a Repository handles only the entities of its own module. Only queries published with `Module("billing", exposes=[orders.summaries])` can be used from other modules.
 
-### 4.4 Write syntax: a single `.set(...)`
+### 4.4 Write syntax: `.set`, `insert` and `.delete()`
+
+> Decided by the maintainer on #57 and #60 and in [ADR-0010](../adr/0010-writes-beyond-set.md) (accepted 2026-11-26).
 
 | Operation | Meaning | Generated SQL |
 |---|---|---|
 | `Order.status.to(v)` | Assign a value (`v` checked against `T` of `Column[Order, T]`) | `SET status = $1` |
 | `Wallet.balance.path(Money.amount).add(n)` | DB-side increment/decrement of a part of an embedded value (does not read the current value; concurrent writers of the same row still conflict with 40001, ADR-0005) | `SET balance_amount = balance_amount + $1` |
-| `Order.items.add(item)` | Add a child row; for an `owned` relation the parent sets the child's `parent_fk` key (§4.2; a relation that is not `owned`: #60) | `INSERT` (+ root version increment if `owned`) |
-| `Order.items.remove(item)` | Delete a child row | `DELETE` (+ root version increment) |
-| `Order.items.update(item, Item.price.to(p))` | Update a child row | `UPDATE` (+ root version increment) |
+| `Order.items.add(item)` | Add a new child to an owned relation; the parent sets the child's `parent_fk` key (§4.2) | `INSERT` + root version increment |
+| `Order.items.remove(item)` | Delete a loaded child of an owned relation | `DELETE` + root version increment |
+| `Order.items.update(item, Item.price.to(p))` | Update a loaded child of an owned relation; column operations only (ownership is one level deep) | `UPDATE` + root version increment |
+| `insert(payment)` | Insert one new row; its column values come from the constructor | `INSERT` |
+| `insert(t, Transfer.legs.add(leg), ...)` | Insert a new root with its owned children (only `add`) | `INSERT` of the root, then of the children |
+| `order.delete()` | Delete a loaded row; for a root also every row of its owned relations (loaded or not) | one engine-issued statement deleting the owned relations by the root key and the root (§10.7) |
 
 ```python
-order.set(Order.status.to(OrderStatus.PAID), Order.paid_at.to(now))   # a single row
-Order.where(...).set(Order.status.to(OrderStatus.EXPIRED))             # set change, same syntax
+order.set(Order.status.to(OrderStatus.PAID), Order.paid_at.to(now))   # a loaded row
+Order.where(...).set(Order.status.to(OrderStatus.EXPIRED))             # set change, same operations
+insert(Payment(order_id=order.id, amount=order.total))                 # a new row that is not owned
+t = Transfer(amount=amount)
+insert(t, Transfer.legs.add(Leg(account_id=src.id, side=LegSide.CREDIT, amount=amount)),
+          Transfer.legs.add(Leg(account_id=dst.id, side=LegSide.DEBIT, amount=amount)))
+src.delete()                                                           # the order, its items and its tickets
+user.set(User.addresses.add(Address(line1=..., city=...)), User.addresses.update(old, Address.city.to(city)),
+         User.addresses.remove(gone), User.default_address_id.to(new_default.id))   # use case 9: owned children of a loaded root, one .set
 ```
 
+- **One verb per operation.** `.set` modifies a loaded snapshot (column operations, and the relation operations of its owned relations); `insert` writes a new row; `.delete()` deletes a loaded row. Creating, modifying and deleting are different operations (ADR-0003). `insert_all` is the bulk path, a different operation (§4.8).
+- **Owned rows only through their root.** The rows of an `owns_many` relation are written with `Order.items.add / update / remove`, which bump the root's `version`. Every other row is written directly: `insert(Payment(...))`, `payment.set(...)`, `payment.delete()`. A relation that is not owned has no write operations; `Order.payments.add(...)` is a type error in both checkers (spike 0007). A direct write of an owned child - `item.set(...)`, `item.delete()`, `insert(Item(...))` - is a `UsageError` at that call, naming the root operation to use.
+- **New, loaded and ref** share one type, so their misuse is a runtime rule, checked at the call: `.set` on a new entity is a `UsageError` (its values go in the constructor, its owned children in `insert`); `.set` and `.delete()` on a ref raise `UnloadedReference`; an entity created in a step and never inserted is a `UsageError` when the step returns. `.delete()` on a new entity, `insert` of a loaded snapshot or a stub, `add` of a loaded snapshot, `update` / `remove` of a new entity or of a child of another root, and reading the `identity` key of a new entity before commit are `UsageError`s; `insert`, `add`, `update` or `remove` of a ref raises `UnloadedReference`; an empty `.set()` or an `update(item)` without operations changes nothing and bumps no `version`. Owned children of a root with an `identity` key are rejected in Phase 1a, since a new root's children would need its key from `RETURNING` (a `SealError` for an `identity`-key class that declares `owns_many`). The full table is ADR-0010's.
+- **Delete.** `order.delete()` deletes the root and every row of its owned relations, whether or not the use case loaded them; rows that are not owned are not touched, so one that still references a deleted row fails the commit with `ForeignKeyViolation` (§10.12) - delete or re-point it first in the same use case. The engine issues the DELETEs (no `ON DELETE CASCADE`). One statement per deleted-root table deletes every owned relation and the root, `WITH c1 AS (DELETE FROM items WHERE order_id = ANY($1)), ... DELETE FROM orders WHERE id = ANY($1)`, so a root's FK into its own owned table (`User.default_address_id`) and FKs between owned tables need no order (NO ACTION FKs are checked after the whole statement; PostgreSQL 18), and it runs after every change that removes a reference into the aggregate (§10.7). `expected_version` is checked at the load, as for every write; the DELETE, like the UPDATE, is by primary key. A concurrent `add` to the deleted root is a retried `40001` under SERIALIZABLE and REPEATABLE READ alike (the `add` bumps the root's `version`); only writers outside Platina that skip the bump or run READ COMMITTED can turn that race into a `ForeignKeyViolation`. A concurrent insert of a row that is not owned (`insert(Payment(order_id=...))`, which bumps no `version`) gives the delete a `ForeignKeyViolation` when it commits first, at either level, and gets a `40001` itself when the delete goes first; the `ForeignKeyViolation` is not retried, since a retry would find the committed row again. A delete and a `.set` of one snapshot in one step are `ConflictingWrites`; in `chain`, a `.set` in an earlier step and a `.delete()` in a later one leave a delete. The set-level `Order.where(...).delete()` never skips the aggregate rule silently; how it keeps it is #33's. Events of a deleted aggregate are #23's.
+- **Collecting operations.** A relation operation (`RelOp[Order]`) is not a column operation (`Op[Order]`), so a set change rejects it by type. A list that collects both for one `.set` is `list[Op[Order] | RelOp[Order]]`, written `list[Write[Order]]` with the public alias `Write[O]` (a working name that #13 fixes).
 - Field names are attribute references, so a typo is a type error, and value types are checked too. An operation also carries the entity it belongs to: `order.set(Wallet.balance.to(m))`, an operation of another entity inside `Order.where(...)` or `Order.items.update(item, ...)`, and a child of the wrong type are type errors (ADR-0004).
 - Within a single step, changes are collected with `+`: `order.set(...) + wallet.set(...) + emit(...)`. A function sees only one snapshot, so there is no room to read stale values. Writing the same field twice is `ConflictingWrites`.
 - **Embedded paths** are written `Order.total.path(Money.amount)` (`Column[Order, Decimal]`); a field of another class is a type error. A part of a value object is incremented through its path, `Wallet.balance.path(Money.amount).add(n)`; the whole value is written with `Order.total.to(Money(...))`. `Order.total.amount` cannot be typed by a generic column, and a second increment syntax on the value object was rejected (ADR-0004).
@@ -491,8 +509,9 @@ def checkout(order: PayableOrder, coupon: Annotated[Coupon, Load()],
 - **Positional arguments + rebinding the same names.** `chain(*snapshots)` is typed with TypeVarTuple, so the returned `order` and `wallet` appear as `Order` and `Wallet` respectively. Because the original names are overwritten, most cases of "accidentally reading the original" disappear structurally.
 - The returned values are **always views pointing to the latest state of the chain**. If they were plain snapshots, they would still hold the old value on the line after `c.run`, and rebinding would be meaningless. When passed to `c.run`, they are converted to the immutable snapshot of that moment.
 - **Move marks** remain as a defense against aliases. Reading a field through an alias created before the chain, such as `o = order`, is `MovedSnapshotAccess`. If you need the value before the change, use `c.original(order)`.
-- **After leaving the block**: views are frozen at the final state; **reads are allowed** (`Changes.returning(order.total)` etc.), **`.set` is an error**. A write outside the block would not go into `c.changes` and would silently disappear.
+- **After leaving the block**: views are frozen at the final state; **reads are allowed** (`Changes.returning(order.total)` etc.), **`.set` and `.delete()` are errors**. A write outside the block would not go into `c.changes` and would silently disappear.
 - `c.changes` is merged into the final difference relative to the original snapshots. All events are kept, in the order they occurred.
+- **Inserts and deletes in a chain** ([ADR-0010](../adr/0010-writes-beyond-set.md)): a `.set` in an earlier step and a `.delete()` of the same row in a later one leave a delete, and the earlier step's operations on that root's owned children are dropped (the cascade covers them); a write to a row an earlier step deleted is a `UsageError`, while reading its view stays allowed. A new entity is not a chain view: `.set` and `.delete()` on it are `UsageError`s in every step, so the step that creates it inserts it with all its owned children.
 - **`+` between steps is a type error.** A step call result (`StepResult`) has no `+`. `+` between undecorated helpers is caught by a lint (`PRL001`).
 
 #### Separate transaction after commit (corresponds to JPA `REQUIRES_NEW`, `AFTER_COMMIT`)
@@ -516,7 +535,7 @@ async def edit_order(order_id: UUID, body: EditOrder, if_match: int = Header()):
     await app.run(edit.bind(order=Order.ref(order_id, expected_version=if_match), patch=body))
 ```
 
-There is no transaction spanning the two requests, so `version` prevents the lost update that the DB cannot detect. Changes to `owned` children also bump the root version, so a change to only the items is caught too.
+There is no transaction spanning the two requests, so `version` prevents the lost update that the DB cannot detect. Changes to owned children (`owns_many`) also bump the root version, so a change to only the items is caught too.
 
 #### Query transactions
 
@@ -546,12 +565,14 @@ async with app.read(consistency="snapshot") as r:                    # REPEATABL
 | Caller key reused with different arguments (fingerprint mismatch on the replay path) | `IdempotencyKeyReuse`, no retry (#58) |
 | Caller key with an argument that has no canonical serialization | `UsageError` from `app.run`, before anything runs (#58) |
 | Connection lost during COMMIT | Rerun with the same run ID (see above) |
-| Reading a field of a ref / `.set` on a ref / `==` or `hash()` on a ref | `UnloadedReference` |
+| Reading a field of a ref / `.set` or `.delete()` on a ref / `==` or `hash()` on a ref (`insert`, `add`, `update` or `remove` of a ref) | `UnloadedReference` |
 | Reading a field through a moved original (alias), including `==` and `hash()` | `MovedSnapshotAccess` |
 | `hash()` of a new entity with an `identity` key before commit | `UsageError` (ADR-0003) |
-| `.set` on a view outside the chain block | `ChainClosed` |
-| Writing the same field twice within a single step | `ConflictingWrites` |
-| Overlap between a set change and a row change in the same use case | `IntraUsecaseConflict` |
+| `.set` or `.delete()` on a view outside the chain block | `ChainClosed` |
+| Writing the same field twice within a single step; a `.delete()` and a `.set` (or two `.delete()`) of one snapshot in one step; one new entity inserted twice | `ConflictingWrites` |
+| `.set` on a new entity; a new entity never inserted (when the step returns); an empty unpacked predicate list in `Entity.where(*preds)`; per [ADR-0010](../adr/0010-writes-beyond-set.md): `.delete()` on a new entity, `insert` of a loaded snapshot, `add` of a loaded snapshot, `update` / `remove` of a child of another root, a direct write of an owned child (`item.set`, `item.delete()`, `insert(Item(...))`), reading a new entity's `identity` key, a write to a row an earlier step of the chain deleted | `UsageError` at the call, not retried |
+| 23503 / 23001 foreign-key violation (a row still references a deleted one, or a hand-passed key points at no row) | `ForeignKeyViolation`, a `DatabaseError`, not retried ([ADR-0010](../adr/0010-writes-beyond-set.md)) |
+| Overlap between a set change and a row change in the same use case (not the cascade of a delete, which the planner resolves, [ADR-0010](../adr/0010-writes-beyond-set.md)) | `IntraUsecaseConflict` |
 | Cancellation (client disconnect, an outer cancel scope) | Rollback if loading or computing. The commit batch is shielded and runs to completion |
 
 #### Spring/JPA mapping
@@ -567,7 +588,9 @@ async with app.read(consistency="snapshot") as r:                    # REPEATABL
 | `rollbackFor` | Domain exceptions always roll back |
 | `@Retryable` | Built in (40001/40P01) |
 | `@Version` + merging detached entities | `Order.ref(id, expected_version=v)` |
-| `LockModeType.OPTIMISTIC_FORCE_INCREMENT` | `one_to_many(..., owned=True)` |
+| `LockModeType.OPTIMISTIC_FORCE_INCREMENT` | `owns_many(...)` |
+| `EntityManager.persist()` | `insert(entity)` (with `insert(root, Root.children.add(...))` for owned children) |
+| `EntityManager.remove()` with `cascade = REMOVE` | `order.delete()`: the owned relations go with the root, nothing else ([ADR-0010](../adr/0010-writes-beyond-set.md)) |
 | `@Lock(PESSIMISTIC_WRITE)` | `Profile(..., lock="for_update")`: under SERIALIZABLE a waiter still fails with 40001 once the holder has updated and committed the row, and is retried - not an escape hatch (ADR-0005) |
 | `EntityManager.getReference()` | `Order.ref(id)`, `orders.by_number(n)` |
 | Persistence context flush | None. The ChangeSet is applied at once in the commit batch |
@@ -634,6 +657,8 @@ await app.run_batch(apply_interest)   # commit per chunk, checkpoint written in 
 ```
 
 `emit_each` on a set change fills in the event sequence numbers from the result of `UPDATE … RETURNING id, version` and passes them to the outbox INSERT (a CTE in one statement).
+
+- **`insert_all` is not `insert` with more rows** ([ADR-0010](../adr/0010-writes-beyond-set.md)). `insert(entity)` writes one row in the pipelined commit batch, planned like any row change (§4.4); `insert_all(...)` streams many rows with COPY or chunks, outside the pipeline, with no per-row planning (#33, Phase 2). Different behaviour, different name. `insert_all` takes no owned children: it has no way to add them, and an owned child passed to it is a `UsageError`.
 
 ### 4.9 TypedSQL and t-strings
 
@@ -748,6 +773,18 @@ def test_checkout_charges_discounted_total():
     wallet = Wallet.stub(balance=Money(Decimal("5000")))
     r = checkout(order, coupon, wallet, now=NOW)
     assert r.updated(wallet) == {Wallet.balance: Add(Decimal("-900"))}   # thanks to chain, the discounted amount is charged
+
+def test_merge_deletes_the_source():                       # spike 0002 use case 6 (ADR-0010)
+    src, dst = Order.stub(status=PENDING, items=[Item.stub()]), Order.stub(status=PENDING)
+    r = merge(src, dst, None)
+    assert r.removed(src)       # its owned items and tickets go with it, recorded as "every owned
+                                # child of src", not as rows (ADR-0010: r.removed(item) is
+                                # true for a loaded child of src; the unloaded ones are not listed)
+
+def test_transfer_inserts_the_root_and_its_legs():         # spike 0002 use case 8
+    r = transfer(Account.stub(balance=Money(Decimal("100"))), Account.stub(), Money(Decimal("30")))
+    assert len(r.inserted(Transfer)) == 1
+    assert len(r.inserted(Leg)) == 2
 
 def test_alias_of_moved_snapshot_is_rejected():
     @usecase
@@ -944,9 +981,9 @@ On highly contended tables, serialization failures and retries increase. Two kin
 - Rationale: Python 3.15 added explicit lazy imports (PEP 810), and there is also a global lazy mode flag. When this flag is on, module execution is delayed, so validation that relies on import side effects cannot be trusted. PEP 649's deferred annotations point in the same direction.
 
 **Field type surface: the `Col[T]` wrapper and owner-typed columns**
-- Decision: every column field of entities, events and value objects is declared as `Col[T]` (`status: Col[OrderStatus] = column(...)`, `amount: Col[Decimal]` in `Money`). Relations are `Rel[...]`. Class access is `Column[Owner, T]`, where the owner is the class that declares the field (`Order.status`: `Column[Order, OrderStatus]`); instance access is `T`. Paths into embedded values are `Order.total.path(Money.amount)` (`Column[Order, Decimal]`). `Column`'s owner parameter is covariant and its value parameter invariant, pinned by type tests (ADR-0004).
+- Decision: every column field of entities, events and value objects is declared as `Col[T]` (`status: Col[OrderStatus] = column(...)`, `amount: Col[Decimal]` in `Money`). Relations are `Rel[...]` (`many_to_one`, `one_to_many`), and owned collections `Owned[list[...]]` (`owns_many`): on the class `Relation[Owner, E]` (read and load only) and `OwnedRelation[Owner, E]` (adds `add` / `remove` / `update`), on the instance `Sequence[E]`. A relation operation is a `RelOp[Owner]` (`add` an `AddOp[Owner]`), invariant in its owner and not an `Op`, so a set change rejects it by type and `insert` takes `add` only (spike 0007; [ADR-0010](../adr/0010-writes-beyond-set.md)). Class access is `Column[Owner, T]`, where the owner is the class that declares the field (`Order.status`: `Column[Order, OrderStatus]`); instance access is `T`. Paths into embedded values are `Order.total.path(Money.amount)` (`Column[Order, Decimal]`). `Column`'s owner parameter is covariant and its value parameter invariant, pinned by type tests (ADR-0004).
 - Rationale: with a plain annotation, the type checker also sees class access (`Order.status`) as `T`. For it to appear as a column on the class and `T` on the instance, the annotation itself must be a descriptor type with an overloaded `__get__`. SQLAlchemy 2.0's `Mapped[T]` exists for the same reason. `.to()`, Finders and projection keys all stand on top of this. The owner comes from the `owner` argument of `__get__`, so operations (`Op[Owner]`), predicates and relations carry the entity they belong to. Spike 0001 confirmed all of it under pyright and mypy.
-- **Where the owner is checked**: by types only where the receiver fixes the owner - `order.set(...)`, `Entity.where(...)`, `SetChange.set(...)`, `SetChange.emit_each(...)`, relation operations, the Finders of `Repository[E]`, and `path`. Where the owner would have to be inferred from several arguments of one call it is not checked by types: queries (`select`/`join`/`where`) are validated when their description is built (whether seal can also catch them is #52), and `Profile`, `Load`, `Index`, `Check` and `@invariant(fields=...)` are validated by seal. Reason (spike 0001, P-A): given columns of two entities in one call, pyright infers the owner as the union `Order | Item` and mypy as the common base `Entity`, so the same misuse would be an error under one checker only.
+- **Where the owner is checked**: by types only where the receiver fixes the owner - `order.set(...)`, `Entity.where(...)`, `RowSet.set(...)`, `SetChange.set(...)`, `SetChange.emit_each(...)`, relation operations, the Finders of `Repository[E]`, and `path` - and in `insert(entity, *children)`, where the owner is solved from several arguments but `RelOp`'s invariance leaves the entity as the only solution (under mypy a declared type written on a relation's class access can still widen it, ADR-0004). Where the owner would have to be inferred from several arguments of one call it is not checked by types: queries (`select`/`join`/`where`) are validated when their description is built (whether seal can also catch them is #52), and `Profile`, `Load`, `Index`, `Check` and `@invariant(fields=...)` are validated by seal. Reason (spike 0001, P-A): given columns of two entities in one call, pyright infers the owner as the union `Order | Item` and mypy as the common base `Entity`, so the same misuse would be an error under one checker only.
 - **Comparison operands** (#51, [spike 0006](../spikes/0006-parent-fk-and-column-operands.md)): a value compared with a column is exactly `T`, with no numeric widening - `Order.total.path(Money.amount) >= 0` is a type error and §4.2 writes `>= Decimal(0)` (the typing spec's `int` to `float` promotion still applies to a `float` column). Two columns compare directly, through overloads of `Column`'s comparison operators, when they have the same value type; a difference in nullability only (`T` against `T | None`) is allowed. The result is a predicate over both owners: `Column[O, T] == Column[O2, T]` is `Pred[O | O2]`, so a place where the receiver fixes the owner (`Order.where(...)`) still rejects a predicate that mentions another entity's column. Where two entities are in scope the owner is checked by the query description or by seal (ADR-0004 Decision 4); the parameter type that accepts a predicate over two owners there is open (queries #52; `Load.when`'s `match` takes `Pred[object]` in the spike's stub). That rejection rests on `Pred` being covariant in its owner: like `Column`'s, its variance is declared and pinned by a type test when it is written (spike 0006 O1). The value and the column forms are separate overloads; no parameter takes `T | Column[O, T]`, the shape on which the checkers split (spike 0001).
 - Comparison gaps (open, decided in #9; spike 0006):
   - `==` and `!=` with a value of the wrong type are `bool` to both checkers, which fall back to the value's reflected `__eq__` (typeshed: `(object) -> bool`); the mistake is reported only where a predicate is required (`Order.where`, `Check`, `Load.when`, `select(...).where`). That is the checkers' view: at run time `Column.__eq__` is called first, and what it does with a value that is not a `T` must not end in a silent `bool`.
@@ -958,16 +995,17 @@ On highly contended tables, serialization failures and retries increase. Two kin
 - Cost: annotations get longer, `Column` has two type parameters wherever it is named, value objects declare `Col[...]` fields, and an increment of a part of a value object goes through its path (`Wallet.balance.path(Money.amount).add(n)`). `Order.total.amount` cannot be typed by a generic column.
 
 **Creation syntax and constructor types**
-- Decision: entities inherit the `Entity` base class, and creation is its keyword constructor (`Order(number=..., total=...)`), like events and values; there is no `new`. Modification is a single `.set`. "Only one way" applies per operation. Creation and modification are different operations (ADR-0003).
+- Decision: entities inherit the `Entity` base class, and creation is its keyword constructor (`Order(number=..., total=...)`), like events and values; there is no `new`. Modification of a loaded row is `.set`, insertion of a new row `insert(...)`, deletion of a loaded row `.delete()` ([ADR-0010](../adr/0010-writes-beyond-set.md)). "Only one way" applies per operation. Creation and modification are different operations (ADR-0003).
 - Rationale: a missing required field is the most common mistake when creating an entity, so under "correctness first" it must be caught statically. The alternative of unifying creation into the operation syntax as well, `Order(Order.sku.to(...), …)`, was rejected because it pushes this check down to runtime. A separate classmethod `new` can only be typed by copying the constructor's signature, so the plain constructor would type-check next to it; dropping `new` removes the second way instead of detecting it.
 - Order of attempts to get the types: step 1 holds (spike 0001), so steps 2 and 3 are not needed.
   1. **Chosen.** The descriptor's `__set__(self, instance: Never, value: T)`: the constructor synthesised through `dataclass_transform(kw_only_default=True, frozen_default=True, ...)` on `Entity` takes each parameter type from the value of `__set__`, and assignment is blocked (pyright `reportAttributeAccessIssue`, mypy `misc` and `arg-type`). Field specifiers declare `init: Literal[False]` for generated keys, `version_column()`, server defaults, relations and the parent key of an owned child (`parent_fk`), so they are not parameters.
   2. Typed creation functions in a generated **real Python module**.
   3. Runtime checks only (last resort).
 - Generating `.pyi` stubs was rejected. A stub cannot overlay just the constructor; it replaces the types of the whole module, so until you add a field and regenerate, the editor shows the old shape.
-- Entities are hashable at the type level (`frozen_default=True`; without it pyright and mypy disagree on `{order}`). The runtime rule (decided in #54 from spike 9.4's data, ADR-0003 Decision 4): equality compares the entity type and the column values only (embedded values included; relations and the load state are not compared, so a stub and a loaded snapshot holding the same values are equal, as are two snapshots of one row loaded through two paths); a column without a value yet (a server default or an `identity` key of a new entity) is equal only when it has no value on both sides; the hash is the entity type plus the primary key (the parent key of an owned child before `add` has no value yet: #76); refs raise `UnloadedReference`, a new entity with an `identity` key has no hash before commit (`UsageError`), a chain view compares its latest state, and a moved alias raises `MovedSnapshotAccess`. `version` is a column and a change to an `owned` child bumps the root's version, so two snapshots of a row before and after a commit differ. Identity equality (type and key, Django and Rails) was rejected: `assert before == after` would pass after a change. `==` does not compare children; comparing a whole aggregate is a test-kit helper (#27). Remaining cost: a new `identity` entity cannot be a set member or dict key before commit, and two new entities with equal values compare equal, so the engine and the planner identify new rows by object identity, never by `==`.
-- **The key of an owned child is set by the parent** (#49): the child declares it with its own field specifier `parent_fk(lambda: Order)` (working name, fixed in #9), it is not a constructor parameter, and `Order.items.add(Item(...))` fills it. A child of a relation that is not `owned` keeps `fk(lambda: Order)`, an ordinary required parameter. A flag on `fk` (`fk(..., parent=True)`) was rejected: it would make one specifier mean two things, so the name differs ("configuration never changes meaning"). Rationale: in spike 0002 every owned child passed its parent's key by hand, and a child added to one parent with another parent's key was accepted by both checkers; without the parameter a new child cannot be created with another parent's key ("remove rather than detect"). Confirmed under both checkers by [spike 0006](../spikes/0006-parent-fk-and-column-operands.md).
-- Open: `Order.stub(...)` keywords are not type-checked (#50); reading the parent key of an owned child before it is added (#76); owned children of a new root and `add` on a relation that is not `owned` (#60); how `owned=True` and `parent_fk` are kept consistent, the final name of `parent_fk`, and moving an existing child to another parent, which still type-checks (spike 0006 O9) (#9).
+- Entities are hashable at the type level (`frozen_default=True`; without it pyright and mypy disagree on `{order}`). The runtime rule (decided in #54 from spike 9.4's data, ADR-0003 Decision 4): equality compares the entity type and the column values only (embedded values included; relations and the load state are not compared, so a stub and a loaded snapshot holding the same values are equal, as are two snapshots of one row loaded through two paths); a column without a value yet (a server default or an `identity` key of a new entity) is equal only when it has no value on both sides; the hash is the entity type plus the primary key (the parent key of an owned child before `add` has no value yet: #76); refs raise `UnloadedReference`, a new entity with an `identity` key has no hash before commit (`UsageError`), a chain view compares its latest state, and a moved alias raises `MovedSnapshotAccess`. `version` is a column and a change to an owned child bumps the root's version, so two snapshots of a row before and after a commit differ. Identity equality (type and key, Django and Rails) was rejected: `assert before == after` would pass after a change. `==` does not compare children; comparing a whole aggregate is a test-kit helper (#27). Remaining cost: a new `identity` entity cannot be a set member or dict key before commit, and two new entities with equal values compare equal, so the engine and the planner identify new rows by object identity, never by `==`.
+- **The key of an owned child is set by the parent** (#49): the child declares it with its own field specifier `parent_fk(lambda: Order)` (working name, fixed in #9), it is not a constructor parameter, and `Order.items.add(Item(...))` fills it. A child of a relation that is not owned keeps `fk(lambda: Order)`, an ordinary required parameter. A flag on `fk` (`fk(..., parent=True)`) was rejected: it would make one specifier mean two things, so the name differs ("configuration never changes meaning"). Rationale: in spike 0002 every owned child passed its parent's key by hand, and a child added to one parent with another parent's key was accepted by both checkers; without the parameter a new child cannot be created with another parent's key ("remove rather than detect"). Confirmed under both checkers by [spike 0006](../spikes/0006-parent-fk-and-column-operands.md).
+- Owned children of a new root are written `insert(t, Transfer.legs.add(...), ...)`, and a relation that is not owned has no `add` (decided on #60, [ADR-0010](../adr/0010-writes-beyond-set.md)); seal checks `owns_many`, `parent_fk` and `aggregate_root=True` against each other ([ADR-0010](../adr/0010-writes-beyond-set.md)).
+- Open: `Order.stub(...)` keywords are not type-checked (#50); reading the parent key of an owned child before it is added (#76); the final names of `parent_fk` and `owns_many`, and moving an existing child to another parent, which still type-checks (spike 0006 O9) (#9).
 
 **Dependent loads: declarative only, no generators**
 - Decision: additional data needed is declared with `Load.when` (column expression) or `Load.after` (typed pure function). There is no way to request data with `yield` inside a use case.
@@ -989,24 +1027,29 @@ On highly contended tables, serialization failures and retries increase. Two kin
 - One marker (#48): every parameter the runner fills - an injected type or a dependent load - defaults to `INJECTED`, and no other parameter does (a `SealError` either way). `bind` given such a parameter raises `UsageError` (it is filled fresh on every attempt); a direct call must pass every parameter (`UsageError` naming the one left out). These parameters come last or are keyword-only, since they have a default. A second marker for dependent loads (`LOADED`) was rejected: for the caller both mean "do not pass this", and seal tells them apart from the annotation. The marker cannot live in the annotation alone (FastAPI's `Annotated[..., Depends(...)]` form): without a default the parameter stays required in `bind`, because `ParamSpec` cannot drop parameters (PEP 612; spike 0002 X5).
 - Rationale: the previous proposal (`app.run(pay, order=Order.ref(id))`) had to change the parameter type from `Order` to `Ref[Order]` and drop `Now`, but ParamSpec cannot express such transformations, nor can run option keywords sit next to `**kwargs: P.kwargs` (PEP 612). If a ref is an entity at the type level, the signature of `bind` equals that of the use case and it is checked with ParamSpec alone. It is the same idea as JPA `EntityManager.getReference()`.
 - A Finder is callable (`orders.by_number("A-1")`), so its argument is checked against the column type.
-- `.set` on a ref is also blocked with `UnloadedReference`. It is a write that reads no fields, so if left alone it would be a write that skips the load and the `@invariant` checks. A write without loading is stated explicitly as a set change `Order.where(Order.id == x).set(...)`.
+- `.set` and `.delete()` on a ref are also blocked with `UnloadedReference`. It is a write that reads no fields, so if left alone it would be a write that skips the load and the `@invariant` checks. A write without loading is stated explicitly as a set change `Order.where(Order.id == x).set(...)`.
 - Cost: reading a field of a ref on the calling side is an error only at runtime (immediately and deterministically).
 
-**Write syntax: a single `.set(Column operation)`**
-- Decision: there is one way to write: pass field operations, as in `order.set(Order.status.to(PAID), Order.paid_at.to(now))`. Collections are also expressed with the `Order.items.add/remove/update` operations. The syntax is the same as for set changes (`Order.where(...).set(...)`).
-- Rationale: thanks to the `Col[T]` descriptor, names and types are checked through `Column[Owner, T].to(v: T)` without codegen, and snapshots remain immutable at the type level too.
+**Write syntax: `.set` for loaded rows, `insert` for new rows, `.delete()`** ([ADR-0010](../adr/0010-writes-beyond-set.md))
+- Decision: one way per write operation. A loaded row is modified by passing field operations, as in `order.set(Order.status.to(PAID), Order.paid_at.to(now))`, and the owned children of a root through its relation operations `Order.items.add/remove/update` inside the same `.set`. A new row is written with `insert(entity)`, a new root with its owned children with `insert(t, Transfer.legs.add(...), ...)`. A loaded row is deleted with `.delete()`, a root with its owned relations. The rows of an owned relation are written only through the root; every other row is written directly, and a relation that is not owned has no write operations. Set changes take the same field operations (`Order.where(...).set(...)`).
+- Rationale: thanks to the `Col[T]` descriptor, names and types are checked through `Column[Owner, T].to(v: T)` without codegen, and snapshots remain immutable at the type level too. Inserting and deleting are operations of their own, as creating and modifying are (ADR-0003): a new entity has no row to `.set`, and a delete has no field to pass. Writing owned rows only through the root keeps the root's `version` bump on every change of the aggregate; writing other rows directly removes the second way to insert them (`add` on any relation of a loaded parent, spike 0002 X3) and the second way to write a child (X11).
+- Runtime rules where the types cannot reach (a new entity, a loaded snapshot and a ref have one type): `.set` on a new entity and a created entity never inserted are `UsageError`s; so are `.delete()` on a new entity, `insert` of a loaded snapshot and a direct write of an owned child, each at its call (ADR-0010's table); an `identity`-key root that declares `owns_many` is a `SealError` in Phase 1a.
 - Alternatives considered and rejected:
   - Keyword style `.set(status=PAID)`: the type checker cannot catch typos in field names.
   - Assignment via `with order.edit() as o:` (returning Self): to allow assignment, collection field types must be `list`, so even `order.items.append()` on a snapshot passes type checking.
   - Immer-style `draft()`: there would be two ways to write, and type-level immutability breaks for the same reason as above.
-- Cost: longer than assignment syntax. We chose "only one way" and type safety over familiarity.
+  - `.set` on a new entity for its owned children (`insert(t) + t.set(Transfer.legs.add(...))`, #60 candidate A): needs a second runtime rule (`.set` on a new entity takes relation operations only); candidate B makes `insert` reject column and non-`add` operations by type (spike 0007).
+  - The bulk `insert_all` for one root (spike 0002 use case 8): COPY runs outside the pipeline, so it cannot share the commit batch (§4.8).
+- History: until ADR-0010 the write syntax was "a single `.set(Column operation)`", with `add` allowed on any relation and no insert of a root or delete of a root outside the bulk path.
+- Cost: longer than assignment syntax, three verbs instead of one, and a list that collects column and relation operations for one `.set` is `list[Op[O] | RelOp[O]]` (the alias `Write[O]`, a working name that #13 fixes). We chose "only one way" per operation and type safety over familiarity.
 
-**Aggregate boundaries: `aggregate_root` and `owned`**
-- Decision: aggregate boundaries are declared with `class Order(Entity, table="orders", aggregate_root=True)` and `one_to_many(..., owned=True)`. One declaration is used in three places: ① changes to `owned` children bump the root `version`, ② sequence numbers of `@event(aggregate=...)`, ③ module boundary checks. The child side of an `owned` relation declares its key with `parent_fk` (§4.2); how the two declarations are kept consistent is open (#9).
+**Aggregate boundaries: `aggregate_root` and `owns_many`**
+- Decision: aggregate boundaries are declared with `class Order(Entity, table="orders", aggregate_root=True)` and `items: Owned[list[Item]] = owns_many(...)` (no `owned=` flag; decided on #60). One declaration is used in five places: ① changes to owned children bump the root `version`, ② sequence numbers of `@event(aggregate=...)`, ③ module boundary checks, ④ which write operations exist (owned rows only through the root), ⑤ what `.delete()` of the root deletes. The child side of an owned relation declares its key with `parent_fk` (§4.2).
+- Decided in [ADR-0010](../adr/0010-writes-beyond-set.md): ownership is one level deep (an owned child declares no `owns_many`, so a child update takes column operations only and a delete cascades one level); seal checks the declarations against each other - an `owns_many` over a plain `fk`, a `parent_fk` that no `owns_many` names, that two name or that targets another class, `owns_many` on a class without `aggregate_root=True`, and a class with a `parent_fk` that is an aggregate root, owns children or has a second `parent_fk` are `SealError`s; a `many_to_one` over a `parent_fk` (the child reading its root) is allowed (final names: #9).
 - Rationale: when an edit screen handles an order and its items together, a change to only the items must still be caught by the optimistic lock across requests (JPA `OPTIMISTIC_FORCE_INCREMENT`). But applying this to every FK child would mean that merely adding a comment to a post updates the post row, which quickly becomes a hot row under the SERIALIZABLE default. So it is limited to children that belong to the aggregate.
 
 **Partial loads of large aggregates**
-- Decision: provide partial loads such as `Load(Order.items.count())`, `.exists()`, `.where(...)`. Write operations such as add and delete are allowed without loading the collection; iteration and lookup require loading.
+- Decision: provide partial loads such as `Load(Order.items.count())`, `.exists()`, `.where(...)`. Writes do not require loading the whole collection: `add` needs no loaded child, `update` / `remove` need the child they name, and a root's `.delete()` removes its owned relations unloaded ([ADR-0010](../adr/0010-writes-beyond-set.md)); iteration and lookup require loading.
 
 **Marking Python-only invariants**
 - Decision: protected fields are stated with `@invariant(fields=lambda: (Order.status, ...))` (references instead of strings). If a set-based update touches such a field, it is an error at seal time. Rules expressible in SQL are declared with `Check(...)` and pushed down to a DB `CHECK` constraint; set updates are allowed on such fields.
@@ -1034,10 +1077,11 @@ On highly contended tables, serialization failures and retries increase. Two kin
 - Decision: ① set-based changes (in declaration order) → ② row-level changes in the order of a **topological sort of the FK and unique key dependency graph** → ③ inline projections → ④ outbox → ⑤ run result record. Statements with the same table, operation and column set are batched together (§10.7).
 - Rationale: Hibernate's ActionQueue executes SQL in a fixed order, which applies batching automatically, but the fixed order has a trap: when emptying a collection and inserting new rows, the INSERT runs before the DELETE and causes a unique violation. So a change that frees a unique key value runs before a change that takes that value.
 - Cycles (e.g. two rows swapping unique values) are reported as an error, pointing to `DEFERRABLE INITIALLY DEFERRED` constraints.
-- Overlap handling: set updates bump `version`, so if one overlaps with an entity update of the same row, it is reported as `IntraUsecaseConflict` (a programming error), which is not retried.
+- A root's `.delete()` (one statement deleting its owned relations by the root key and the root) is set-level SQL but is planned in ②, as a node of the row-level graph: it must follow every change that removes a reference into the aggregate's tables, which ① would run too early ([ADR-0010](../adr/0010-writes-beyond-set.md); edges in §10.7).
+- Overlap handling: set updates bump `version`, so if one overlaps with an entity update of the same row, it is reported as `IntraUsecaseConflict` (a programming error), which is not retried. The delete of an aggregate is not a set change in this sense: an operation on an owned child of a root the same use case deletes is dropped from the plan when it comes from an earlier chain step, and is `ConflictingWrites` or a `UsageError` within one step ([ADR-0010](../adr/0010-writes-beyond-set.md)).
 
 **Composition: steps only via `chain`**
-- Decision: there is one way to connect steps: `with chain(order, wallet) as (c, order, wallet):`. The returned values are views pointing to the latest state of the chain, rebound to the same names to hide the originals. `+` is used only within a single step; step call results (`StepResult`) have no `+`, so `+` between steps is a type error. Aliases created before the chain are blocked by move marks (`MovedSnapshotAccess`). Views that have left the block allow only reads; `.set` is `ChainClosed`.
+- Decision: there is one way to connect steps: `with chain(order, wallet) as (c, order, wallet):`. The returned values are views pointing to the latest state of the chain, rebound to the same names to hide the originals. `+` is used only within a single step; step call results (`StepResult`) have no `+`, so `+` between steps is a type error. Aliases created before the chain are blocked by move marks (`MovedSnapshotAccess`). Views that have left the block allow only reads; `.set` and `.delete()` are `ChainClosed`.
 - History:
   1. Merge with `+` and connect manually with `order.apply(changes)`: forget it and you silently read the previous value. Rejected.
   2. Automatic connection as an option: the same code would mean different things depending on configuration. Rejected.
@@ -1047,7 +1091,7 @@ On highly contended tables, serialization failures and retries increase. Two kin
 - Why writes outside the block are blocked: such a change does not go into `c.changes` and silently disappears. Reads are harmless, so they are allowed.
 
 **2 round trips**
-- Decision: 1 load batch (BEGIN, run ID claim, load stage 1) + 1 commit batch (writes, projections, outbox, result record, xid query, COMMIT, LSN query). Load stages increase only when there is a `Load.after`.
+- Decision: 1 load batch (BEGIN, run ID claim, load stage 1) + 1 commit batch (writes, projections, outbox, result record, xid query, COMMIT, LSN query). Load stages increase only when there is a `Load.after`. `insert(...)` and `.delete()` are row changes of the commit batch; only the bulk `insert_all` (COPY) runs outside it (§4.8).
 - Rationale: a libpq pipeline does not execute later statements if an earlier one fails, so putting COMMIT in the same batch is safe. The wider window of unknown outcome is covered by the run ID. The shield covers the whole commit batch.
 
 **Run ID: idempotency and commit-outcome resolution unified**
@@ -1242,13 +1286,13 @@ Each was chosen to test a different part of the design. If something does not tr
 Started as a proposal reflecting the comment that the scope is too broad; decided by the maintainer on 2026-11-26 in #6, from the verdicts of §9.1-9.4 and the recommendations on the decision issues they produced. Phase 1 is cut in two at the first working `app.run`. Where a part depends on a decision issue that is still open, it follows the decision of that issue.
 - **Phase 1a - Core execution path**: pure use cases and the execution engine, PostgreSQL dialect, run ID (#9-#22), then the release pipeline and a working 0.0.1 (#44, #30).
   - Exit: use cases 6 (order merge, delete of a root), 8 (transfer, insert of a new root) and 9 (profile edit) of [spike 0002](../spikes/0002-use-cases-on-paper.md) pass as integration tests on PostgreSQL in one load batch and one commit batch, SERIALIZABLE with retry and a run ID.
-  - Before the build issues they gate: the type spike for #49 and #51 (done: [spike 0006](../spikes/0006-parent-fk-and-column-operands.md)); the decisions #48, #54, #57, #58, #59, #60, #61 and #63, with a separate type spike for the shapes of #48, #57, #59 and #60 (done: [spike 0007](../spikes/0007-phase-1a-type-shapes.md); the maintainer decided `owns_many`, candidate B for owned children of a new root and a required predicate in `Entity.where` on 2026-11-26, and §4.3 / §4.4 / §4.7 / §4.8 / §8.2 change with the two follow-up ADRs; whether row sets replace partial `.where` loads is left to the second), and the ADRs they call for (one of them for #61's run budget); ADR-0007 after #65; the cleanup cost of the run-ID tables (#72) before #63 fixes their schema. What these decisions add to the build issues follows the decision of each.
-  - `expected_version`, `VersionMismatch` and the root `version` bump on `owned` changes are part of #11, #13, #15 and #17. Until the outbox lands (#23), a use case that emits events is rejected, never silently dropped; whether at seal or at run time is decided in #21.
+  - Before the build issues they gate: the type spike for #49 and #51 (done: [spike 0006](../spikes/0006-parent-fk-and-column-operands.md)); the decisions #48, #54, #57, #58, #59, #60, #61 and #63, with a separate type spike for the shapes of #48, #57, #59 and #60 (done: [spike 0007](../spikes/0007-phase-1a-type-shapes.md); the maintainer decided `owns_many`, candidate B for owned children of a new root and a required predicate in `Entity.where` on 2026-11-26; the first follow-up ADR, [ADR-0010](../adr/0010-writes-beyond-set.md) (accepted 2026-11-26, writes beyond `.set`, #57 and #60), changes §4.2-4.4 / 4.6 / 4.8 / 4.12 / 8.2 / 8.3 / 10.7 / 10.12 and gates the exit's use cases 6, 8 and 9; the second (#59) changes §4.7 and 8.2 "Dependent loads" and decides whether row sets replace partial `.where` loads), and the ADRs they call for (one of them for #61's run budget); ADR-0007 after #65; the cleanup cost of the run-ID tables (#72) before #63 fixes their schema. What these decisions add to the build issues follows the decision of each.
+  - `expected_version`, `VersionMismatch` and the root `version` bump on changes of owned children are part of #11, #13, #15 and #17. Until the outbox lands (#23), a use case that emits events is rejected, never silently dropped; whether at seal or at run time is decided in #21.
 - **Phase 1b - Events, queries and tooling**: inline projections and the outbox log (#23), Query path (TypedSQL, #24), schema tooling (optional extra, #25, CLI #26), the test kit (#27), the §9.5 measurements (#28) and documentation examples as tests (#29). Exit: adoption step 3 (§6).
   - Also in 1b: the set-load implementation (following #59), the cleanup cost of the outbox log (#73) before #23, and the classification of `53200` under SSI load (#74; it gates nothing - until then it is not retried and surfaces as `DatabaseError`).
   - Schema tooling in Phase 1 ([spike 0004](../spikes/0004-alembic-round-trip.md)): Alembic generates what round-trips (create, add or drop a column, a type change, `version` triggers); the constraint and index naming rule is decided in 1b, before the first name is created; a shadow-schema catalog diff reports what Alembic cannot see. `platina check` runs it in CI in projects that use `platina migrate`, and it can also check the declared tables of a database Platina does not migrate. A rename, or a changed CHECK or partial index, is a hand-written migration that the drift report catches. The internal tables follow #63 ([ADR-0009](../adr/0009-internal-tables-owned-by-the-core.md): versioned SQL in a dedicated schema, shipped only after #72).
   - `platina gen` accepts an existing database as its schema source (#24).
-- **Phase 2**: async projections, `then` and `@process` with the job pipeline, batch use cases and set changes (#33; the set-level delete and `insert_all` follow #57 and #60), migration fidelity (renames, derived names, CHECK and partial-index changes, #70) and `platina pull` (#71). Phase 1 has no boundary with the outside world: the `@process` handlers that four of spike 0002's use cases need arrive here.
+- **Phase 2**: async projections, `then` and `@process` with the job pipeline, batch use cases and set changes (#33; the set-level delete and `insert_all` follow [ADR-0010](../adr/0010-writes-beyond-set.md)), migration fidelity (renames, derived names, CHECK and partial-index changes, #70) and `platina pull` (#71). Phase 1 has no boundary with the outside world: the `@process` handlers that four of spike 0002's use cases need arrive here.
 - **Later**: MySQL and MariaDB dialects, saga helpers, official free-threaded support
 - Until `platina pull` lands, adoption step 0 (§6) is the query path alone, and a hand-written entity is checked against an existing schema by the drift check; §6 describes the end state.
 
@@ -1470,23 +1514,34 @@ MySQL support then becomes a matter of adding a few of these strategies and a di
 
 ```
 ChangeSet
-  → list of RowOps (Insert / Update / Delete / LinkAdd / LinkRemove)
+  → list of RowOps (Insert / Update / Delete / AggregateDelete / LinkAdd / LinkRemove)
   → dependency graph
        · FK: parent INSERT → child INSERT,  child DELETE → parent DELETE
        · unique key: operation that frees a value (DELETE, value change) → operation that takes the same value
+       · AggregateDelete(root table, root keys) - ADR-0010: one statement deleting every
+           owned relation by the root keys and the roots (WITH ... DELETE);
+           a DELETE of a row with an FK into the aggregate's tables, an UPDATE that changes or
+           clears such an FK → AggregateDelete;
+           AggregateDelete → INSERT into an owned table, UPDATE of its unique columns, only for
+           unique constraints without the parent_fk column (it frees values the planner cannot
+           see: the children are not loaded);
+           AggregateDelete(X) → AggregateDelete(Y) when a table of X has an FK into a table of Y
+           (from the registry; the rows are not loaded); aggregates that reference each other are
+           merged into one statement (checked on PostgreSQL 18)
   → topological sort (ties sorted so that table, operation and column set group together)
   → batching: multi-row INSERT / unnest UPDATE / DELETE … WHERE id = ANY($1)
   → Pipeline command (COPY is a separate command)
 ```
 
 - If a cycle occurs, a `CommitCycle` error reports which rows and constraints caused it and points to `DEFERRABLE INITIALLY DEFERRED` constraints.
+- `insert(root, *children)` is an Insert of the root and one per child, ordered by the FK edge. `root.delete()` is one `AggregateDelete` per root table, batched over the deleted roots (`WITH c1 AS (DELETE FROM items WHERE order_id = ANY($1)), c2 AS (DELETE FROM tickets WHERE order_id = ANY($1)) DELETE FROM orders WHERE id = ANY($1)`); a root's FK into its own owned table and FKs between owned tables need no order inside it, because NO ACTION FKs are checked after the whole statement. RowOps on owned children of a deleted root that come from earlier chain steps (an Update, a Delete from `remove`, an Insert from `add`) are dropped: the statement covers them (an operation that changes a child's `parent_fk` is a `UsageError` instead until #9 decides moves); within one step such a pair is an error, never dropped ([ADR-0010](../adr/0010-writes-beyond-set.md)).
 - The planner is a pure function, so it is the main target of property-based tests (§11.3).
 
 ### 10.8 Snapshots, refs, move marks
 
 - An entity snapshot is a **slots class** generated per entity at seal time (internal values are a tuple). Entities inherit `Entity` (ADR-0003), and `__init_subclass__` cannot add `__slots__`, so the slots class is made by the `Entity` metaclass or as a separate snapshot class. Field access goes through a descriptor, which returns `Column[Owner, T]` when accessed on the class and `T` when accessed on an instance.
 - A **ref** is an "unloaded" instance of the same class. It holds only identifying information (PK or Finder key), and reading a field raises `UnloadedReference`. The runner collects refs when building the load plan.
-- **chain views**: the values returned by `chain(order, wallet)` are view objects pointing to the latest state of the chain (the original entity at the type level). When passed to `c.run` they become the immutable snapshot of that moment; after leaving the block they are frozen at the final state, and `.set` raises `ChainClosed`.
+- **chain views**: the values returned by `chain(order, wallet)` are view objects pointing to the latest state of the chain (the original entity at the type level). When passed to `c.run` they become the immutable snapshot of that moment; after leaving the block they are frozen at the final state, and `.set` and `.delete()` raise `ChainClosed`.
 - **Move marks**: `chain(order, ...)` leaves "this snapshot object has been moved" in the current step's `contextvars` record. Rebinding the same names structurally removes most references to originals, and this mark blocks aliases created before the chain. When the descriptor reads a field, and when `__eq__` / `__hash__` run, they check this mark and raise `MovedSnapshotAccess`. The mark is per step scope, so it does not affect other coroutines or threads using the same snapshot.
 - **Read tracking** has been removed from correctness responsibilities. It is turned on only in development and test modes, for the "declared but unused relation" warning and for showing the cause in `RelationNotLoaded`.
 - Snapshots stay immutable to the end, so sharing them across threads is safe. Every write is expressed as a field operation value, so no proxies are needed.
@@ -1524,10 +1579,10 @@ PlatinaError
 │   └── ModuleBoundaryError   # a module uses an entity another module owns
 ├── UsageError                # programming error, not retried
 │   ├── RelationNotLoaded
-│   ├── UnloadedReference     # reading a field of a ref, .set, == or hash() on a ref
-│   ├── ChainClosed           # .set on a view outside the chain block
+│   ├── UnloadedReference     # reading a field of a ref, .set, .delete(), == or hash() on a ref
+│   ├── ChainClosed           # .set or .delete() on a view outside the chain block
 │   ├── MovedSnapshotAccess   # reading (also == / hash()) an original moved by chain
-│   ├── ConflictingWrites     # writing the same field twice within a single step
+│   ├── ConflictingWrites     # writing the same field twice in one step; .delete() and .set of one snapshot
 │   ├── IntraUsecaseConflict
 │   └── CommitCycle
 ├── NotFound                  # row of the root ref or of a required dependent load is missing
@@ -1538,11 +1593,11 @@ PlatinaError
 │   ├── RetryExhausted        # 40001/40P01 retry limit exceeded
 │   └── VersionMismatch       # expected_version mismatch (optimistic lock across requests)
 └── DatabaseError             # other DB errors, SQLSTATE and the original exception preserved
-    └── UniqueViolation, CheckViolation, ...
+    └── UniqueViolation, CheckViolation, ForeignKeyViolation (23503 / 23001, ADR-0010), ...
 (user domain exceptions are not wrapped; they propagate as is)
 ```
 
-`IdempotencyKeyReuse` (#58) and `RunTimeout` (#61) are decided; they are added to `platina.core.errors` with #22 and #17.
+`IdempotencyKeyReuse` (#58) and `RunTimeout` (#61) are decided; they are added to `platina.core.errors` with #22 and #17. `ForeignKeyViolation` (23503, and 23001 from a RESTRICT foreign key) is decided in [ADR-0010](../adr/0010-writes-beyond-set.md): a `DatabaseError` the driver types from the SQLSTATE like `UniqueViolation` and `CheckViolation`, not retried - it depends on rows the use case did not read. It is common once rows that are not owned are written directly with hand-passed keys and a delete leaves them to the use case. PostgreSQL's diagnostics name the referencing table and constraint; the error names the referencing entity and field where the constraint name follows #25's naming rule (otherwise the table) and hints to delete or re-point those rows first. The engine attributes it by statement position, not by the psycopg call that raised it (a later call in the pipeline can raise it). It is added with #18. The `UsageError`s of writes (a `.set` or `.delete()` on a new entity, `insert` of a loaded snapshot, a direct write of an owned child, a created entity never inserted) are plain `UsageError`s with a `hint` (ADR-0010).
 
 Besides the message, every exception has structured fields (`usecase`, `entity`, `field`, `location`, `hint`, and `details` for extra lines). No string parsing is needed for CLI or IDE integration or for test assertions. Their types, the constructor and the rendering are fixed by [ADR-0006](../adr/0006-exception-fields-and-rendering.md):
 
@@ -1624,6 +1679,8 @@ def test_planner_never_violates_constraints(schema_and_changes):
     # then
     assert violations == []
 ```
+
+With ADR-0010 the generated schemas and change sets also cover deletes of roots whose owned children are not loaded (the reference model holds rows the change set never names), FKs between owned tables of one root, a root's FK into its own owned table, unique keys of a child table with and without the parent key, and rows outside the aggregate that reference owned children; a `CommitCycle` is reported exactly when no valid order exists, and `chain` of a `.set` and a `.delete()` equals the delete.
 
 The tests follow the repository's test style: Given/When/Then markers and no control flow in test modules. Loops (over condition outcomes, over row operations) live in helpers under `tests/support/`.
 
@@ -1737,6 +1794,8 @@ with chain(order, wallet) as (c, o2, w2):
 new = Order(number="A-1", total=money, user_id=uid)              # required-field check
 item = Item(sku="A", price=money, position=1)                    # no order_id: the parent sets it
 assert_type(order.set(Order.items.add(item)), Changes)
+assert_type(insert(Transfer(amount=money), Transfer.legs.add(leg)), Changes)   # ADR-0010
+assert_type(order.delete(), Changes)
 assert_type(Wallet.user_id == Order.user_id, Pred[Wallet | Order])  # a predicate over both owners
 
 # tests/typing/fail_misuse.py — every line must be a type error with the named codes [pyright rule, mypy code]
@@ -1752,11 +1811,14 @@ Order(number="A-1")                           # expect-error[reportCallIssue, ca
 Item(order_id=order.id, sku="A", price=money, position=1)  # expect-error[reportCallIssue, call-arg]: the parent sets an owned child's key
 assert Order.total.path(Money.amount) >= 0    # expect-error[reportOperatorIssue, operator]: a value is exactly T, no widening
 Order.where(Order.user_id == Wallet.user_id)  # expect-error[reportArgumentType, arg-type]: a predicate over Order | Wallet
+rows = Order.where()                          # expect-error[reportCallIssue, reportUnknownVariableType, call-arg]: a row set needs a predicate
+order.set(Order.payments.add(payment))        # expect-error[reportAttributeAccessIssue, reportUnknownMemberType, reportUnknownArgumentType, attr-defined]: not owned, no write operations
+insert(transfer, Transfer.amount.to(money))   # expect-error[reportArgumentType, arg-type]: insert takes owned-child add only
 # fmt: on
 ```
 
 - `tools/typetests.py` runs both checkers and checks every marked line: each checker must report an error there, and every error it reports on that line must carry one of the listed codes (pyright rules start with `report`, the others are mypy codes). Without the codes, a line that fails for an unrelated reason (a misspelled name) would pass.
-- The codes above are the ones spike 0001 observed (§9.1), and spike 0006 for the parent-key and comparison lines. Some lines carry more than one code per checker: mypy reports both `misc` (frozen) and `arg-type` (the `Never` instance of `__set__`) on the immutability line, and pyright strict adds `reportUnknownMemberType` to the `append` line and `reportUnusedExpression` to the bare `+` expression (as `_ = ...` it would be `reportUnknownVariableType` instead).
+- The codes above are the ones spike 0001 observed (§9.1), spike 0006 for the parent-key and comparison lines, and spike 0007 for the write lines (`insert`, `delete`, `where`, relation operations; ADR-0010). Some lines carry more than one code per checker: mypy reports both `misc` (frozen) and `arg-type` (the `Never` instance of `__set__`) on the immutability line, and pyright strict adds `reportUnknownMemberType` to the `append` line and `reportUnusedExpression` to the bare `+` expression (as `_ = ...` it would be `reportUnknownVariableType` instead).
 - A marker makes the line long; `ruff format` would wrap the statement and move the marker off the line that errors, so fail files fence their misuse block with `# fmt: off` / `# fmt: on`.
 - A rejected comparison stands in an `assert` statement. pyright strict adds another code to every other use of an expression that failed to type (`reportUnusedExpression` on a bare expression, `reportUnknownVariableType` on an assignment, `reportUnknownArgumentType` on a call argument); in an `assert` both checkers report the operator code alone, and an accepted comparison reports nothing, so the line fails (spike 0006).
 

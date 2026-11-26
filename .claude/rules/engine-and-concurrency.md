@@ -50,7 +50,10 @@ been wrong on paper (design section 9), so prefer a measurement over an argument
    `COMMIT` is a rollback, a successful `COMMIT` result is committed whatever follows, no reply is
    unknown (ADR-0008).
 6. **Commit order** is the planner's dependency graph (FK + unique keys, freeing a value before
-   taking it), batched; cycles are reported (`CommitCycle`), not guessed.
+   taking it), batched; cycles are reported (`CommitCycle`), not guessed. A root's `.delete()`
+   is one engine-issued statement per root table that deletes its owned relations by the root key
+   and the root (never `ON DELETE CASCADE`), planned with the row changes after every change that
+   removes a reference into the aggregate (ADR-0010; design 10.7).
 7. **Workers and dispatchers** (`then`, `@process`): leases are taken in short READ COMMITTED
    transactions with `SKIP LOCKED`; external I/O never runs while a transaction (and its xid) is
    open; completion and fencing are the job-ID-as-run-ID `run_claim` INSERT; at most one in-flight

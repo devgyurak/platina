@@ -5,7 +5,7 @@
 - Related: design sections 4.2, 4.7, 4.8, 4.12, 8.2 ("Creation syntax and constructor types",
   "Aggregate boundaries"), 9.1, 10.3, 10.8, 11.8, 11.11; ADR-0002; issue #2; spike 0001
   (`docs/spikes/0001-type-surface.md`, items 0 and 2, F2, P-B, P-C); #49 and spike 0006
-  (`docs/spikes/0006-parent-fk-and-column-operands.md`, part A)
+  (`docs/spikes/0006-parent-fk-and-column-operands.md`, part A); ADR-0010 and spike 0007 (F29)
 
 The bar for this document: the maintainer reads it and is convinced. Keep it short.
 
@@ -39,7 +39,7 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
    ```
 
    `Entity` carries `dataclass_transform(kw_only_default=True, frozen_default=True,
-   field_specifiers=...)` and declares `ref`, `where`, `stub` and `set`. `__init_subclass__`
+   field_specifiers=...)` and declares `ref`, `where`, `stub`, `set` and `delete` (ADR-0010). `__init_subclass__`
    declares only Platina's options, so dataclass keywords (`kw_only=`, `frozen=`) are rejected.
 2. **The creation syntax is the plain keyword constructor `Order(...)`; there is no `new`.** This
    matches events (`OrderPaid(...)`) and values (`Money(...)`), needs no runtime rule against a
@@ -47,7 +47,7 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
    Generated keys, `version_column()`, server defaults, relations and the parent key of an owned
    child are not parameters (`init: Literal[False]` on their field specifiers). The parent key is
    declared with `parent_fk(lambda: Order)` (working name, fixed in #9) and set by the parent,
-   `Order.items.add(Item(...))`; a child of a relation that is not `owned` keeps `fk`, a required
+   `Order.items.add(Item(...))`; a child of a relation that is not owned keeps `fk`, a required
    parameter (#49, spike 0006).
 3. **Equality and hashing - type level (decided).** `frozen_default=True`, so both checkers treat
    entities as hashable (spike 0001 P-B: without it pyright and mypy disagree on `{order}`).
@@ -79,16 +79,19 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
 
 ## Consequences
 - One construct declares an entity, and one constructor creates it, as for events and values.
-- `ref`, `where`, `stub` and `set` are reserved field names. Both checkers reject a field named
-  `set` (F2; the other names are untested); class creation rejects all of them at runtime.
+- Every method name of `Entity` is a reserved field name: `ref`, `where`, `stub`, `set` and
+  `delete`. Both checkers reject a field named `set` (spike 0001 F2) or `delete` (spike 0007 F29:
+  pyright `reportIncompatibleMethodOverride`, mypy `assignment`); class creation rejects all of
+  them at runtime.
 - `Order.stub(...)` keywords are not type-checked (a "same fields, all optional" signature cannot be
   derived from the constructor) - open, #50.
 - Owned children are created without the parent key (4.7 `Order.items.add(Item(sku=..., ...))`):
   passing it is a type error in both checkers (spike 0006), so a new child cannot be created with
-  another parent's key. Reading the key before the child is added is open (#76), and so are owned
-  children of a new root and `add` on a relation that is not `owned` (#60). Moving an existing
-  child to another parent still type-checks (`Item.order_id.to(...)`, spike 0006 O9) and, with
-  how `owned=True` and `parent_fk` are kept consistent, is open (#9).
+  another parent's key. Reading the key before the child is added is open (#76). Owned children
+  of a new root are added in `insert(t, Transfer.legs.add(...))` and a relation that is not owned
+  has no `add` (ADR-0010). Moving an existing child to another parent still type-checks
+  (`Item.order_id.to(...)`, spike 0006 O9) and is open (#9); ADR-0010 decides that seal checks
+  `owns_many` and `parent_fk` against each other.
 - Section 10.8 generates a slots class per entity at seal; with a base class this needs a metaclass
   `__new__` (or a separate snapshot class), since `__init_subclass__` cannot add `__slots__`.
 - With `table=` required on every subclass, entity inheritance and shared-column mixins are not
@@ -126,3 +129,6 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
   over columns only (relations and the load state are no longer compared), a column without a
   value yet is equal only when unset on both sides; no longer provisional. The parent key of an
   owned child before `add` (#49) is pointed to #76, not decided here.
+- 2026-11-26 - amended in place, without changing the direction: `delete` (decided on #57,
+  recorded in ADR-0010) joins the methods `Entity` declares and the reserved field names (spike
+  0007 F29), and the Consequence on owned children points to ADR-0010 instead of #60.

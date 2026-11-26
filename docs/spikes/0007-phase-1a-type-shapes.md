@@ -1086,3 +1086,107 @@ the round-2 files.
 - **After the round-5 reproduction:** its only finding (a stub marker on `Entity.where`'s first
   line and three stale comments calling `owns_many` an alternative or owned relations "`owned=True`")
   is fixed; the stub hash in Setup is the fixed one.
+
+## Addendum for ADR-0010 (2026-11-26)
+[ADR-0010](../adr/0010-writes-beyond-set.md) (writes beyond `.set`, the first follow-up ADR of
+"ADR directions") proposes three shapes this spike did not probe. They were checked on a copy of the
+final stub before the ADR states them; the Verdict above is unchanged.
+
+- **Code:** `addendum/` - `lib.pyi` (this spike's stub `9c0de329717a2ac2...` with `# [0010]`
+  changes; final hash `dda29acaf925bdf3...`), `domain_addendum.py` (entities only these probes
+  need; `domain.py` unchanged), `pass_addendum.py`, `fail_addendum.py`, `run.sh`. The script
+  assembles the addendum stub with this spike's unchanged domain, probes and eleven use cases in
+  `results/addendum/` and runs every file through both checkers. Same versions as Setup.
+- **Question and claims:**
+  - **A1** `OwnedRelation.update(item, *ops: Op[E])` (was `Op[E] | RelOp[E]`), because the ADR
+    makes ownership one level deep. Both must reject a grandchild operation in a child update
+    (spike 0002 X15) and keep every line of this spike.
+  - **A2** `type Write[O] = Op[O] | RelOp[O]`, a public name for lists that collect both kinds.
+    Both must accept `order.set(*ops)` with `ops: list[Write[Order]]`, and the alias must widen no
+    receiver.
+  - **A3** (the alternative the ADR weighs, not proposes) a second base `Part` for owned children
+    with `ref` / `stub` only. Both must reject `set` / `delete` / `where` on it and `insert` of it
+    (R10-R12), and accept writes through the root.
+
+| Claim | Line | pyright | mypy |
+|---|---|---|---|
+| A1 | `GOrder.lines.update(line, GLine.parts.add(GPart(...)))` (`GLine` declares an owned relation, which the ADR makes a seal error) | rejected (`reportArgumentType`) | rejected (`arg-type`) |
+| A1 | `Order.items.update(item, Item.quantity.to(2))` | `RelOp[Order]` | `RelOp[Order]` |
+| A1 | `pass_shapes.py`, `fail_shapes.py`, `probe_runtime_only.py` and the eleven use cases on the addendum stub | unchanged (0 problems) | unchanged |
+| A2 | `ops: list[Write[Order]]` with column, `add`, `update`, `remove` appended; `order.set(*ops)` | `Changes` | `Changes` |
+| A2 | `[Wallet.balance.to(...)]` as a `list[Write[Order]]` | rejected (`reportAssignmentType`) | rejected (`list-item`) |
+| A2 | `Order.where(...).set(*ops)`, `ops: list[Write[Order]]` | rejected (`reportArgumentType`) | rejected (`arg-type`) |
+| A2 | `insert(t, *ops)`, `ops: list[Write[Transfer]]` | rejected (`reportArgumentType`) | rejected (`arg-type`) |
+| A3 | `line.set(...)`, `line.delete()`, `MLine.where(...)` on a `Part` | rejected (`reportAttributeAccessIssue` + strict unknown-type rules) | rejected (`attr-defined`) |
+| A3 | `insert(MLine(...))` | rejected (`reportArgumentType`) | rejected (`type-var`) |
+| A3 | `order.set(MOrder.lines.add(...), MOrder.lines.update(line, ...))`, `insert(MOrder(...), MOrder.lines.add(...))`, `MLine.stub()`, `MLine.ref(...)`, `order.lines` as `Sequence[MLine]` | accepted | accepted |
+
+`bash spikes/0007-phase-1a-type-shapes/addendum/run.sh` -> `typetests: 0 problem(s) in 19 file(s)`.
+
+**Reproduction (type-reviewer, 2026-11-26).** Wrote its own stub changes and probes from the claims
+before opening the author's files (`repro/types/addendum/`, raw output in the git-ignored
+`results/repro-types/addendum/`; rerun with `bash spikes/0007-phase-1a-type-shapes/repro/types/addendum/run.sh`).
+Agrees on every claimed line in both checkers, also with `+=` / `extend` / `insert` on the list
+and with nested `remove` / `update` for A1; the author's script exits 0. Control: `reveal_type`
+of `Order.items.update` shows the narrowed signature in the narrowed copy only. Findings:
+1. **Applied.** `Part`'s field specifiers left out `owns_many`. A `Part` child declaring one then
+   got a constructor parameter under pyright only (mypy `call-arg`). The addendum stub now lists the
+   same specifiers as `Entity`'s, and both reject it.
+2. **Recorded in ADR-0010 proposal 10.** Without an annotation, a list mixing a column and a
+   relation operation is `list[Op[Order] | AddOp[Order]]` to pyright but `list[object]` to mypy,
+   so `order.set(*ops)` fails under mypy only (`arg-type`). This is already true of this spike's
+   stub. The `list[Write[O]]` annotation is needed, not only shorter.
+3. **Recorded in ADR-0010 (A3 alternative).** `RowSet[MLine]` is still a nameable type, so A3
+   removes `where` but not the type; `RowSet`'s type variable bounded by `Entity` closes it (19 files
+   still pass), at the cost of no row set of a `Part` as a #59 load target.
+4. **Recorded in ADR-0010 proposal 4.** `Order.items.update(item)` with no operation type-checks.
+   The ADR makes it a runtime `UsageError`.
+5. **Recorded in ADR-0010 proposal 1.** A1 closes only the nested form. `line.set(GLine.parts.add(...))`
+   and `insert(GLine(...), GLine.parts.add(...))` still type-check, so the depth is a seal rule
+   and a direct write of an owned child is proposal 3's runtime rule. Under A3, `insert_all([MLine(...)])`,
+   an `Entity`-bound helper and an `Entity`-typed helper are also rejected by both.
+6. Cosmetic: mypy prints `Op[Order] | RelOp[Order]` where pyright prints `Write[Order]`.
+
+**`Part.ref` without `expected_version`** (noted by the reproduction): the stub's choice. The ADR
+does not propose `Part`, so this is not decided.
+
+### PostgreSQL facts for ADR-0010 (pg-researcher, 2026-11-26)
+ADR-0010's delete semantics rest on database behaviour, checked here so that the facts have a
+durable home next to the type addendum (the spike rule: throwaway code, durable write-up).
+
+- **Setup:** PostgreSQL 18.6 (fast profile, 26432, default settings), psycopg 3.3.9 (binary,
+  libpq 18.0.6), Python 3.14.7. Every script creates and drops its own temporary database and
+  refuses port 26433. Tables: `orders`, owned `items(order_id)` / `tickets`, `allocations(item_id)`
+  outside the aggregate; for P1 `users` <-> `addresses` (`users.default_address_id` references one
+  of the user's own addresses) and `shipments` / `shipment_lines(order_id, shipment_id)`; plain NO
+  ACTION, NOT DEFERRABLE FKs with indexes unless a case says otherwise. Each pinned interleaving
+  ran 3-5 times on its own threads (blocking confirmed with `pg_blocking_pids`); every run gave
+  the same outcome.
+- **Code:** `addendum/pg/` (`common.py`, `q1.py`, `q1e.py`, `q2.py`, `q3locks.py`, `q3pin.py`,
+  `q3load.py`, `q4.py`, `q4pipe.py`, `n1_cte.py`, `n2_race.py`, `n3_review.py`). Rerun from the repository root:
+  `bash spikes/0007-phase-1a-type-shapes/addendum/pg/run.sh` (needs `make db-up`; raw logs in the
+  git-ignored `results/addendum-pg/`; exit 0 on this state).
+
+| # | Question | Observed |
+|---|---|---|
+| P1 | Delete the owned relations and the root in one statement, `WITH c1 AS (DELETE FROM addresses WHERE user_id = ANY($1)) DELETE FROM users WHERE id = ANY($1)` (`n1_cte.py`) | Succeeds where two statements fail in either order (`23503`); sibling owned tables with an FK between them succeed in all 24 orders of the sub-statements. NO ACTION is checked once, after all sub-statements (docs 7.8.4 and 38.1; `execMain.c` `standard_ExecutorFinish` -> `AfterTriggerEndQuery`). RESTRICT also passes inside one statement (a deviation from the standard, documented in `ri_triggers.c` only); as separate statements it fails with `23001`. A row outside the aggregate still referencing a child fails the statement with `23503`. Two root tables that reference each other (`ra.rb_id`, `rb.ra_id`, each with an owned child table): two statements fail in either order (`23503`), one merged statement succeeds (`n3_review.py` (e), 3/3; the independent review of PR #81 found it first) |
+| P2 | A child insert racing the delete; the writer as Platina's `add` (INSERT plus the root's `version` UPDATE) or a plain INSERT (`q1.py`, `q1e.py`, `n2_race.py`) | With the root bump: `40001` for the deleter or the writer under SERIALIZABLE and REPEATABLE READ, in every interleaving, for separate statements and the P1 statement, also against a READ COMMITTED writer (which itself gets `23503` when the root is gone). Without the bump: `40001` when both run SERIALIZABLE; `23503` for the deleter when both run REPEATABLE READ, or when the writer runs READ COMMITTED (SSI does not see it). A `23503` with SERIALIZABLE on both sides came only when the inserter started after the delete committed. A **non-owned** insert (a `payments` row referencing the order, no root bump - what Platina's `insert(Payment(order_id=x))` sends): when it commits first, the deleter gets `23503` under SERIALIZABLE and REPEATABLE READ alike; when the delete goes first, the insert gets `40001` (`n3_review.py` (f), 3/3 each; found by the independent review of PR #81). A retry of that `23503` would fail again |
+| P3 | `23503` from a non-owned referrer (`q2.py`) | NOT DEFERRABLE: at the end of the DELETE statement; DEFERRABLE INITIALLY DEFERRED: at `COMMIT`. `psycopg.errors.ForeignKeyViolation` (`IntegrityError`); `diag.table_name` / `constraint_name` name the referencing table and constraint (`allocations`, `allocations_item_id_fkey`), the deleted table only the message text. In a pipeline the next `execute`, or `commit` / `sync`, raises it depending on timing; the queued `COMMIT` does not commit |
+| P4 | SIRead locks of a cascade that matches no row (`q3locks.py`, `q3pin.py`, `q3load.py`) | The same lock set as the root DELETE alone, as separate statements or in the P1 statement: the root DELETE's NO ACTION check reads the child table with the same predicate. With the index: page locks; without it, or on a small analyzed table: relation locks (sequential scans). Under a small load the 40001 rates (uuid7: 0.015-0.2 % of attempts, single runs 0-22 failures) do not separate the variants; an earlier session's reading that the difference came from the extra round trip did not reproduce |
+| P5 | `DELETE ... WHERE id = $1 AND version = $2` (`q4.py`, `q4pipe.py`) | A stale version gives `DELETE 0`, not an error; with `COMMIT` queued in the pipeline the child deletes commit and the root stays. A concurrent committed UPDATE after the load makes the DELETE fail with `40001` first |
+
+- **Also observed:** psycopg in non-autocommit mode sends `BEGIN` with its own Sync before a
+  pipeline (`_connection_base.py`), one more round trip than design 8.3 counts - for #18.
+- **Not verified:** the durable profile; pipelined batches under load; P1 with a version check over
+  several roots or with deferred constraints; P2 beyond three runs per case and under load;
+  partitioned tables; the async connection; whether a later PostgreSQL moves RESTRICT to the
+  standard's timing.
+
+### Maintainer decisions on ADR-0010 (2026-11-26)
+The maintainer accepted ADR-0010 with every proposal as written:
+- ownership is one level deep (A1's narrowed `update` stands);
+- a direct write of an owned child is a runtime `UsageError`, and A3's `Part` base stays a rejected alternative;
+- `identity`-key roots with owned relations are a `SealError` in Phase 1a;
+- unloaded owned relations are deleted without loading (P1's one statement per root table);
+- the `Write[O]` alias is adopted. Its name is a working name that #13 fixes, since `insert` and `.delete()` are writes the alias does not cover;
+- `23503` / `23001` are `ForeignKeyViolation(DatabaseError)`.
