@@ -1,4 +1,4 @@
-<!-- i18n: source=docs/design/design.md source-sha256=7ee1b0611e58 translation-sha256=86853f252304 -->
+<!-- i18n: source=docs/design/design.md source-sha256=c468f7b3713c translation-sha256=16bdc275a35d -->
 # Platina 설계 문서
 
 > **Platina**: 백금(platinum)의 옛 스페인어 이름. 백금이 산에도 녹지 않고 반응하지 않듯, 도메인 코드는 DB와 반응하지 않는다.
@@ -939,7 +939,8 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
 - 비교의 빈틈(미결. #9에서 정한다. 스파이크 0006):
   - 타입이 틀린 값과의 `==`, `!=`는 두 체커 모두에게 `bool`이다. 체커는 값의 반사된(reflected) `__eq__`(typeshed: `(object) -> bool`)로 떨어진다. 이 실수는 술어가 필요한 곳(`Order.where`, `Check`, `Load.when`, `select(...).where`)에서만 보고된다. 이것은 체커의 관점이다: 런타임에는 `Column.__eq__`가 먼저 호출되며, `T`가 아닌 값을 받았을 때 그것이 하는 일은 조용한 `bool`로 끝나서는 안 된다.
   - null을 허용하지 않는 컬럼의 `== None`도 같은 경우다. null을 허용하는 컬럼에서 `== None`은 `Pred`이고 그 SQL 의미(`IS NULL`로 컴파일할지, 명시적 `is_null()`로 대체할지)는 미결이며, `None`과의 순서 비교(`Order.guest_id >= None`)는 SQL에서 결코 참이 될 수 없는데도 두 체커가 모두 받아들인다.
-  - 순서 연산자는 자연스러운 순서가 없는 값 타입도 받아들인다(`Order.paid_with >= PaymentMethod.POINT`, `Order.total >= Money(...)`).
+  - enum 컬럼의 순서 비교를 받아들인다(`Order.paid_with >= PaymentMethod.POINT`). Python의 평범한 `Enum`에는 순서가 없고 SQL의 순서는 `enum_as`에 따라 달라지는데도 그렇다(`IntEnum`과 `StrEnum`에는 순서가 있으며, `StrEnum`의 값 기준 순서는 PostgreSQL 네이티브 enum의 선언 순서와 다를 수 있다).
+  - 임베디드 값 컬럼의 비교를 받아들인다(`Order.total >= Money(...)`, `Order.total == Money(...)`). 값 클래스에는 순서가 있지만(`@value`가 필드에 순서를 매기므로 §4.5의 `wallet.balance < order.total`은 평범한 `bool`이다), 그 컬럼은 SQL 컬럼 여러 개에 걸친다: 이런 비교를 행 비교로 컴파일할지, `path(...)`를 통해서만 허용할지는 미결이다.
   - set 안의 컬럼(`{Order.amount}`)은 pyright가 거부하고 mypy가 받아들인다(`Column`은 `__hash__` 없이 `__eq__`를 정의하므로 런타임에도 해시할 수 없다).
   - 숫자 타입이 다른 컬럼끼리의 비교(`Decimal` 대 `int`)에는 아직 설계되지 않은 명시적 캐스트가 필요하며, 그때까지는 타입 에러다.
 - 대가: 어노테이션이 길어지고, `Column`을 쓰는 곳마다 타입 파라미터가 둘이며, 값 객체가 `Col[...]` 필드를 선언하고, 값 객체 일부의 증감은 경로를 거친다(`Wallet.balance.path(Money.amount).add(n)`). `Order.total.amount`는 제네릭 컬럼으로 타입을 붙일 수 없다.

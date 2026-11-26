@@ -101,7 +101,8 @@ All notable changes are documented here. Format: [Keep a Changelog](https://keep
     a non-owned relation (#60); for #9 how `owned` and `parent_fk` stay consistent, the final
     name, moving an existing child to another parent (still type-checks), and the comparison gaps
     of design 8.2 (`==` with a wrong value type is `bool`, `== None`, ordering against `None` and
-    on unordered types, a column in a set, a numeric cast); two-owner predicates in queries (#52).
+    on an enum column, comparisons on an embedded value column - a row comparison or only through
+    `path(...)` -, a column in a set, a numeric cast); two-owner predicates in queries (#52).
     The `type-tests` skill names the spike's stub as the reference for these two shapes.
 
 ### Changed

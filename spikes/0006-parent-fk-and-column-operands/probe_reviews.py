@@ -2,8 +2,9 @@
 signatures, run directly through both checkers.
 
 O9 - a child's parent key changed after creation, and `add` of a child that belongs to another
-parent. O10 - ordering operators on value types without a natural order (an enum, an embedded
-value).
+parent. O10 - ordering on an enum column (no order in Python), and comparisons on an embedded
+value column, whose value class is ordered in Python (`@value`, `order_default=True`) but whose
+column spans several SQL columns.
 """
 
 from decimal import Decimal
@@ -19,5 +20,7 @@ def reparent(order: Order, other: Order, item: Item) -> None:
 
 
 def ordering() -> None:
-    reveal_type(Order.paid_with >= PaymentMethod.POINT)
-    reveal_type(Order.total >= Money(Decimal(1)))
+    reveal_type(Order.paid_with >= PaymentMethod.POINT)  # an enum column
+    reveal_type(Order.total >= Money(Decimal(1)))  # an embedded value column
+    reveal_type(Order.total == Money(Decimal(1)))
+    reveal_type(Money(Decimal(1)) < Money(Decimal(2)))  # the value class itself is ordered

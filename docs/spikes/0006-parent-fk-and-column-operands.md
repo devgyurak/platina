@@ -85,8 +85,9 @@ the maintainer; the design is not edited.
 - O7 - spike 0002 `probe_accepted.py` item 6 (a child added to one parent with another parent's
   key): not writable for an owned child; still writable for a non-owned one (#60).
 - O8 (added during the run, after O6 showed it) - `==` / `!=` with a value of the wrong type.
-- O9, O10 (added after the architect review, not independently reproduced) - a child's parent key
-  changed after creation; ordering operators on value types without a natural order.
+- O9, O10 (added after the architect review; independently reproduced, Reproduction round 2) - a child's parent key
+  changed after creation; ordering on an enum column, and comparisons on an embedded value column
+  (O10 corrected after the maintainer's review: the embedded value class itself is ordered).
 
 ## Setup
 - Python 3.14.7 (`uv run python -V`), pyright 1.1.414 (`uv run pyright --version`), mypy 2.4.1
@@ -322,17 +323,33 @@ On B12 mypy prints the union as `Wallet | Order` for both lines, while a bare
   checkers' view: at run time `Column.__eq__` is called first, so what it does with a value that
   is not a `T` is the implementation's choice (#9).
 - **O9 - a child's parent key can still be changed after creation** (`probe_reviews.py`, after the
-  architect review, not independently reproduced). `parent_fk` returns an ordinary `Col[T]`, so
+  architect review; reproduced in Reproduction round 2). `parent_fk` returns an ordinary `Col[T]`, so
   `order.set(Order.items.update(item, Item.order_id.to(other.id)))` is `Changes`,
   `Item.where(Item.sku == "A").set(Item.order_id.to(other.id))` is `SetChange[Item]`, and
   `order.set(Order.items.add(other.items[0]))` (a child loaded under another order) is `Changes`
-  in both checkers, with no diagnostic. What #49 removes is *creating* a new owned child with
-  another parent's key; moving an existing child stays writable (open, #9).
-- **O10 - ordering on value types without a natural order** (`probe_reviews.py`, as O9). The value
-  overloads of `__lt__` / `__le__` / `__gt__` / `__ge__` put no bound on `T`, so
-  `Order.paid_with >= PaymentMethod.POINT` (an `Enum`, which has no order in Python) and
-  `Order.total >= Money(Decimal(1))` (an embedded value, a row comparison in SQL) are
-  `Pred[Order]` in both checkers. Whether ordering exists for such types is open (#9).
+  in both checkers, with no diagnostic. The reproduction found a fourth way: the child's own
+  `item.set(Item.order_id.to(other.id))` is `Changes` in both, without going through the parent.
+  What #49 removes is *creating* a new owned child with another parent's key; moving an existing
+  child stays writable (open, #9).
+- **O10 - an enum column and an embedded value column** (`probe_reviews.py`, as O9; reproduced in round 2). The value
+  overloads of `__lt__` / `__le__` / `__gt__` / `__ge__` put no bound on `T`.
+  - Enum: `Order.paid_with >= PaymentMethod.POINT` is `Pred[Order]` in both checkers, although
+    Python's plain `Enum` has no order (a direct `PaymentMethod.CARD < PaymentMethod.POINT` is
+    rejected by both, reproduction round 2) and the SQL order depends on `enum_as`. `IntEnum` and
+    `StrEnum` members are ordered in both checkers and at run time, and a `StrEnum`'s order (by
+    value) can differ from a native PostgreSQL enum's (declaration order) - found by the
+    reproduction.
+  - Embedded value: `Order.total >= Money(Decimal(1))` and `Order.total == Money(Decimal(1))` are
+    `Pred[Order]` in both. Here the value class *is* ordered: `Money(Decimal(1)) < Money(Decimal(2))`
+    is `bool` in both checkers (`@value` has `order_default=True`; 4.5 writes
+    `wallet.balance < order.total`; without `order_default=True` both reject `Money < Money`,
+    reproduction round 2). The open question is not an order but the column: it spans several SQL
+    columns, so whether a comparison (`>=` and `==` alike, also between two embedded columns:
+    `Wallet.balance < Order.total` is `Pred[Wallet | Order]`) compiles to a row comparison or is
+    allowed only through `path(...)` is open.
+
+  Both are open (#9). (An earlier version of this item listed the embedded value as a type without
+  a natural order; the maintainer's review corrected it, and the two last lines were added then.)
 
 ## Verdict
 **Holds.** Every line of both decision tables gets the stated verdict, code and inferred type in
@@ -358,8 +375,9 @@ amended, and the type-tests skill names this stub as the reference for the opera
 - `{Order.amount}` (a column in a set) is rejected by pyright (`reportUnhashable`: `Column` defines
   `__eq__` without `__hash__`) and accepted by mypy - a checker disagreement already present on
   spike 0001's stub, found by the reproduction; #9 settles it when `Column` is written.
-- A child's parent key stays writable after creation (O9), and ordering operators accept value
-  types without an order (O10).
+- A child's parent key stays writable after creation (O9); ordering is accepted on an enum column,
+  and a comparison on an embedded value column, which spans several SQL columns, is accepted
+  without deciding whether it compiles to a row comparison or needs `path(...)` (O10).
 - The reproduction's points 1-3, 5 and 6 are carried into O5, the Method's shape paragraph, O8,
   this list and the overload-order command; point 4 (mypy's notes list three of the four
   overloads) is cosmetic.
@@ -503,3 +521,96 @@ write-up does not record (none changes the verdict):
 **Overall: agree.** Both decision tables, S1, O1-O8, both controls and the regression reproduce
 with an independently built stub and domain, under both checkers, with the stated codes, messages
 and inferred types. Parts A (#49) and B (#51) hold.
+
+### Round 2 - O9 and O10
+
+- **Who:** type-reviewer (independent; did not run O9 / O10; worked from this write-up and spike
+  0001's round-2 files only). `probe_reviews.py` and `results/probe_reviews-*.txt` were not
+  opened before its own run was finished.
+- **Date:** 2026-11-26
+- **Tools observed:** Python 3.14.7, pyright 1.1.414, mypy 2.4.1 (compiled: yes). Worktree of
+  `docs/spike-0006-parent-fk-and-column-operands`. Configuration from `pyproject.toml`.
+
+**What was built** (all in `spikes/0006-parent-fk-and-column-operands/results/repro2/`,
+git-ignored; call it `$R2`)
+- `lib.pyi`: built anew from `spikes/0001-type-surface/round2/lib_final_declared.pyi` by a script
+  applying the three changes of Method (four overloads per operator in the stated order, the two
+  suppressions per `__eq__` / `__ne__`, `parent_fk` after `fk` and in `field_specifiers`,
+  `Load.when`). Not the first reproduction's `results/repro/lib.pyi`. A comment-stripped `diff`
+  against the spike's `lib.pyi` (after the run) shows only comments and line wrapping.
+- `r2_domain.py`: its own domain after the Method table (`PaymentMethod(Enum)`, `Money` by
+  `@value` with `amount: Col[Decimal]`, `currency: Col[str] = column(default="KRW")`, `User`,
+  `Order` with every listed field, `Item` by `parent_fk`, `Payment` by `fk`, `Wallet`).
+- `probe_r2.py`: every claim of O9 and O10 as `reveal_type` lines plus typed assignments
+  (`Changes`, `SetChange[Item]`, `Pred[Order]`, `bool`), all four ordering operators and `!=` on
+  both columns, `reveal_type(Money.__lt__)`, and one deliberate control
+  `assert PaymentMethod.CARD < PaymentMethod.POINT`.
+- `noorder/`: the same stub with only `order_default=True` removed from `value`'s
+  `dataclass_transform`, the same domain, and `probe_noorder.py` (`Money(...) < Money(...)` and a
+  plain undecorated class `Plain(...) < Plain(...)`).
+- `probe_r2_extra.py`: 4.5's `wallet.balance < order.total` on instances, and `IntEnum` /
+  `StrEnum` members compared with `<`.
+
+**What was run** (from the worktree root)
+
+```bash
+R2=spikes/0006-parent-fk-and-column-operands/results/repro2
+uv run python -V; uv run pyright --version; uv run mypy --version
+uv run pyright $R2/lib.pyi                                       # 0 errors, 0 warnings, 0 informations
+uv run mypy --strict --show-error-codes --no-incremental $R2/lib.pyi   # Success: no issues found
+# for P in probe_r2 probe_r2_extra:
+uv run pyright $R2/lib.pyi $R2/r2_domain.py $R2/$P.py
+uv run mypy --strict --show-error-codes --no-incremental $R2/lib.pyi $R2/r2_domain.py $R2/$P.py
+# the order_default control
+uv run pyright $R2/noorder/lib.pyi $R2/noorder/r2_domain.py $R2/noorder/probe_noorder.py
+uv run mypy --strict --show-error-codes --no-incremental \
+  $R2/noorder/lib.pyi $R2/noorder/r2_domain.py $R2/noorder/probe_noorder.py
+# Any audit of the probe
+uv run mypy --strict --show-error-codes --no-incremental --disallow-any-expr \
+  $R2/lib.pyi $R2/r2_domain.py $R2/probe_r2.py
+# typeshed and run time: is Enum ordered?
+grep -nE "__lt__|__le__|__gt__|__ge__" \
+  .venv/lib/python3.14/site-packages/{mypy/typeshed,pyright/dist/dist/typeshed-fallback}/stdlib/enum.pyi
+uv run python -c "..."   # PaymentMethod.CARD < PaymentMethod.POINT; '__lt__' in vars(enum.Enum)
+```
+
+After its own run it opened `probe_reviews.py` and its results and reran
+`uv run pyright` / `uv run mypy --strict ...` on `$D/lib.pyi $D/domain.py $D/probe_reviews.py`
+unchanged: `0 errors, 0 warnings, 7 informations` and `Success: no issues found in 3 source files`,
+the seven revealed types as in `results/probe_reviews-*.txt`.
+
+**Observations**
+
+| Claim | Reproducer | Evidence (pyright / mypy, same in both unless stated) |
+|---|---|---|
+| O9 - `order.set(Order.items.update(item, Item.order_id.to(other.id)))` is `Changes` | agree | `Item.order_id` is `Column[Item, Id[Order]]`, `.to(other.id)` `Op[Item]`, `Order.items.update(...)` `Op[Order]`, the whole `Changes`; no diagnostic, the `a: Changes = ...` assignment accepted. |
+| O9 - `Item.where(Item.sku == "A").set(Item.order_id.to(other.id))` is `SetChange[Item]` | agree | `SetChange[Item]` (mypy `lib.SetChange[r2_domain.Item]`); no diagnostic. |
+| O9 - `order.set(Order.items.add(other.items[0]))` is `Changes` | agree | `other.items` is `Sequence[Item]`, `other.items[0]` `Item`, the whole `Changes`; no diagnostic. |
+| O9 - "no diagnostic" | agree | No error on any O9 line in either checker. |
+| O10 - `Order.paid_with >= PaymentMethod.POINT` is `Pred[Order]` | agree | `Pred[Order]`; also `>`, `<`, `<=` give `Pred[Order]`; `p: Pred[Order] = ...` accepted. `Order.paid_with` is `Column[Order, PaymentMethod \| None]`, so the value overload is taken with `T = PaymentMethod \| None`. |
+| O10 - Python's `Enum` has no order | agree | `Enum` in both bundled typeshed copies (`mypy/typeshed`, `pyright/.../typeshed-fallback`) defines none of `__lt__` / `__le__` / `__gt__` / `__ge__`; the control `PaymentMethod.CARD < PaymentMethod.POINT` is rejected by both (pyright `Operator "<" not supported for types "Literal[PaymentMethod.CARD]" and "Literal[PaymentMethod.POINT]"`, `reportOperatorIssue`; mypy `Unsupported left operand type for < ("PaymentMethod")`, `operator`); at run time it raises `TypeError: '<' not supported between instances of 'P' and 'P'` and `vars(enum.Enum)` has no ordering method. |
+| O10 - the value overloads put no bound on `T` | agree | Follows from the line above: an unordered `T` is accepted by `>=`, `>`, `<`, `<=`. |
+| O10 - `Order.total >= Money(Decimal(1))` and `Order.total == Money(Decimal(1))` are `Pred[Order]` | agree | Both `Pred[Order]`; also `<` and `!=`; the two `Pred[Order]` assignments accepted. `Order.total` is `Column[Order, Money]`. |
+| O10 - `Money(Decimal(1)) < Money(Decimal(2))` is `bool` | agree | `bool` in both; `>=` also `bool`; `r: bool = ...` accepted. `Money.__lt__` is pyright `(self: Money, other: Money) -> bool`, mypy `def [_DT] (self: _DT, other: _DT) -> bool` (each checker's synthesised dataclass method). |
+| O10 - `order_default=True` of `@value` is what orders `Money` | agree | Control `noorder/`: with only `order_default=True` removed, `Money(...) < Money(...)` is rejected by both (pyright `Operator "<" not supported for types "Money" and "Money"`, `reportOperatorIssue`; mypy `Unsupported left operand type for < ("Money")`, `operator`), as is the plain class; `==` stays `bool`. |
+| O10 - 4.5's `wallet.balance < order.total` is a plain `bool` | agree | `bool` in both (`probe_r2_extra.py`). |
+| Any audit | - | `--disallow-any-expr` reports `Any` only on the deliberate enum control line (mypy types a failed comparison as `Any`, as recorded); no `Any` on an O9 / O10 line. |
+
+**Discrepancies.** None on any claimed type or on the absence of diagnostics. Points the
+write-up does not record (none changes O9 or O10):
+1. A fourth way to move a child: the child's own `item.set(Item.order_id.to(other.id))` is
+   `Changes` in both checkers, without going through the parent (`Entity.set` is on every
+   entity, owned child or not). It belongs with O9 in #9.
+2. Column-to-column on two embedded columns is accepted as well: `Wallet.balance < Order.total`
+   is `Pred[Wallet | Order]` in both (the first column overload, `T = Money`). The open question
+   of O10 (row comparison or `path(...)` only) covers the column-to-column form too.
+3. "Python's `Enum` has no order" holds for `Enum` and for this domain's `PaymentMethod`, but not
+   for every enum a user may declare: `IntEnum` and `StrEnum` members are ordered in both
+   checkers (`Prio.LOW < Prio.HIGH`, `Code.A < Code.B` are `bool`) and at run time, through their
+   `int` / `str` base. If #9 decides to reject ordering on enum columns, it has to say whether
+   these count, and the Python order of a `StrEnum` (lexical on the value) need not match a native
+   PostgreSQL enum's order (declaration order) - the same `enum_as` dependency O10 names.
+
+**Overall: agree** on O9 and on O10, including the corrected reading: the plain `Enum` is
+unordered in typeshed and at run time, and `@value`'s `order_default=True` is what makes `Money`
+ordered in both checkers (removing it alone makes both reject `Money < Money`).
