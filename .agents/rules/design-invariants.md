@@ -26,7 +26,7 @@ these off, pick by this order and say so in the commit body or ADR.
 
 ## Rules that shape every API
 - **No implicit I/O.** Attribute access never hits the database; an unloaded relation raises at
-  once (`RelationNotLoaded`). A ref placeholder raises on field reads and on `.set`
+  once (`RelationNotLoaded`). A ref placeholder raises on field reads, on `.set` and on `.delete()`
   (`UnloadedReference`).
 - **Safe defaults, danger is opt-in.** `lazy="raise"`, no expiry, no autoflush, SERIALIZABLE for
   commands. READ COMMITTED is never allowed for commands (the escape hatch is REPEATABLE READ +
@@ -35,7 +35,10 @@ these off, pick by this order and say so in the commit body or ADR.
   passed around, no transaction API inside a use case.
 - **Configuration never changes meaning.** If behaviour differs, the name (syntax) differs. Never
   add a flag that makes the same code mean something else.
-- **One way to do each thing.** Writes: `.set(Column op)`. Creation: the keyword constructor
+- **One way to do each thing.** Writes, one verb per operation (ADR-0010, Proposed): a loaded
+  row is modified with `.set(Column op)` and deleted with `.delete()`, a new row is written with
+  `insert(entity, *children)`; the rows of an `owns_many` relation only through their root
+  (`Order.items.add/update/remove`), every other row directly. Creation: the keyword constructor
   `Order(...)` of an `Entity` subclass (ADR-0003); there is no `new`. Embedded paths:
   `Order.total.path(Money.amount)` (ADR-0004). Composition across steps: `with chain(...)`.
   Execution: `app.run` / `app.query`. Do not add a second syntax for the same operation.
