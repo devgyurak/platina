@@ -42,7 +42,8 @@ All notable changes are documented here. Format: [Keep a Changelog](https://keep
   the result. Partly holds: column renames need a rewrite that builds its own downgrade, CHECK and
   partial-index changes are seen only with expression-derived names, the `version` trigger works
   with Alembic's own extension points, and partitions created outside migrations do not round-trip.
-  No decision changed; the remaining choices are input for #25.
+  No decision changed; the remaining choices are input for #25 and #63 (the internal tables'
+  schema path).
 - Core exception hierarchy (#8, ADR-0006): `platina.core.errors`, re-exported from `platina`,
   with `PlatinaError` and every class of design section 10.12 plus `ModuleBoundaryError` under
   `SealError`, and `SourceLocation`. Keyword-only read-only fields (`usecase`, `entity`, `field`,

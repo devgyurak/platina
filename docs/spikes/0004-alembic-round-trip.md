@@ -549,7 +549,7 @@ alternative is listed with its cost:
    matching drop/create pairs into `ALTER INDEX ... RENAME` / `ALTER TABLE ... RENAME CONSTRAINT`
    in the rewrite avoids the rebuild; cost: more rewrite code. Or accept the rebuild; cost: lock
    and time on large tables.
-3. **Partitioned internal tables** (item 5).
+3. **Partitioned internal tables** (item 5) - the decision is tracked in #63.
    - a. An `include_name` filter on `pg_class.relispartition` or on a partition name pattern
      (probe P3: works for the cases run); cost: partitions are never compared, and the partition
      scheme and `xid8` stay invisible - each needs its own comparator or type registration.
@@ -569,13 +569,14 @@ alternative is listed with its cost:
 No ADR is proposed: the spike refutes no section 8 decision (partitioning of the internal tables
 was an experiment-only assumption, A2), and it chooses none of the alternatives. The architect
 review agreed and flagged that choosing 3b (internal tables outside Alembic, an exception to
-section 8.5), a naming rule (1a or 1b/1d) or `alembic_utils` (a dependency) will each need an ADR
-when #25 picks it.
+section 8.5; #63), a naming rule (1a or 1b/1d; #25) or `alembic_utils` (a dependency; #25) will
+each need an ADR when it is picked.
 
-### Input for #25 (migration implementation)
-Not posted; a comment draft is in the maintainer report. In short: the rename rewrite with its
-own reverse and ordering; the trigger operations and comparator; a `render_item` hook for
-Platina's types; a fresh `MetaData` per autogenerate (F1); and decisions 1-3 above.
+### Input for #25 (migration implementation) and #63 (internal tables)
+Posted as a comment on #25 (2026-11-26). In short: the rename rewrite with its own reverse and
+ordering; the trigger operations and comparator; a `render_item` hook for Platina's types; a fresh
+`MetaData` per autogenerate (F1); decisions 1 and 2 above. Decision 3 (the internal tables'
+schema path and partitioning) is issue #63.
 
 ## Reproduction
 
