@@ -18,10 +18,10 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
   commit batch.
 - Facts established for this ADR (pg-researcher, PostgreSQL 18.6, psycopg 3.3.9 / libpq 18.0.6,
   one run each in throwaway databases, summarised in the
-  [#61 decision comment](https://github.com/devgyurak/platina/issues/61#issuecomment-7185864996),
-  not reproduced by a
-  second agent; the synchronous-replication case ran in a separate `postgres:18` container,
-  because `synchronous_standby_names` is server-wide):
+  [#61 decision comment](https://github.com/devgyurak/platina/issues/61#issuecomment-7185864996).
+  An independent review session reproduced all five with its own scripts on the same versions,
+  and the author reran the review's scripts: same results. The synchronous-replication case ran
+  in a separate `postgres:18` container, because `synchronous_standby_names` is server-wide):
   - **`statement_timeout` limits each statement, also inside a pipeline.** "In extended query
     protocol, the timeout starts running when any query-related message (Parse, Bind, Execute,
     Describe) arrives, and it is canceled by completion of an Execute or Sync message" (PostgreSQL
@@ -50,8 +50,22 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
     only the per-statement results show that `COMMIT` succeeded. From the source only (not
     observed): a timeout that fires in a narrow window at the end of `COMMIT`'s Execute can
     surface on the next statement after the commit.
-  - `transaction_timeout` (PostgreSQL 17+) spans the transaction but terminates the session
-    (observed: connection lost, no SQLSTATE), so it is not a statement-level budget.
+  - `transaction_timeout` (PostgreSQL 17+) spans the transaction but terminates the session with
+    `FATAL 25P04` (in pipeline mode psycopg reports only a lost connection, no SQLSTATE; for a
+    single statement it raises `TransactionTimeout`). It also fires while `COMMIT` runs deferred
+    triggers - the session ends and the transaction is aborted. Only the synchronous-replication
+    wait is not interrupted by it. So it is not a statement-level budget.
+  - Facts about the statement this ADR adds (independent review, rerun by the author):
+    - `SELECT set_config(...)` is a query, so it takes the transaction's snapshot - before the
+      claim INSERT when it heads round trip 1. `SET LOCAL statement_timeout` takes none (the
+      snapshot is then taken by the claim).
+    - Its value parameter must be text: an `int` parameter fails with `42883` (`function
+      set_config(unknown, smallint, boolean) does not exist`); `$1::text` or a `str` works.
+    - The local value replaces a smaller session, role or database default `statement_timeout`
+      for the rest of the transaction (observed: a database default of 200 ms, `set_config` of
+      1000 ms - a 600 ms statement completed); `0` would switch it off.
+  - After an error inside a transaction, a `COMMIT` sent in a new pipeline returns no error: its
+    result is `COMMAND_OK` with the tag `ROLLBACK`, and the transaction is aborted.
 
 ## Decision
 1. **`timeout=` is one deadline for the run**, measured by the runner from the start of `app.run`
@@ -65,16 +79,23 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
      head of every round trip before `COMMIT` (not when there is no budget); the runner only binds
      the remaining milliseconds, rounded up, never below 1 (`0` would switch the timeout off). The
      arithmetic is a pure helper in the engine package that takes the runner's clock reading.
-   - The runner reports its deadline as a bare fact, `DeadlineReached`, at the yield point where it
-     notices it: before sending a `Pipeline` or a `CommitBatch`, or instead of a `Sleep` that would
-     end past the deadline. It never checks it before `Rollback`, `ResolveClaim`, `StoredResult` or
-     `FreshLsn` (Decision 6). Replies to `Pipeline` and `CommitBatch` carry the per-statement outcome (the index
+   - Whether the deadline applies before a command is a property of the command (`bounded`:
+     `Pipeline`, `CommitBatch` and `Sleep` are; `Rollback`, `ResolveClaim`, `StoredResult` and
+     `FreshLsn` are not, Decision 6), not a table in the runner. The runner checks it
+     mechanically - for a `Sleep`, against the end of the sleep - and reports a passed deadline as
+     a bare fact, `DeadlineReached`, at that yield point. Replies to `Pipeline` and `CommitBatch` carry the per-statement outcome (the index
      of the failing statement and its SQLSTATE, or "connection lost") and whether the deadline had
      passed when the reply arrived.
+   - A failed statement reaches the engine the same way, as a fact (`StatementFailed`: which
+     statement, the driver-typed error with its SQLSTATE, whether the deadline had passed). The
+     engine classifies it - claimed, retryable, deadline, unknown outcome, committed, or a
+     `DatabaseError` to raise. The runner maps nothing to a meaning.
    - The engine turns `DeadlineReached`, and a `57014` that arrives with the deadline passed on a
      statement before `COMMIT`, into a rollback and **`RunTimeout`, never retried**. A `57014` with
-     the deadline not passed (`pg_cancel_backend`, a role's own `statement_timeout`) stays
-     `DatabaseError(57014)`. Design 10.5's `Begin` loses its `timeout` field.
+     the deadline not passed (`pg_cancel_backend`, or a role or database default
+     `statement_timeout` in a run without a budget - with a budget the local value replaces it
+     before `COMMIT`) stays `DatabaseError(57014)`. Design 10.5's `Begin` loses its `timeout`
+     field.
    - Both runners give the same guarantee: the deadline is checked at every yield point and the
      server bounds each statement. Interrupting a round trip already in flight on the client side
      (the async runner's cancel scope; a watchdog calling psycopg's `cancel_safe()` in the sync
@@ -97,16 +118,19 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
    - an error on a statement before `COMMIT`, or on `COMMIT` itself (a `40001` from the SSI
      pre-commit check, a deferred constraint), is a rollback, classified as usual (`40001` is
      retried);
-   - a successful `COMMIT` result means committed, whatever a later statement reports (a `57014`
-     on the LSN query included; the LSN is then queried fresh, as on the replay path);
+   - a `COMMIT` result with the tag `COMMIT` means committed, whatever a later statement reports (a
+     `57014` on the LSN query included; the LSN is then queried fresh, as on the replay path); the
+     tag `ROLLBACK` (a transaction already aborted) is a rollback;
    - no `COMMIT` result and no error (connection lost) is unknown: `CommitUnknown`.
 6. **An unknown outcome is resolved before any deadline or retry limit ends the run.** After
    `CommitUnknown` the engine yields its own command, `ResolveClaim` (`BEGIN` and the claim
    INSERT only, no `set_config`, no load), which the runner sends without a deadline check; it may
    wait on the earlier transaction. A `23505` means the earlier attempt committed: the result is
    returned as on the replay path (`StoredResult` / `FreshLsn`, also unbounded), never an error. A
-   successful claim means it did not commit: the run continues in that transaction, bounded again
-   - the deadline check comes first, then the load round trip with its `set_config` - so
+   successful claim means it did not commit: the run continues in that transaction without
+   sending `BEGIN` or the claim again (a second claim of the same ID in one transaction is a
+   `23505` that would read as "committed"), bounded again - the deadline check comes first, then
+   the load round trip with its `set_config` - so
    `RunTimeout` or `RetryExhausted` is raised only once the outcome is known. This also closes the
    same gap for `RetryExhausted` after a `CommitUnknown` on the last attempt.
 7. **No `lock_timeout` option and no retry of `55P03` in Phase 1** (#61; revisit with #64). A user
@@ -127,6 +151,14 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
   `CommitUnknown`, no injected deadline may produce `RunTimeout` or `RetryExhausted`.
 - `RunTimeout` is added to `platina.core.errors` with #17; until then 10.12 lists it as decided.
 - One `set_config` per round trip inside the pipelines that already exist: no extra round trip.
+- `set_config` at the head of round trip 1 fixes the transaction's snapshot before the claim, so
+  a claim that waits on a concurrent run with the same ID does so on a snapshot taken before the
+  wait (with `SET LOCAL` the claim itself took it). Relevant to open question 2.
+- The local `statement_timeout` replaces a smaller session, role or database default for the
+  statements before `COMMIT` (open question 7).
+- If the server stops answering, neither runner can end the run by itself: the server bounds each
+  statement, and interrupting a round trip in flight is #17's (Decision 2). `ResolveClaim` may
+  wait without limit on the earlier transaction (it is unbounded by design, Decision 6).
 - `timeout=` on `app.run` is a run option, not an async-function timeout (ruff `ASYNC109`, spike
   0001 L3): an outer `anyio.fail_after` around `app.run` is a cancellation (rollback unless the
   commit batch is running, no `RunTimeout`, no server-side limit, nothing in the sync runner).
@@ -136,7 +168,8 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
   wait; PostgreSQL singles out `40001` / `40P01` as retryable.
 - **`SET LOCAL statement_timeout` once at `BEGIN` as the budget**: limits each statement, not the
   attempt (fact above), and resets on each attempt.
-- **`transaction_timeout`**: terminates the session and is not armed during `COMMIT`.
+- **`transaction_timeout`**: terminates the session (`FATAL 25P04`), also during `COMMIT`'s
+  deferred triggers, so a run past it loses its connection instead of rolling back one statement.
 - **The runner maps `57014` to the deadline error itself**: it would have to know which statement
   is `COMMIT` and would report a committed run as rolled back on a post-`COMMIT` `57014`.
 - **Bound the commit batch client-side too** (cancel it at the deadline): a cancel that lands on
@@ -144,6 +177,27 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
   shield exists to avoid exactly that.
 - **`lock_timeout` + retry of `55P03`**: an option whose value interacts with `statement_timeout`
   and turns a wait into more retries on the rows ADR-0005 says cannot escape them (#64).
+
+## Open for the maintainer
+Recorded with the options; none is chosen here.
+1. **Accept ADR-0008 (and ADR-0009) when #77 merges?** The status stays Proposed until then, and
+   the `engine-and-concurrency` / `design-invariants` rules already state Decisions 2-6. If the
+   ADR is not accepted, those rule lines go back with it.
+2. **After `ResolveClaim` succeeds: continue in that transaction, or roll back and start a normal
+   attempt?** Continuing (the current text) saves a round trip. Rolling back removes the
+   `claimed` state from the engine at the cost of one more round trip. Spike 0003 observed that a
+   claim that waited holds an older snapshot, and that more `40001` follow from it - an argument
+   for rolling back. Changes: Decision 6, design 10.5, the replay tests.
+3. **`RunTimeout`'s place (directly under `PlatinaError`) and fields.** `stage="use case"` cannot
+   be observed by the engine: a deadline is reported only at a yield point, so a run whose use
+   case overran is reported at the next one (the commit batch, `stage="commit"`). The options are
+   to drop `"use case"`, or to let the runner report the clock at the commit batch and keep it.
+   Changes: Decision 3, design 10.12, #17.
+7. **May the budget's `set_config` replace a smaller session, role or database default
+   `statement_timeout`?** Yes (current), or the runner binds `min(remaining, configured default)`,
+   which needs the default read once per connection. Changes: Decision 2, design 4.6.
+
+(Questions 4-6 are ADR-0009's.)
 
 ## History
 - 2026-11-26 - created (Proposed) from the maintainer's #61 decision and pg-researcher's
@@ -155,3 +209,9 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
   field types, the version range of the facts.
 - 2026-11-26 - round 2 of the architect review: the resolving claim is its own command,
   `ResolveClaim`, never stopped by the deadline, and the replay reads are unbounded.
+- 2026-11-26 - amended after an independent review: the five facts reproduced; `transaction_timeout`
+  also fires during `COMMIT`'s deferred triggers; `set_config` takes the snapshot, needs a text
+  parameter and replaces a smaller default; the `ROLLBACK` tag after an error; `bounded` as a
+  property of the command and failed statements as facts the engine classifies; no second
+  `BEGIN` / claim after `ResolveClaim`; consequences for an unresponsive server; open questions
+  1, 2, 3 and 7.

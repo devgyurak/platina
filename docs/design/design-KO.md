@@ -1,4 +1,4 @@
-<!-- i18n: source=docs/design/design.md source-sha256=46340781a846 translation-sha256=de49d6f369f2 -->
+<!-- i18n: source=docs/design/design.md source-sha256=107346defd00 translation-sha256=3cdcdbf74a6e -->
 # Platina 설계 문서
 
 > **Platina**: 백금(platinum)의 옛 스페인어 이름. 백금이 산에도 녹지 않고 반응하지 않듯, 도메인 코드는 DB와 반응하지 않는다.
@@ -1140,7 +1140,7 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
 - 결정: 쿼리 컴파일러와 실행 엔진은 독립으로 유지하고, **DDL 생성·카탈로그 리플렉션·마이그레이션은 SQLAlchemy Core와 Alembic에 맡긴다.** 엔티티 레지스트리를 SQLAlchemy `MetaData`로 변환해 Alembic autogenerate를 쓴다. 이 기능은 `platina migrate`·`pull`·drift 검사 때만 필요하므로 `platina[migrate]` 선택 extra로 두어, 런타임 코어는 SQLAlchemy에 의존하지 않는다.
 - 변천: 처음에는 "Alembic은 SQLAlchemy 메타데이터에 묶여 독립 ORM에 맞지 않는다"며 마이그레이션 도구를 자체 구현하기로 했다. 그런데 Core를 쓰지 않는 근거(§8.1)가 틀렸고, Core가 실제로 아껴 주는 작업이 쿼리 컴파일이 아니라 DDL·리플렉션·마이그레이션이라는 점이 드러나 결정을 뒤집었다. MySQL을 붙일 때도 이쪽 작업을 공짜로 얻는다.
 - 위험: 변환의 충실도. Alembic autogenerate가 약한 지점이 이 설계의 기능과 겹친다. ① `renamed_from` 힌트(autogenerate는 rename을 감지하지 못함 → `process_revision_directives` 훅으로 drop+add를 rename으로 바꾸는 방안), ② 람다로 선언한 `Check`, ③ `version` 트리거(Alembic은 트리거를 다루지 않음 → 서드파티 PG 객체 지원 검토), ④ 표현식·부분 인덱스, ⑤ 프레임워크 내부 테이블(특히 파티션). 이 다섯 가지가 왕복되는지가 스파이크 항목이다(§9). 결과([스파이크 0004](../spikes/0004-alembic-round-trip.md), §9.3): 컬럼, 테이블, 외래 키, 복합 유니크 키, 표현식 인덱스는 왕복된다. ①은 다운그레이드까지 만들고(Alembic이 만드는 rename의 역연산은 rename을 잃는다) rename을 맨 앞에 두는 재작성이 있을 때 컬럼에서만 동작하며, 테이블 rename은 테이블 이름에서 파생된 이름을 남기고, 어떤 rename이든 PostgreSQL 18의 NOT NULL 제약 이름을 남긴다. ②와 ④: CHECK나 부분 인덱스의 변경은 이름이 식과 함께 바뀔 때만 감지된다(CHECK는 Alembic의 opt-in 플러그인 `checkconstraint_byname`도 있어야 한다). 표현식 인덱스는 거짓 차이를 내지 않는다. ③은 서드파티 패키지 없이 Alembic 자체의 확장 지점(사용자 정의 연산과 비교자 플러그인)으로 동작하며, drift는 트리거 이름과 함수 본문으로만 감지한다. ⑤는 왕복되지 않는다: 마이그레이션 밖에서 만든 파티션(파티셔닝은 실험을 위해 가정한 것이고 결정된 것이 아니다)은 drop 대상으로 제안되고 다운그레이드는 이를 다시 만들지 못하며, 파티션 방식과 `xid8` 컬럼은 비교되지 않는다. 같은 리플렉션 공백(`xid8`, CHECK 본문, 부분 인덱스 조건식, NOT NULL 이름)은 `migrate`뿐 아니라 `platina pull`과 drift 비교도 제한한다. 이로써 남는 선택 중 이름 규칙은 #25에서, 인덱스가 걸린 컬럼의 rename과 나머지 충실도 문제는 #70(2차, §9.6)에서 정한다.
-- **내부 테이블은 예외다**([ADR-0009](../adr/0009-internal-tables-owned-by-the-core.md), Proposed; 방향은 #63에서 결정): 코어가 그 DDL을 전용 스키마의 버전 붙은 SQL로 제공하며, Alembic autogenerate는 기본 설정으로 이 스키마를 비교하지 않는다(연결의 기본 스키마만 비교한다). 기동 시 DDL을 실행하는 것은 없다. `platina` 명령이 이를 적용하고, `platina[migrate]` 사용자는 자기 마이그레이션 이력에서 Alembic 연산으로 호출한다. 별도의 기동 시 검사는 없다. 내부 테이블에 대한 어떤 문장(첫 문장은 claim INSERT)에서든 `42P01` / `42703` / `42501`이 나면, 실행할 명령이나 필요한 권한을 힌트로 담은 `DatabaseError`가 된다. `platina check`는 버전을 비교한다. 파티셔닝과 키 형태는 #72를 기다리며, 그 전에는 내부 테이블 DDL을 내놓지 않는다.
+- **내부 테이블은 예외다**([ADR-0009](../adr/0009-internal-tables-owned-by-the-core.md), Proposed; 방향은 #63에서 결정): 코어가 그 DDL을 전용 스키마의 버전 붙은 SQL로 제공하며, Alembic autogenerate는 기본 설정으로 이 스키마를 비교하지 않는다(연결의 기본 스키마만 비교한다). 다만 그 스키마가 `search_path`나 같은 이름의 롤(`"$user"`)을 통해 연결의 기본 스키마 *그 자체*라면, 비교되어 drop 대상으로 제안된다. 기동 시 DDL을 실행하는 것은 없다. `platina` 명령이 이를 적용하고, `platina[migrate]` 사용자는 자기 마이그레이션 이력에서 Alembic 연산으로 호출한다. 별도의 기동 시 검사는 없다. 내부 테이블에 대한 어떤 문장(첫 문장은 claim INSERT)에서든 `42P01` / `42703` / `42501`이 나면, 실행할 명령이나 필요한 권한을 힌트로 담은 `DatabaseError`가 된다. `platina check`는 버전을 비교한다. 파티셔닝과 키 형태는 #72를 기다리며, 그 전에는 내부 테이블 DDL을 내놓지 않는다.
 - 근거(참고): Atlas는 코어가 Apache 2.0이지만 오픈코어이고 2025년 10월 v0.38에서 마이그레이션 린트를 유료 등급으로 옮겼다. sqldef는 SQL 파일 하나로 스키마를 관리하지만 Go 바이너리라 `pip install` 한 번으로 끝나는 경험을 깨뜨린다.
 
 **Pydantic 연동**
@@ -1339,54 +1339,75 @@ layers = [
 엔진은 IO가 필요할 때마다 **명령(Command)을 yield**하고, 결과(Reply)를 받아 진행하는 제너레이터다. 실행기는 명령을 실제 IO로 바꿔 주는 루프일 뿐이다.
 
 ```python
-# core/engine/commands.py
+# core/engine/commands.py   (`bounded`: 명령 전에 실행의 마감을 적용하는지 여부. ADR-0008)
 @dataclass(frozen=True, slots=True)
-class Begin:    isolation: Isolation                     # 예산이 있으면 뒤에 set_config('statement_timeout', $1, true)가 붙고, 실행기가 남은 ms를 바인딩 (ADR-0008)
-class Pipeline: statements: tuple[CompiledSQL, ...]      # 한 왕복으로 보낼 문장들
+class Begin:    isolation: Isolation                     # 예산이 있으면 뒤에 set_config('statement_timeout', $1::text, true)가 붙고, 실행기가 남은 ms를 바인딩
+class Pipeline: statements: tuple[CompiledSQL, ...]; bounded = True     # 한 왕복으로 보낼 문장들
 class Copy:     table: str; columns: tuple[str, ...]; rows: Iterable[tuple]
-class CommitBatch: statements: tuple[CompiledSQL, ...]  # 쓰기·프로젝션·outbox·결과 기록·COMMIT·LSN 조회 (한 왕복). 응답은 문장별
-class StoredResult: run_id: RunId; fingerprint: bytes   # 별도 READ COMMITTED 트랜잭션에서 run_result 조회
-class FreshLsn: ...                                      # pg_current_wal_insert_lsn() 조회
-class Rollback: ...
-class ResolveClaim: run_id: RunId                        # CommitUnknown 뒤: BEGIN + claim만. 마감으로 멈추지 않음 (ADR-0008)
-class Sleep:    seconds: float                           # 재시도 백오프
+class CommitBatch: statements: tuple[CompiledSQL, ...]; bounded = True  # 쓰기·프로젝션·outbox·결과 기록·COMMIT·LSN 조회 (한 왕복)
+class StoredResult: run_id: RunId; bounded = False       # 별도 READ COMMITTED 트랜잭션에서 run_result(결과 + 핑거프린트) 조회
+class FreshLsn: bounded = False                          # pg_current_wal_insert_lsn() 조회
+class Rollback: bounded = False
+class ResolveClaim: run_id: RunId; bounded = False       # CommitUnknown 뒤: BEGIN + claim만 (ADR-0008 Decision 6)
+class Sleep:    seconds: float; bounded = True           # 재시도 백오프. 끝나는 시점(now + seconds)으로 마감을 적용
 
 # core/engine/run.py  (IO 없음)
 def run_usecase(uc: Usecase, args: Bound, policy: RetryPolicy, d: Dialect
                ) -> Generator[Command, Reply, RunResult]:
     pending: RunResult | None = None                        # 커밋 전에 계산해 둔 결과 (시도를 넘어 유지)
     fp = fingerprint(uc, args) if run_id.kind == "caller" else None   # 아무것도 실행하기 전에 한 번 (직렬화할 수 없으면 UsageError, #58)
+    claimed = False                                         # ResolveClaim 뒤: 열린 트랜잭션이 이미 claim을 쥐고 있음
     for attempt in policy.attempts():
+        stage_kind = "load"
         try:
             snapshots = {}
             for i, stage in enumerate(uc.plan.stages):        # 단계 수는 seal에서 확정
-                head = (begin(uc.isolation), claim(run_id)) if i == 0 else ()
-                rows = yield Pipeline(head + stage.compile(d, args, snapshots))   # 왕복 1: BEGIN + 실행 ID 선점 + 로드
+                head = (begin(uc.isolation), budget(), claim(run_id)) if i == 0 and not claimed else (budget(),)
+                rows = yield Pipeline(head + stage.compile(d, args, snapshots))   # 왕복 1: BEGIN + 예산 + 실행 ID 선점 + 로드
                 snapshots |= stage.materialize(rows)          # Load.after 함수도 여기서 실행(순수)
+            claimed = False
             changes = uc.invoke(snapshots)                    # 사용자 유스케이스: 평범한 순수 함수
             pending = RunResult.from_changes(changes)
-            reply = yield CommitBatch(commit_plan(changes, d, run_id, fp))   # 왕복 2: 쓰기 … COMMIT, LSN
-            return pending.committed(reply)                   # 엔진은 결과를 위치로 읽는다: COMMIT의 결과 뒤에 난 오류는 커밋됨 (ADR-0008)
-        except AlreadyClaimed:                              # run_claim 23505: 같은 실행 ID가 이미 커밋됨
-            yield Rollback()
-            return (yield from replay(run_id, fp, pending))  # 아래 참조
-        except DeadlineReached as e:                        # 실행기가 보고. COMMIT 전에 예산 때문에 난 57014도 여기로 매핑 (ADR-0008)
-            yield Rollback()
-            raise RunTimeout(...) from e                    # 재시도하지 않음
-        except RetryableError as e:                         # 실행기가 gen.throw()로 넣어 준 DB 오류
-            yield Rollback()
-            yield Sleep(policy.backoff(attempt, e))
-        except CommitUnknown:                               # 커밋 배치 도중 연결 끊김
-            if not (yield ResolveClaim(run_id)):            # BEGIN + claim만. 마감으로 멈추지 않음 (ADR-0008)
-                yield Rollback()                            # 23505: 앞선 시도가 커밋됨
+            stage_kind = "commit"
+            reply = yield CommitBatch(commit_plan(changes, d, run_id, fp))   # 왕복 2: 예산, 쓰기 … COMMIT, LSN
+            return pending.committed(reply)                   # COMMIT의 태그는 COMMIT. 그 뒤에 난 오류도 커밋된 것
+        except StatementFailed as f:                        # 실행기가 준 사실: 어느 문장이 실패했는지, 그 SQLSTATE
+            fault = classify(f, stage_kind)                   # (드라이버가 타입으로), 마감이 지났는지. 엔진이 정한다:
+        except DeadlineReached as e:                        # 선점됨 / 재시도 / 마감 / 결과 불명 / 커밋됨 / 예외
+            fault = Deadline(e)
+        # 아래의 yield는 모두 except 절 밖에 있으므로, 실행기가 그중 하나에서 보고한 DeadlineReached
+        # (마감이 적용되는 것은 Sleep뿐)는 제너레이터를 빠져나가지 않고 이 코드에 닿는다.
+        match fault:
+            case Committed():                               # COMMIT 뒤의 문장에서 난 오류 (ADR-0008 Decision 5)
+                return pending.committed_with((yield FreshLsn()))
+            case AlreadyClaimed():                          # run_claim 23505: 같은 실행 ID가 이미 커밋됨
+                yield Rollback()
                 return (yield from replay(run_id, fp, pending))
-            continue                                        # claim 성공: 커밋되지 않았음. 실행은 다시 예산 안에서 계속
+            case Deadline():                                # 실행기의 마감, 또는 COMMIT 전에 예산 때문에 난 57014
+                yield Rollback()
+                raise RunTimeout(...) from fault.cause        # 재시도하지 않음
+            case Retryable():                               # 40001 / 40P01
+                yield Rollback()
+                try:
+                    yield Sleep(policy.backoff(attempt, fault))
+                except DeadlineReached:                     # 백오프가 마감을 넘겨서 끝남
+                    raise RunTimeout(stage="backoff", ...) from fault.error   # 원인은 마지막 40001
+            case CommitUnknown():                           # 커밋 배치 도중 연결 끊김
+                if not (yield ResolveClaim(run_id)):        # 23505: 앞선 시도가 커밋됨
+                    yield Rollback()
+                    return (yield from replay(run_id, fp, pending))
+                claimed = True                              # 커밋되지 않음. BEGIN과 claim 없이 이 트랜잭션에서 계속
+    if claimed:
+        yield Rollback()
     raise RetryExhausted(...)
 
 def replay(run_id, fp, pending):                            # 재생 경로. 마감으로 멈추지 않음
     match run_id.kind:
         case "caller":                                      # 호출자 키: 저장된 결과
-            return (yield StoredResult(run_id, fp))         # run_result 조회 (READ COMMITTED). 다르면 IdempotencyKeyReuse
+            stored = yield StoredResult(run_id)             # 실행기는 행을 돌려주고, 비교는 엔진이 한다
+            if stored.fingerprint != fp:
+                raise IdempotencyKeyReuse(...)
+            return stored.result
         case "auto":                                        # 자동 ID: 이 실행기의 직전 시도가 커밋된 것
             return pending.committed_with((yield FreshLsn()))   # 메모리의 결과 + 새 LSN
         case "job":                                         # 작업 ID: 다른 워커가 이미 완료
@@ -1394,7 +1415,7 @@ def replay(run_id, fp, pending):                            # 재생 경로. 마
 ```
 
 ```python
-# runners/async_.py  (껍데기: 명령을 IO로 바꾸는 루프)
+# runners/async_.py  (껍데기: 명령을 IO로 바꾸는 루프. 사실을 보고할 뿐 아무것도 정하지 않는다)
 async def drive_async(gen, conn, deadline):
     reply = None
     while True:
@@ -1402,8 +1423,8 @@ async def drive_async(gen, conn, deadline):
             cmd = gen.send(reply) if not isinstance(reply, BaseException) else gen.throw(reply)
         except StopIteration as stop:
             return stop.value
-        if deadline.stops(cmd):                                # Pipeline / CommitBatch 전, 또는 마감을 넘는 Sleep (ADR-0008)
-            reply = DeadlineReached()                          # 사실일 뿐. 의미는 엔진이 정한다
+        if cmd.bounded and deadline.reached(by=cmd_end(cmd)):  # 적용 여부는 Command가 정한다. Sleep은 now + seconds에 끝난다
+            reply = DeadlineReached()
             continue
         try:
             if isinstance(cmd, (CommitBatch, Rollback)):
@@ -1414,7 +1435,8 @@ async def drive_async(gen, conn, deadline):
             else:
                 reply = await execute(conn, cmd, deadline.remaining_ms())
         except psycopg.Error as e:
-            reply = statement_failure(e, deadline.passed())    # 어느 문장이 실패했는지, 그 SQLSTATE(드라이버가 타입으로), 마감이 지났는지
+            reply = StatementFailed(index=failed_statement(cmd, e), error=map_sqlstate(e),   # 사실만 담는다.
+                                    deadline_passed=deadline.passed())                       # 분류는 엔진이 한다
 ```
 
 - **sync/async 의미가 100% 같다.** 둘 다 같은 엔진 제너레이터를 돌린다. 다른 건 루프의 `await`와 shield뿐이다.

@@ -1140,7 +1140,7 @@ On highly contended tables, serialization failures and retries increase. Two kin
 - Decision: the query compiler and the execution engine stay independent, and **DDL generation, catalog reflection and migrations are handed to SQLAlchemy Core and Alembic.** The entity registry is converted to SQLAlchemy `MetaData` to use Alembic autogenerate. This is needed only for `platina migrate`, `pull` and drift checks, so it lives in the optional extra `platina[migrate]`, and the runtime core does not depend on SQLAlchemy.
 - History: at first we decided to implement our own migration tool, reasoning that "Alembic is tied to SQLAlchemy metadata and does not fit a standalone ORM". But the rationale for not using Core (§8.1) was wrong, and it became clear that the work Core actually saves is not query compilation but DDL, reflection and migrations, so the decision was reversed. When MySQL is added, we also get this work for free.
 - Risk: fidelity of the conversion. The weak spots of Alembic autogenerate overlap with features of this design. ① `renamed_from` hints (autogenerate does not detect renames → plan to turn drop+add into a rename with the `process_revision_directives` hook), ② `Check` declared with lambdas, ③ `version` triggers (Alembic does not handle triggers → evaluate third-party PG object support), ④ expression and partial indexes, ⑤ framework internal tables (especially partitions). Whether these five round-trip is a spike item (§9). Result ([spike 0004](../spikes/0004-alembic-round-trip.md), §9.3): columns, tables, foreign keys, composite unique keys and expression indexes round-trip. ① works for columns only with a rewrite that also builds the downgrade (Alembic's reverse of a rename loses it) and orders renames first; a table rename leaves names derived from the table behind, and any rename leaves PostgreSQL 18's NOT NULL constraint names behind. ② and ④: a CHECK or partial-index change is detected only when its name changes with the expression (for a CHECK also only with Alembic's opt-in `checkconstraint_byname` plugin); expression indexes give no false diffs. ③ works with Alembic's own extension points (custom operations and a comparator plugin), without a third-party package; drift is detected by trigger name and function body only. ⑤ does not round-trip: partitions created outside migrations (partitioning was assumed for the experiment, not decided) are proposed for drop and the downgrade cannot re-create them; the partition scheme and `xid8` columns are not compared. The same reflection gaps (`xid8`, CHECK bodies, partial-index predicates, NOT NULL names) also limit `platina pull` and the drift comparison, not only `migrate`. Of the choices this leaves, the naming rule is open for #25, and renames of indexed columns with the other fidelity gaps for #70 (Phase 2, §9.6).
-- **Internal tables are the exception** ([ADR-0009](../adr/0009-internal-tables-owned-by-the-core.md), Proposed; direction decided in #63): the core ships their DDL as versioned SQL in a dedicated schema, which Alembic autogenerate does not compare with its defaults (it compares only the connection's default schema). Nothing runs DDL at startup: a `platina` command applies it, and `platina[migrate]` users call it as an Alembic operation from their own history. There is no separate startup check: a `42P01` / `42703` / `42501` from any internal-table statement (the claim INSERT is the first) becomes a `DatabaseError` whose hint names the command or the grant, and `platina check` compares the versions. Partitioning and the key shapes wait for #72; no internal-table DDL ships before it.
+- **Internal tables are the exception** ([ADR-0009](../adr/0009-internal-tables-owned-by-the-core.md), Proposed; direction decided in #63): the core ships their DDL as versioned SQL in a dedicated schema, which Alembic autogenerate does not compare with its defaults (it compares only the connection's default schema) - unless that schema *is* the connection's default schema, through `search_path` or a role of the same name (`"$user"`), and then it is compared and proposed for drop. Nothing runs DDL at startup: a `platina` command applies it, and `platina[migrate]` users call it as an Alembic operation from their own history. There is no separate startup check: a `42P01` / `42703` / `42501` from any internal-table statement (the claim INSERT is the first) becomes a `DatabaseError` whose hint names the command or the grant, and `platina check` compares the versions. Partitioning and the key shapes wait for #72; no internal-table DDL ships before it.
 - Rationale (for reference): Atlas has an Apache 2.0 core but is open core, and in October 2025 with v0.38 it moved migration linting to a paid tier. sqldef manages the schema with a single SQL file, but it is a Go binary, which breaks the experience of finishing with a single `pip install`.
 
 **Pydantic integration**
@@ -1339,54 +1339,75 @@ layers = [
 The engine is a generator that **yields a Command** whenever it needs IO and proceeds when it receives the result (Reply). A runner is just a loop that turns commands into real IO.
 
 ```python
-# core/engine/commands.py
+# core/engine/commands.py   (`bounded`: whether the run's deadline applies before the command; ADR-0008)
 @dataclass(frozen=True, slots=True)
-class Begin:    isolation: Isolation                     # with a budget, followed by set_config('statement_timeout', $1, true); the runner binds the remaining ms (ADR-0008)
-class Pipeline: statements: tuple[CompiledSQL, ...]      # statements sent in one round trip
+class Begin:    isolation: Isolation                     # with a budget, followed by set_config('statement_timeout', $1::text, true); the runner binds the remaining ms
+class Pipeline: statements: tuple[CompiledSQL, ...]; bounded = True     # statements sent in one round trip
 class Copy:     table: str; columns: tuple[str, ...]; rows: Iterable[tuple]
-class CommitBatch: statements: tuple[CompiledSQL, ...]  # writes, projections, outbox, result record, COMMIT, LSN query (one round trip); the reply is per statement
-class StoredResult: run_id: RunId; fingerprint: bytes   # read run_result in a separate READ COMMITTED transaction
-class FreshLsn: ...                                      # query pg_current_wal_insert_lsn()
-class Rollback: ...
-class ResolveClaim: run_id: RunId                        # after CommitUnknown: BEGIN + claim only, never stopped by the deadline (ADR-0008)
-class Sleep:    seconds: float                           # retry backoff
+class CommitBatch: statements: tuple[CompiledSQL, ...]; bounded = True  # writes, projections, outbox, result record, COMMIT, LSN query (one round trip)
+class StoredResult: run_id: RunId; bounded = False       # read run_result (result + fingerprint) in a separate READ COMMITTED transaction
+class FreshLsn: bounded = False                          # query pg_current_wal_insert_lsn()
+class Rollback: bounded = False
+class ResolveClaim: run_id: RunId; bounded = False       # after CommitUnknown: BEGIN + claim only (ADR-0008 Decision 6)
+class Sleep:    seconds: float; bounded = True           # retry backoff; bounded by its end, now + seconds
 
 # core/engine/run.py  (no IO)
 def run_usecase(uc: Usecase, args: Bound, policy: RetryPolicy, d: Dialect
                ) -> Generator[Command, Reply, RunResult]:
     pending: RunResult | None = None                        # result computed before commit (kept across attempts)
     fp = fingerprint(uc, args) if run_id.kind == "caller" else None   # once, before anything runs (UsageError if not serializable, #58)
+    claimed = False                                         # after ResolveClaim: the open transaction already holds the claim
     for attempt in policy.attempts():
+        stage_kind = "load"
         try:
             snapshots = {}
             for i, stage in enumerate(uc.plan.stages):        # number of stages fixed at seal
-                head = (begin(uc.isolation), claim(run_id)) if i == 0 else ()
-                rows = yield Pipeline(head + stage.compile(d, args, snapshots))   # round trip 1: BEGIN + run ID claim + load
+                head = (begin(uc.isolation), budget(), claim(run_id)) if i == 0 and not claimed else (budget(),)
+                rows = yield Pipeline(head + stage.compile(d, args, snapshots))   # round trip 1: BEGIN + budget + run ID claim + load
                 snapshots |= stage.materialize(rows)          # Load.after functions also run here (pure)
+            claimed = False
             changes = uc.invoke(snapshots)                    # user use case: a plain pure function
             pending = RunResult.from_changes(changes)
-            reply = yield CommitBatch(commit_plan(changes, d, run_id, fp))   # round trip 2: writes … COMMIT, LSN
-            return pending.committed(reply)                   # the engine reads the outcome by position: an error after COMMIT's result is committed (ADR-0008)
-        except AlreadyClaimed:                              # run_claim 23505: the same run ID already committed
-            yield Rollback()
-            return (yield from replay(run_id, fp, pending))  # see below
-        except DeadlineReached as e:                        # reported by the runner; a budget 57014 before COMMIT is mapped to it here (ADR-0008)
-            yield Rollback()
-            raise RunTimeout(...) from e                    # never retried
-        except RetryableError as e:                         # DB error injected by the runner via gen.throw()
-            yield Rollback()
-            yield Sleep(policy.backoff(attempt, e))
-        except CommitUnknown:                               # connection lost during the commit batch
-            if not (yield ResolveClaim(run_id)):            # BEGIN + claim only, never stopped by the deadline (ADR-0008)
-                yield Rollback()                            # 23505: the earlier attempt committed
+            stage_kind = "commit"
+            reply = yield CommitBatch(commit_plan(changes, d, run_id, fp))   # round trip 2: budget, writes … COMMIT, LSN
+            return pending.committed(reply)                   # COMMIT's tag is COMMIT; an error after it still means committed
+        except StatementFailed as f:                        # a fact from the runner: which statement failed, its SQLSTATE
+            fault = classify(f, stage_kind)                   # (typed by drivers), whether the deadline had passed - the engine
+        except DeadlineReached as e:                        # decides: claimed / retry / deadline / unknown / committed / raise
+            fault = Deadline(e)
+        # Every yield below is outside the except clauses, so a DeadlineReached the runner reports at
+        # one of them (only Sleep is bounded) reaches this code instead of escaping the generator.
+        match fault:
+            case Committed():                               # an error on a statement after COMMIT (ADR-0008 Decision 5)
+                return pending.committed_with((yield FreshLsn()))
+            case AlreadyClaimed():                          # run_claim 23505: the same run ID already committed
+                yield Rollback()
                 return (yield from replay(run_id, fp, pending))
-            continue                                        # claimed: it did not commit; the run continues, bounded again
+            case Deadline():                                # the runner's deadline, or a budget 57014 before COMMIT
+                yield Rollback()
+                raise RunTimeout(...) from fault.cause        # never retried
+            case Retryable():                               # 40001 / 40P01
+                yield Rollback()
+                try:
+                    yield Sleep(policy.backoff(attempt, fault))
+                except DeadlineReached:                     # the backoff would end past the deadline
+                    raise RunTimeout(stage="backoff", ...) from fault.error   # the last 40001 is the cause
+            case CommitUnknown():                           # connection lost during the commit batch
+                if not (yield ResolveClaim(run_id)):        # 23505: the earlier attempt committed
+                    yield Rollback()
+                    return (yield from replay(run_id, fp, pending))
+                claimed = True                              # not committed; continue in this transaction, without BEGIN and claim
+    if claimed:
+        yield Rollback()
     raise RetryExhausted(...)
 
 def replay(run_id, fp, pending):                            # the replay path; never stopped by the deadline
     match run_id.kind:
         case "caller":                                      # caller key: stored result
-            return (yield StoredResult(run_id, fp))         # read run_result (READ COMMITTED); IdempotencyKeyReuse if it differs
+            stored = yield StoredResult(run_id)             # the runner returns the row; the engine compares
+            if stored.fingerprint != fp:
+                raise IdempotencyKeyReuse(...)
+            return stored.result
         case "auto":                                        # automatic ID: this runner's previous attempt committed
             return pending.committed_with((yield FreshLsn()))   # result in memory + fresh LSN
         case "job":                                         # job ID: another worker already completed it
@@ -1394,7 +1415,7 @@ def replay(run_id, fp, pending):                            # the replay path; n
 ```
 
 ```python
-# runners/async_.py  (shell: the loop that turns commands into IO)
+# runners/async_.py  (shell: the loop that turns commands into IO; it reports facts, it decides nothing)
 async def drive_async(gen, conn, deadline):
     reply = None
     while True:
@@ -1402,8 +1423,8 @@ async def drive_async(gen, conn, deadline):
             cmd = gen.send(reply) if not isinstance(reply, BaseException) else gen.throw(reply)
         except StopIteration as stop:
             return stop.value
-        if deadline.stops(cmd):                                # before Pipeline / CommitBatch, or a Sleep past it (ADR-0008)
-            reply = DeadlineReached()                          # a fact; the engine decides what it means
+        if cmd.bounded and deadline.reached(by=cmd_end(cmd)):  # the Command says whether; Sleep ends at now + seconds
+            reply = DeadlineReached()
             continue
         try:
             if isinstance(cmd, (CommitBatch, Rollback)):
@@ -1414,7 +1435,8 @@ async def drive_async(gen, conn, deadline):
             else:
                 reply = await execute(conn, cmd, deadline.remaining_ms())
         except psycopg.Error as e:
-            reply = statement_failure(e, deadline.passed())    # which statement failed, its SQLSTATE (typed by drivers), deadline passed?
+            reply = StatementFailed(index=failed_statement(cmd, e), error=map_sqlstate(e),   # facts only; the
+                                    deadline_passed=deadline.passed())                       # engine classifies them
 ```
 
 - **sync/async semantics are 100% the same.** Both drive the same engine generator. The only differences are the loop's `await` and the shield.

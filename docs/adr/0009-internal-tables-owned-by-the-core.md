@@ -35,7 +35,10 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
     `None`). This happened twice: with `search_path=platina_internal,public`, and - without
     touching `search_path` - with a schema named `platina` while connected as the role
     `platina`, because PostgreSQL's default `search_path` is `"$user", public`. Both proposed
-    `remove_table` for the internal table.
+    `remove_table` for the internal table. The repository's own docker-compose databases connect
+    as the role `platina`, so this is the case the test setup would hit with that schema name.
+  - The claim INSERT into a schema that does not exist fails with `42P01`, the same code as a
+    missing table (independent review, rerun by the author).
 
 ## Decision
 1. **The sans-I/O core ships the DDL of the internal tables as versioned SQL** (numbered,
@@ -84,11 +87,28 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
 - The core holds SQL text for one dialect; a MySQL dialect will need its own versions.
 - A missing schema is reported on the first run, not at startup - the price of keeping `seal()`
   free of database I/O. `platina check` in CI and deployment closes that gap for version skew.
-- #22 (run IDs) has no table to run its integration tests against until #72 has measured and the
-  first DDL step exists; #22 waits for #72.
+- #22 (run IDs) has no table to run its integration tests against until the first DDL step
+  exists, and no DDL ships before #72 (Decision 4). Whether #22 waits for #72 or starts with a
+  test-only DDL is open question 6.
 - `platina pull` and the drift check (8.5) skip the dedicated schema by name; no prefix rule.
 - Open, tracked in #63: the schema name, the command names, the version-table shape, and
   everything #72 decides (partitioning, keys, retention).
+
+## Open for the maintainer
+Recorded with the options; none is chosen here. (Questions 1-3 and 7 are in ADR-0008; question 1
+- accepting this ADR when #77 merges - applies to both.)
+4. **Expand/contract steps, a forward-only downgrade, and "a database one release ahead is
+   allowed".** These came from the architect review, not from #63's decision. The alternative is
+   to leave all three to the first implementation (#22). Changes: Decisions 1 and 3, `platina
+   check`.
+5. **The `"$user"` trap: when the internal schema is the connection's default schema, does
+   Platina's Alembic integration refuse to autogenerate (an error), or does `platina check` only
+   report it?** An error removes the drop proposals; a report keeps autogenerate usable in a
+   setup the user chose. Changes: Decision 2, design 8.5.
+6. **#22 before #72: wait for #72, or start #22 with test-only DDL** (created by the test setup,
+   not shipped) and replace it with the first shipped step after #72? Waiting keeps one DDL
+   source; test-only DDL unblocks the run-ID work and the engine's integration tests. Changes:
+   Consequences, the #22 / #72 dependency.
 
 ## Alternatives considered
 - **3a - Alembic only, with an `include_name` filter** (spike 0004 P3): a core-only install has
@@ -110,3 +130,5 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
   `platina.sql.dialects.postgresql`, schema-qualified; the version table, advisory lock,
   expand/contract steps and a no-op downgrade; `42P01` / `42703` / `42501` on any internal-table
   statement, with the grants the role needs; #22 waits for #72.
+- 2026-11-26 - amended after an independent review: the docker-compose role `platina`; `42P01` for
+  a missing schema; "#22 waits for #72" is open (question 6); open questions 4-6.

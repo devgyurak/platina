@@ -135,6 +135,13 @@ All notable changes are documented here. Format: [Keep a Changelog](https://keep
     partitioning and keys wait for #72 (design 8.5, 9.6).
   - #57, #59, #60: decided as hypotheses for the Phase 1a type spike (issue comments); the design
     text changes after the spike.
+  - After an independent review (rebased onto spike 0006): ADR-0008's facts reproduced and
+    corrected (`transaction_timeout` also ends the session during `COMMIT`'s deferred triggers;
+    `set_config` takes the snapshot, needs a text parameter and replaces a smaller default; the
+    `ROLLBACK` tag); design 10.5's sketch classifies failures in the engine, marks `bounded` on
+    the command, continues without a second claim after `ResolveClaim` and keeps every `yield`
+    out of the `except` clauses; the equality rule points at #76 for a parent key before `add`;
+    seven questions recorded as open for the maintainer in ADR-0008 / ADR-0009.
 
 ### Changed
 - Entity syntax (ADR-0003, accepted): entities inherit `Entity` with table options as class
