@@ -115,3 +115,7 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
 - 2026-11-26 - the 3.14t CI job exists (issue #7): the counter test now runs with the GIL off on
   every PR; its helper moved to `tools/concurrent_draws.py`, and the run adds a `box[0] += 1`
   control that must show duplicates. No change to the decision.
+- 2026-11-26 - control measured on the CI runner (GitHub `ubuntu-latest`, 4 CPUs, CPython
+  3.14.10 free-threaded; PR #68, 6 runs of 8 threads x 200,000 draws): the `box[0] += 1` counter
+  gave 778,539 to 1,279,674 duplicates per run, `itertools.count().__next__` 0. The margin is wide,
+  so a control with 0 duplicates fails the run. No change to the decision.
