@@ -14,8 +14,8 @@ design section 9).
    Method *before* running anything. Decide what result would confirm or refute the assumption.
 3. **Build the experiment** in `spikes/NNNN-slug/` (Python scripts, `.pyi` stubs, SQL). Keep it
    minimal; it is throwaway. Outputs go to `spikes/NNNN-slug/results/` (git-ignored).
-   Dependencies: `uv sync --group spike` (psycopg, SQLAlchemy, Alembic); if you need anything
-   else, stop and ask the maintainer.
+   Dependencies: psycopg comes with the defaults (`uv sync`), `uv sync --group spike` adds
+   SQLAlchemy and Alembic; if you need anything else, stop and ask the maintainer.
    - Type surface: stub-only code + pass/fail files run through `uv run python -m tools.typetests`
      (see `type-tests`); record what each checker inferred.
    - PostgreSQL: two sessions with explicit steps for interleavings (`make db-up` is fine), or N

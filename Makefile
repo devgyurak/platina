@@ -61,18 +61,18 @@ test-unit: ## Unit tests (no DB)
 	uv run pytest tests/unit $(PYTEST_ARGS)
 
 # Free-threaded CPython in its own environment (.venv-ft), so .venv keeps its interpreter.
+# `--no-group binary`: psycopg-binary has no free-threaded wheel (ADR-0012); the unit tests never
+# import psycopg, so the pure-Python psycopg that the runtime dependency installs is enough.
 FT_THREADS ?= 8
 test-unit-ft: ## Unit tests on free-threaded 3.14t, FT_THREADS (8) threads per test; fails if the GIL is on
-	UV_PROJECT_ENVIRONMENT=.venv-ft uv run --locked --python 3.14t \
+	UV_PROJECT_ENVIRONMENT=.venv-ft uv run --locked --no-group binary --python 3.14t \
 		python -m tools.freethreaded tests/unit --parallel-threads $(FT_THREADS) $(PYTEST_ARGS)
 
 test-types: ## Type tests: tests/typing/pass_* and fail_* under pyright AND mypy
 	uv run python -m tools.typetests
 
 test-int: ## Integration tests on real PostgreSQL (needs db-up)
-	@if [ -n "$$(find tests/integration -name 'test_*.py' -print -quit 2>/dev/null)" ]; then \
-		uv run pytest tests/integration $(PYTEST_ARGS); \
-	else echo "test-int: no integration tests yet"; fi
+	uv run pytest tests/integration $(PYTEST_ARGS)
 
 test: test-unit test-types test-int ## Unit + type + integration tests
 

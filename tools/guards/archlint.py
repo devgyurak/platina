@@ -11,9 +11,10 @@ Zones
 Codes
     A101  module outside ``CORE_ALLOWED`` imported in the sans-I/O core (an allowlist: no I/O,
           concurrency, clock, environment, logging, file system or randomness modules)
-    A102  ``psycopg`` / ``psycopg_pool`` imported outside ``platina.drivers``
+    A102  ``psycopg`` / ``psycopg_pool`` imported outside ``platina.drivers.psycopg`` (the rest of
+          ``platina.drivers`` - the contract and the SQLSTATE mapping - imports without libpq)
     A103  ``sqlalchemy`` / ``alembic`` imported outside ``platina.migrate`` (optional extra)
-    A104  ``asyncio`` / ``trio`` / ``uvloop`` imported in the shell outside ``platina.drivers``
+    A104  ``asyncio`` / ``trio`` / ``uvloop`` imported in the shell outside ``platina.drivers.psycopg``
           (write against anyio, design section 5)
     A105  ``async def`` / ``await`` / ``async for`` / ``async with`` / async comprehensions in the core
           (the engine yields commands; the runners own the event loop)
@@ -121,11 +122,12 @@ def _import_violations(
                 "clock, environment or randomness; adding a module is the maintainer's call",
             )
         ]  # fmt: skip
-    if top in DRIVER_MODULES and not _within(module, ("platina.drivers",)):
+    if top in DRIVER_MODULES and not _within(module, ("platina.drivers.psycopg",)):
         return [
             Violation(
                 path, line, "A102",
-                f"`{imported}` outside platina.drivers - go through the driver interface",
+                f"`{imported}` outside platina.drivers.psycopg - go through the driver "
+                "interface (platina.drivers.interface)",
             )
         ]  # fmt: skip
     if top in SCHEMA_TOOL_MODULES and not _within(module, ("platina.migrate",)):
@@ -136,7 +138,7 @@ def _import_violations(
                 "`platina[migrate]` extra",
             )
         ]  # fmt: skip
-    if top in LOOP_MODULES and not _within(module, ("platina.drivers",)):
+    if top in LOOP_MODULES and not _within(module, ("platina.drivers.psycopg",)):
         return [
             Violation(
                 path, line, "A104",

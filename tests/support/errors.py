@@ -7,6 +7,7 @@ and a class pickles by reference only when it is importable at module level.
 from __future__ import annotations
 
 import copy
+import inspect
 import pickle
 from collections.abc import Callable
 from typing import Any, Final
@@ -63,10 +64,22 @@ class AttemptsExhausted(RetryExhausted):
 
 
 def with_field(cls: type[PlatinaError], field: str, value: Any, **required: Any) -> PlatinaError:
-    """Build ``cls("m", <field>=value)``; ``required`` carries ``sqlstate`` for database errors."""
+    """Build ``cls("m", <field>=value)``; ``required`` carries ``sqlstate`` for ``DatabaseError``
+    (``UniqueViolation`` and ``CheckViolation`` fix theirs and take none).
+    """
     return cls("m", **{field: value}, **required)
 
 
 def untyped_error(**fields: Any) -> PlatinaError:
     """Build a ``PlatinaError`` from values that bypass the type checker, as untyped code can."""
     return PlatinaError("m", **fields)
+
+
+def parameters(cls: type[PlatinaError]) -> list[inspect.Parameter]:
+    """The constructor parameters of ``cls``, in order (name, kind, default, annotation)."""
+    return list(inspect.signature(cls).parameters.values())
+
+
+def parameters_without(cls: type[PlatinaError], name: str) -> list[inspect.Parameter]:
+    """``parameters(cls)`` without the one called ``name``."""
+    return [parameter for parameter in parameters(cls) if parameter.name != name]

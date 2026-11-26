@@ -114,9 +114,10 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
      the class a typed field.
    - Issue #8 adds no subclass fields except `DatabaseError.sqlstate: str | None`, keyword-only
      and **required** (a forgotten SQLSTATE does not type-check; `None` is for driver errors
-     without one, which #18 may narrow). `UniqueViolation` and `CheckViolation` inherit it
-     unchanged in #8, so `UniqueViolation("...", sqlstate="40001")` type-checks; whether they fix
-     their value (23505 / 23514) is decided by #18 with the SQLSTATE mapping.
+     without one, and stays: #18 found that a connection lost inside a pipeline has none).
+     `UniqueViolation` and `CheckViolation` fix their value: their constructors take no
+     `sqlstate` and set `"23505"` / `"23514"`, so `UniqueViolation("...", sqlstate="40001")` does
+     not type-check (decided in #18, [ADR-0012](0012-psycopg-driver-replies.md)).
    - The original driver exception is **not a field**: it is the `__cause__` of the
      `DatabaseError` (`raise ... from e`).
 3. **Rendering.** `str(exc)` is the headline (the message) followed by one line per present item,
@@ -169,10 +170,11 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
 - `details` is untyped text: a program that needs one of those values waits for the typed field
   its feature issue adds.
 - Fields are read-only, so an exception must know every field when it is built; nothing fills
-  `usecase` in later. Design 10.5 has the runner build the exception with `map_sqlstate(e)`
-  and throw it into the engine, but the driver and the runner do not know the use case. Which
-  layer builds the public `DatabaseError` and links the driver exception as `__cause__` is
-  decided by #17/#18, not here.
+  `usecase` in later. Design 10.5 had the runner build the exception with `map_sqlstate(e)`
+  and throw it into the engine, but the driver and the runner do not know the use case. Decided
+  in #18 ([ADR-0012](0012-psycopg-driver-replies.md)): `platina.drivers.errors.database_error`
+  builds it from the driver's fault, with the use case its caller (the runner) passes, and links
+  the driver exception as `__cause__`.
 - `SourceLocation.file` is a display path: in a src layout `shop/billing/usecases.py` is not a
   path from the project root, so a tool cannot always open it. Resolvable fields (`module`, ...)
   can be added to `SourceLocation` later with defaults without breaking compatibility; none is
@@ -262,3 +264,7 @@ stays a string, redefined as the registry name), all findings are taken into thi
   the tests pin (a non-string value, a non-pair detail; `details=None` or a non-`SourceLocation`
   location still make `str()` fail and are type errors); `SourceLocation` has no public
   `render()` method, the location line is built by a module-private function.
+- 2026-11-26 - the points left to #18 decided there (ADR-0012): `UniqueViolation` and
+  `CheckViolation` fix their SQLSTATE and take no `sqlstate`; `DatabaseError.sqlstate` stays
+  `str | None`; `platina.drivers.errors.database_error` builds the public exception with the use
+  case its caller passes. Same direction.

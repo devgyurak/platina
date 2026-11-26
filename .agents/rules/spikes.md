@@ -15,8 +15,8 @@ Design section 9 says the open questions are answered by experiment, not argumen
   question, the setup (versions of Python, PostgreSQL, pyright, mypy, psycopg), what was run (exact
   commands), the observations, and the **verdict** against the design's assumption: holds / does
   not hold / partly, with the consequence for the design.
-- **Dependencies** come from the `spike` group (`uv sync --group spike`: psycopg, SQLAlchemy,
-  Alembic). A spike that needs anything else stops and asks the maintainer; it never adds a
+- **Dependencies** come from the defaults (psycopg) and the `spike` group (`uv sync --group
+  spike`: SQLAlchemy, Alembic). A spike that needs anything else stops and asks the maintainer; it never adds a
   dependency on its own.
 - **The right database.** `make db-up` (tmpfs, fsync off) answers "does X happen at all".
   Anything that reports a rate, a throughput or a latency (design sections 9.2 last item, 9.5)

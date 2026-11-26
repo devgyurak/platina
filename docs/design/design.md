@@ -892,7 +892,7 @@ Every message has the same layout ([ADR-0006](../adr/0006-exception-fields-and-r
 | Core (load plan, ChangeSet, SQL compilation) | **sans-IO**, no dependency on an async library |
 | async runner | Written against the **anyio** API (cancellation semantics, structured concurrency) |
 | Backend | **asyncio only**, uvloop at the user's choice |
-| sync runner | Uses psycopg sync connections directly, a first-class path |
+| sync runner | Drives the sync psycopg driver (`SyncPsycopgDriver`, ADR-0012) directly, a first-class path |
 | Driver | **psycopg 3.3+** only |
 
 ### Why anyio
@@ -902,8 +902,8 @@ Every message has the same layout ([ADR-0006](../adr/0006-exception-fields-and-r
 ```python
 async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResult:
     run_id = RunId.caller(idempotency_key) if idempotency_key else RunId.auto()
-    async with pool.connection() as conn:
-        return await drive_async(run_usecase(bound, run_id, policy, PG), conn)
+    async with driver.session() as session:                # a pooled autocommit connection (ADR-0012)
+        return await drive_async(run_usecase(bound, run_id, policy, PG), session)
     # the engine (§10.5) issues commands, and drive_async shields the commit batch and rollback sections
 ```
 
@@ -911,7 +911,7 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
 Domain functions have no IO and are not generators (dependent loads are declarative). So they take on no color, sync/async or otherwise, and use cases and steps are plain functions that compose freely in `chain`.
 
 ### Pipeline
-Because the load plan is fixed before execution, psycopg pipeline mode sends each stage of the plan in one round trip. Expression-form dependent loads (`Load.when`) fold into the same stage as subqueries; only `Load.after` adds a stage. At commit, INSERT, UPDATE and outbox statements are also bundled into a pipeline. However, `COPY` is not supported in a pipeline, so bulk insert takes a separate path.
+Because the load plan is fixed before execution, psycopg pipeline mode sends each stage of the plan in one round trip. Expression-form dependent loads (`Load.when`) fold into the same stage as subqueries; only `Load.after` adds a stage. At commit, INSERT, UPDATE and outbox statements are also bundled into a pipeline. However, `COPY` is not supported in a pipeline, so bulk insert takes a separate path. The driver runs each pipeline on an autocommit connection - the engine's own statements open and commit the transaction - and returns the outcome of every statement as data instead of raising ([ADR-0012](../adr/0012-psycopg-driver-replies.md)).
 
 ---
 
@@ -1241,6 +1241,7 @@ On highly contended tables, serialization failures and retries increase. Two kin
 
 **Driver: psycopg 3.3+ only**
 - Rationale: it provides both sync and async interfaces (required to keep the sync runner first-class) and supports pipeline mode, COPY and t-strings. asyncpg is fast but async-only, so a sync runner cannot be built on it.
+- Dependency: `psycopg[pool]>=3.3`, without a bundled libpq: an application installs `psycopg[binary]` or a system libpq 14+ ([ADR-0012](../adr/0012-psycopg-driver-replies.md)).
 
 **MySQL: support planned, timing undecided**
 - Decision: we plan to add a MySQL (and MariaDB) dialect on top of the compiler's dialect layer. The timing will be decided after the PostgreSQL implementation stabilizes.
@@ -1386,9 +1387,10 @@ platina/
 │       └── postgresql/      # PG dialect (MySQL later goes here as a sibling)
 ├── app/                     # ── shell ── App, seal orchestration, run/query (ADR-0001)
 ├── runners/                 # ── shell ──
-│   ├── async_.py            # anyio + psycopg AsyncConnection (source)
+│   ├── async_.py            # anyio + a driver AsyncSession (source)
 │   └── sync_.py             # generated automatically from async_.py (do not edit by hand)
-├── drivers/psycopg/         # connection pool, pipeline, COPY, type adapters, SQLSTATE → exception mapping
+├── drivers/                 # driver contract (capability Protocols, statement shape, replies), SQLSTATE → exception mapping; no psycopg (ADR-0012)
+│   └── psycopg/             # the only psycopg importer: connection pool, pipeline, COPY, per-pool type adapters
 ├── outbox/                  # event log, consumer checkpoints (xid watermark), projection/process/then dispatchers
 ├── migrate/                 # [extra] registry → SQLAlchemy MetaData conversion, Alembic integration, drift checks
 ├── codegen/                 # TypedSQL type inference, platina pull, import-linter contract generation
@@ -1416,7 +1418,7 @@ layers = [
 ]
 ```
 
-- import-linter checks the layering between our own packages. Which *external* modules each zone may use is enforced by `tools/guards/archlint.py`: the core (`core`, `sql`) imports only an allowlist of standard-library modules (so no psycopg, anyio, asyncio, socket, threading, time, random, os, logging, sqlalchemy, alembic, ...), contains no `async`, and calls no clock or random-ID function; psycopg is imported only in `drivers`, SQLAlchemy and Alembic only in `migrate` (the optional extra).
+- import-linter checks the layering between our own packages. Which *external* modules each zone may use is enforced by `tools/guards/archlint.py`: the core (`core`, `sql`) imports only an allowlist of standard-library modules (so no psycopg, anyio, asyncio, socket, threading, time, random, os, logging, sqlalchemy, alembic, ...), contains no `async`, and calls no clock or random-ID function; psycopg is imported only in `drivers.psycopg` (the driver contract and the SQLSTATE mapping in `drivers` import no psycopg, ADR-0012), SQLAlchemy and Alembic only in `migrate` (the optional extra).
 - Why even `time` is forbidden: the core does not even wait for backoff itself; it requests it with a `Sleep` command. Thanks to this, engine tests do not use real time. Nothing time- or chance-dependent is produced inside the core: the clock arrives as the `Now` parameter (§4.5), the jitter's randomness as an engine argument, and new IDs from an injected ID source (ADR-0002).
 
 ### 10.5 Execution engine: a sans-IO state machine
@@ -1428,7 +1430,7 @@ The engine is a generator that **yields a Command** whenever it needs IO and pro
 @dataclass(frozen=True, slots=True)
 class Begin:    isolation: Isolation                     # with a budget, followed by set_config('statement_timeout', $1::text, true); the runner binds the remaining ms
 class Pipeline: statements: tuple[CompiledSQL, ...]; bounded = True     # statements sent in one round trip
-class Copy:     table: str; columns: tuple[str, ...]; rows: Iterable[tuple]
+class Copy:     statement: CompiledSQL; rows: Sequence[tuple]; bounded = True  # COPY ... FROM STDIN, outside any pipeline (ADR-0012)
 class CommitBatch: statements: tuple[CompiledSQL, ...]; bounded = True  # writes, projections, outbox, result record, COMMIT, LSN query (one round trip)
 class StoredResult: run_id: RunId; bounded = False       # read run_result (result + fingerprint) in a separate READ COMMITTED transaction
 class FreshLsn: bounded = False                          # query pg_current_wal_insert_lsn()
@@ -1501,7 +1503,7 @@ def replay(run_id, fp, pending):                            # the replay path; n
 
 ```python
 # runners/async_.py  (shell: the loop that turns commands into IO; it reports facts, it decides nothing)
-async def drive_async(gen, conn, deadline):
+async def drive_async(gen, session, deadline):
     reply = None
     while True:
         try:
@@ -1511,26 +1513,30 @@ async def drive_async(gen, conn, deadline):
         if cmd.bounded and deadline.reached(by=cmd_end(cmd)):  # the Command says whether; Sleep ends at now + seconds
             reply = DeadlineReached()
             continue
-        try:
-            if isinstance(cmd, (CommitBatch, Rollback)):
-                with anyio.CancelScope(shield=True):          # commit batch and rollback cannot be cut off by cancellation
-                    reply = await execute(conn, cmd, deadline.remaining_ms())   # binds the set_config slot
-            elif isinstance(cmd, Sleep):
-                reply = await anyio.sleep(cmd.seconds)
-            else:
-                reply = await execute(conn, cmd, deadline.remaining_ms())
-        except psycopg.Error as e:
-            reply = StatementFailed(index=failed_statement(cmd, e), error=map_sqlstate(e),   # facts only; the
-                                    deadline_passed=deadline.passed())                       # engine classifies them
+        if isinstance(cmd, (CommitBatch, Rollback)):
+            with anyio.CancelScope(shield=True):              # commit batch and rollback cannot be cut off by cancellation
+                reply = await execute(session, cmd, deadline.remaining_ms())   # binds the set_config slot
+        elif isinstance(cmd, Sleep):
+            reply = await anyio.sleep(cmd.seconds)
+        else:
+            reply = await execute(session, cmd, deadline.remaining_ms())
+        # execute() gets the driver's reply (Completed / Failed / Lost, ADR-0012) and passes facts only,
+        # the engine classifies them: a Failed becomes StatementFailed(index=reply.at,
+        # error=database_error(reply.fault, usecase=...), deadline_passed=deadline.passed());
+        # a Lost becomes the connection-lost fact (CommitUnknown in the commit batch)
 ```
 
+In the runner sketch, `execute` stands for the translation from the driver's reply (ADR-0012) to the engine's facts: the driver never raises for a statement error, so the runner has no `except psycopg.Error`; #17 defines the engine's reply type (`StatementFailed` above) and writes both loops.
+
 - **sync/async semantics are 100% the same.** Both drive the same engine generator. The only differences are the loop's `await` and the shield.
+- **The runner never catches a driver exception.** The driver (`platina.drivers`) returns one reply per round trip: every statement ran, statement *i* failed (the ones before it ran, the ones after it did not), or the connection was lost or left unclean and is closed (a present result proves its statement ran, a missing one proves nothing). The engine reads the commit outcome off it, checking the `COMMIT` result's tag (`COMMIT` in an aborted transaction answers `ROLLBACK`). Errors are mapped by `platina.drivers.errors.database_error`, to which the runner passes the use case ([ADR-0012](../adr/0012-psycopg-driver-replies.md)).
 - **Cancellation points are explicit.** Only the places where the engine yields can be cancelled.
 - **The engine can be tested without a DB.** Just `send` prepared replies (§11.4).
 - The runner code itself, in the same way as psycopg, keeps `async_.py` as the source and generates `sync_.py` by AST transformation. Humans do not maintain two copies.
 
 ### 10.6 SQL compiler: immutable AST + dialect capabilities
 
+- **Compiled statements bind with `%s` placeholders**, and a literal `%` is always written `%%`: the driver always passes the parameters, an empty sequence too, so one escaping rule holds ([ADR-0012](../adr/0012-psycopg-driver-replies.md)).
 - **AST nodes are `frozen=True, slots=True` dataclasses.** Structural equality and hashing come by default, so the AST itself, minus bind values, becomes the compilation cache key. User-defined expressions also participate in the cache automatically as long as they follow the node rules.
 - **Compilation is per-dialect `match` dispatch.** `PostgresCompiler` inherits the shared `Compiler` and overrides only the nodes that differ.
 - **Dialect differences are strategies, not if statements.**
@@ -1638,12 +1644,13 @@ PlatinaError
 (user domain exceptions are not wrapped; they propagate as is)
 ```
 
-`IdempotencyKeyReuse` (#58) and `RunTimeout` (#61) are decided; they are added to `platina.core.errors` with #22 and #17. `ForeignKeyViolation` (23503, and 23001 from a RESTRICT foreign key) is decided in [ADR-0010](../adr/0010-writes-beyond-set.md): a `DatabaseError` the driver types from the SQLSTATE like `UniqueViolation` and `CheckViolation`, not retried - it depends on rows the use case did not read. It is common once rows that are not owned are written directly with hand-passed keys and a delete leaves them to the use case. PostgreSQL's diagnostics name the referencing table and constraint; the error names the referencing entity and field where the constraint name follows #25's naming rule (otherwise the table) and hints to delete or re-point those rows first. The engine attributes it by statement position, not by the psycopg call that raised it (a later call in the pipeline can raise it). It is added with #18. The `UsageError`s of writes (a `.set` or `.delete()` on a new entity, `insert` of a loaded snapshot, a direct write of an owned child, a created entity never inserted) are plain `UsageError`s with a `hint` (ADR-0010).
+`IdempotencyKeyReuse` (#58) and `RunTimeout` (#61) are decided; they are added to `platina.core.errors` with #22 and #17. `ForeignKeyViolation` (23503, and 23001 from a RESTRICT foreign key) is decided in [ADR-0010](../adr/0010-writes-beyond-set.md): a `DatabaseError` the driver types from the SQLSTATE like `UniqueViolation` and `CheckViolation`, not retried - it depends on rows the use case did not read. It is common once rows that are not owned are written directly with hand-passed keys and a delete leaves them to the use case. PostgreSQL's diagnostics name the referencing table and constraint; the error names the referencing entity and field where the constraint name follows #25's naming rule (otherwise the table) and hints to delete or re-point those rows first. The engine attributes it by statement position, not by the psycopg call that raised it (a later call in the pipeline can raise it). It is added with #18, which maps both SQLSTATEs onto it with that hint; naming the entity and field waits for #25's constraint names, and until then the `Table:` line names the referencing table ([ADR-0012](../adr/0012-psycopg-driver-replies.md)). The `UsageError`s of writes (a `.set` or `.delete()` on a new entity, `insert` of a loaded snapshot, a direct write of an owned child, a created entity never inserted) are plain `UsageError`s with a `hint` (ADR-0010).
 
 Besides the message, every exception has structured fields (`usecase`, `entity`, `field`, `location`, `hint`, and `details` for extra lines). No string parsing is needed for CLI or IDE integration or for test assertions. Their types, the constructor and the rendering are fixed by [ADR-0006](../adr/0006-exception-fields-and-rendering.md):
 
 - The message is the only positional argument; the fields are keyword-only and read-only: `usecase: str | None` (the use case's registry name), `entity: type[object] | None` (the entity class), `field: str | None` (attribute path relative to `entity`, `"address.city"`), `location: SourceLocation | None` (`file`, `line`, `function`; `file` is the path from the top-level package, never absolute), `hint: str | None` (rendered as `Fix:`), and `details: tuple[tuple[str, str], ...]` for ordered lines the five fields cannot hold.
-- `DatabaseError` adds a required `sqlstate: str | None`; the original driver exception is its `__cause__`, not a field.
+- One internal signal sits outside the hierarchy: `platina.drivers.interface.SessionUnavailable` (no connection could be had: pool closed, timed out, connection refused) carries a driver fault and is never shown to users - whoever opens the driver or a session (the runner, `App` when it opens the pool) turns it into `database_error(e.fault, usecase=...)` ([ADR-0012](../adr/0012-psycopg-driver-replies.md)).
+- `DatabaseError` adds a required `sqlstate: str | None` (`None` for driver errors without one, such as a connection lost inside a pipeline); the original driver exception is its `__cause__`, not a field. `UniqueViolation` and `CheckViolation` fix it (`"23505"`, `"23514"`) and take no `sqlstate`; `ForeignKeyViolation` takes one of its two (`Literal["23503", "23001"]`). `platina.drivers.errors.database_error` builds them from the driver's fault with the use case the runner passes, adding `Constraint:` / `Table:` detail lines and never the server's `DETAIL` text, which holds key values ([ADR-0012](../adr/0012-psycopg-driver-replies.md)).
 - Every exception survives `pickle`, `copy` and `deepcopy` with all its fields (one `__reduce__` on `PlatinaError`).
 
 ---

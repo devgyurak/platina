@@ -16,7 +16,7 @@ Sources, in order of trust:
 2. The PostgreSQL documentation for the server version in `docker-compose.yml`, and the source
    when the docs are silent (cite file and function).
 3. The installed psycopg source (`uv run python -c "import psycopg, os; print(psycopg.__version__,
-   os.path.dirname(psycopg.__file__))"` once psycopg is a dependency).
+   os.path.dirname(psycopg.__file__))"`).
 
 For the question you are given, report:
 1. **Answer** in one or two sentences.

@@ -17,7 +17,7 @@ Given a proposal (feature, design note, spike result, ADR draft), produce a deci
 1. Restate the goal in one sentence and map it to a design section and roadmap item.
 2. Place every new module/class in a zone and layer (`core`, `sql`, `drivers`, `runners`, ...).
    Flag I/O, `async`, a clock or randomness in the core, an upward import, psycopg outside
-   `drivers`, SQLAlchemy outside `migrate`.
+   `drivers.psycopg`, SQLAlchemy outside `migrate`.
 3. Check it against the design invariants: no implicit I/O, immutability, one way per operation,
    no option that changes meaning, remove rather than detect, the priority
    correctness > explicitness > convenience > performance. Name the invariant at risk.

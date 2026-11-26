@@ -12,7 +12,7 @@ This module is the bottom of the core: it imports nothing from ``platina``.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 __all__ = [
     "ChainClosed",
@@ -21,6 +21,7 @@ __all__ = [
     "ConcurrencyError",
     "ConflictingWrites",
     "DatabaseError",
+    "ForeignKeyViolation",
     "IntraUsecaseConflict",
     "ModuleBoundaryError",
     "MovedSnapshotAccess",
@@ -224,8 +225,95 @@ class DatabaseError(PlatinaError):
 
 
 class UniqueViolation(DatabaseError):
-    """A unique constraint was violated (23505)."""
+    """A unique constraint was violated: ``sqlstate`` is always ``"23505"``.
+
+    The constructor takes no ``sqlstate``, so an instance with another value cannot be built
+    (ADR-0006, decided in #18).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        /,
+        *,
+        usecase: str | None = None,
+        entity: type[object] | None = None,
+        field: str | None = None,
+        location: SourceLocation | None = None,
+        hint: str | None = None,
+        details: tuple[tuple[str, str], ...] = (),
+    ) -> None:
+        super().__init__(
+            message,
+            sqlstate="23505",
+            usecase=usecase,
+            entity=entity,
+            field=field,
+            location=location,
+            hint=hint,
+            details=details,
+        )
 
 
 class CheckViolation(DatabaseError):
-    """A check constraint was violated (23514)."""
+    """A check constraint was violated: ``sqlstate`` is always ``"23514"``.
+
+    The constructor takes no ``sqlstate``, so an instance with another value cannot be built
+    (ADR-0006, decided in #18).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        /,
+        *,
+        usecase: str | None = None,
+        entity: type[object] | None = None,
+        field: str | None = None,
+        location: SourceLocation | None = None,
+        hint: str | None = None,
+        details: tuple[tuple[str, str], ...] = (),
+    ) -> None:
+        super().__init__(
+            message,
+            sqlstate="23514",
+            usecase=usecase,
+            entity=entity,
+            field=field,
+            location=location,
+            hint=hint,
+            details=details,
+        )
+
+
+class ForeignKeyViolation(DatabaseError):
+    """A foreign key was violated: a row still references a deleted one, or a key points at no
+    row (``23503``; ``23001`` from a ``RESTRICT`` foreign key). Not retried: it depends on rows
+    the use case did not read (ADR-0010).
+
+    ``sqlstate`` is one of the two values, so no other can be passed (ADR-0012).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        /,
+        *,
+        sqlstate: Literal["23503", "23001"],
+        usecase: str | None = None,
+        entity: type[object] | None = None,
+        field: str | None = None,
+        location: SourceLocation | None = None,
+        hint: str | None = None,
+        details: tuple[tuple[str, str], ...] = (),
+    ) -> None:
+        super().__init__(
+            message,
+            sqlstate=sqlstate,
+            usecase=usecase,
+            entity=entity,
+            field=field,
+            location=location,
+            hint=hint,
+            details=details,
+        )

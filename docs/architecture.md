@@ -6,10 +6,10 @@ package as code lands. Decisions taken after the design document: [`adr/`](adr/)
 
 ## Status
 
-The first runtime code is the exception hierarchy, `platina.core.errors` (design section 10.12,
-ADR-0006). Everything else is still the package skeleton below, with one docstring per package
-that states its contract, so the layer contracts and guards are enforced from the first line of
-code.
+The runtime code so far is the exception hierarchy, `platina.core.errors` (design section 10.12,
+ADR-0006), and the psycopg driver, `platina.drivers` (ADR-0012). Everything else is still the
+package skeleton below, with one docstring per package that states its contract, so the layer
+contracts and guards are enforced from the first line of code.
 
 ## Zones and layers
 
@@ -31,10 +31,11 @@ every direct child of `platina` must appear in it. Public re-exports live in
 | Package | Zone | Contract |
 |---|---|---|
 | `platina.core.*` | sans-I/O | Pure and immutable: imports only the standard-library allowlist; no I/O, event loop, clock, randomness or `async`. The engine yields Commands. Time arrives as the `Now` parameter, the jitter's randomness as an engine argument, new IDs from an injected ID source (ADR-0002). |
-| `platina.core.errors` | sans-I/O | The exception hierarchy of design section 10.12 (`PlatinaError` and its subclasses, `ModuleBoundaryError` under `SealError`) and `SourceLocation`. The bottom of the core: imports nothing from `platina`. Keyword-only read-only fields, one rendering layout for `str(exc)`, pickle/copy through one `__reduce__` (ADR-0006). Raise sites and SQLSTATE mapping come with later issues. |
+| `platina.core.errors` | sans-I/O | The exception hierarchy of design section 10.12 (`PlatinaError` and its subclasses, `ModuleBoundaryError` under `SealError`) and `SourceLocation`. The bottom of the core: imports nothing from `platina`. Keyword-only read-only fields, one rendering layout for `str(exc)`, pickle/copy through one `__reduce__` (ADR-0006). `UniqueViolation` and `CheckViolation` fix their SQLSTATE (23505 / 23514, ADR-0012); `ForeignKeyViolation` (ADR-0010) takes 23503 or 23001. The SQLSTATE mapping is `platina.drivers.errors`; raise sites come with later issues. |
 | `platina.sql.*` | sans-I/O | Renders SQL from the immutable AST; never connects. |
 | `platina.app` | shell | App (configuration, registry), seal orchestration (core checks, then load-plan compilation via `sql`), `run` / `query` (ADR-0001). |
-| `platina.drivers` | shell | The only importer of psycopg / psycopg_pool. |
+| `platina.drivers` | shell | The driver contract without psycopg (ADR-0012): `interface` - capability-split Protocols (`Session` = pipeline + COPY, `SessionSource`, async twins), the statement shape (`sql` with `%s` / `%%`, `params` always passed), replies `Completed` / `Failed(at)` / `Lost` with `DatabaseFault` (rows that cannot be loaded: `UnreadableRows`, the status kept), `SessionUnavailable`; `errors.database_error(fault, *, usecase)` - the SQLSTATE mapping (23505 `UniqueViolation`, 23514 `CheckViolation`, 23503 / 23001 `ForeignKeyViolation` with a hint, else `DatabaseError`; `Constraint:` / `Table:` lines; the driver exception as `__cause__`). Classifies nothing (retry, commit outcome: the engine). |
+| `platina.drivers.psycopg` | shell | The only importer of psycopg / psycopg_pool (A102). `SyncPsycopgDriver` / `AsyncPsycopgDriver`: a pool of autocommit connections without server-side prepared statements (the engine's statements carry `BEGIN` / `COMMIT`) with a per-pool adapters map fixed at construction; `session()` lends a connection with `getconn` / `putconn` and returns it idle, rolled back or closed (an unclean connection - a round trip still active, pipeline mode on - is closed and reported `Lost`); one pipeline round trip per `pipeline()`, COPY outside pipelines. The sync module mirrors the async one by hand until #19 generates it. |
 | `platina.runners` | shell | Executes engine Commands. Async runner (anyio) is the source; the sync runner is generated from it. |
 | `platina.outbox` | shell | Event log readers, job workers and dispatchers, projection consumers. |
 | `platina.migrate` | shell, extra | The only importer of SQLAlchemy / Alembic (`platina[migrate]`). |
@@ -68,3 +69,4 @@ every direct child of `platina` must appear in it. Public re-exports live in
 | [0009](adr/0009-internal-tables-owned-by-the-core.md) the core owns the versioned SQL of the internal tables, in a dedicated schema | Accepted | where the DDL of `run_claim`, `run_result`, the outbox and job tables lives (sans-I/O core, not `platina.migrate`), no DDL at startup, the Alembic operation for `platina[migrate]`, `42P01` / `42703` / `42501` on any internal-table statement mapped to a `DatabaseError` naming the command or the grant; versioned steps as string constants in `platina.sql.dialects.postgresql`; partitioning and keys wait for #72 (#63) |
 | [0010](adr/0010-writes-beyond-set.md) writes beyond `.set`: `insert`, `delete`, and owned rows only through their root | Accepted | the write verbs of `platina.core` (#13): `insert(entity, *children)` in the commit batch, `entity.delete()` with engine-issued cascade DELETEs of owned relations, `owns_many` / `Owned[...]` with no `owned=` flag, no write operations on relations that are not owned, the runtime rules for new / loaded / ref snapshots and for direct writes of owned children; seal's ownership checks and one-level ownership (#9); the cascade node and its edges in the planner (#15); `ForeignKeyViolation` (#18) |
 | [0011](adr/0011-row-set-loads.md) row-set loads and the shape of dependent loads | Accepted | the load plan and seal (#14; the row-set form in #83, Phase 1b): a `Load.after` function returns one ref, a list of refs or a row set (`Entity.where(...)`, `RowSet[E]`); load arguments on the result, `Load.after(fn, missing=...).load(...)` (`LoadAfter[E]`, receiver-fixed like `relation.load`); partial `.where` loads keep constant predicates; seal rejects date / date-time constants in load-declaration predicates and the flat path under `Profile` / `Load` (#59) |
+| [0012](adr/0012-psycopg-driver-replies.md) the psycopg driver returns per-statement replies from autocommit sessions | Proposed | `platina.drivers`: the contract without psycopg (A102 narrowed to `platina.drivers.psycopg`), replies `Completed` / `Failed` / `Lost` read by position and `COMMIT` tag, autocommit connections lent with `getconn` / `putconn`, COPY from a compiled statement, `database_error` with the caller's use case and no server `DETAIL`, fixed SQLSTATE on `UniqueViolation` / `CheckViolation`, per-pool adapters, `psycopg[pool]` without libpq and the `binary` dependency group |

@@ -13,9 +13,10 @@ classifiers = [
     "Topic :: Database",
     "Typing :: Typed",
 ]
-# Runtime dependencies (psycopg>=3.3, anyio) are added with the first runner/driver code that
-# needs them (design doc section 8.6), not before.
-dependencies = []
+# Runtime dependencies are added with the first code that needs them (design doc section 8.6):
+# psycopg with its pool for platina.drivers.psycopg (ADR-0012); anyio comes with the runners.
+# No libpq is bundled: users install `psycopg[binary]` or a system libpq (ADR-0012).
+dependencies = ["psycopg[pool]>=3.3"]
 
 [dependency-groups]
 dev = [
@@ -30,16 +31,18 @@ dev = [
     # tests it runs on one thread; check that before allowing a newer version.
     "pytest-run-parallel>=0.10,<0.11",
 ]
-# Experiments of design doc section 9 (`uv sync --group spike`): the SSI spikes need a driver,
-# the Alembic round trip needs the schema tooling. Not a runtime dependency of platina.
+# libpq for development and CI (ADR-0012). Its own group, not `dev`: psycopg-binary has no
+# free-threaded wheel, so `make test-unit-ft` installs the defaults with `--no-group binary`.
+binary = ["psycopg[binary]>=3.3"]
+# Experiments of design doc section 9 (`uv sync --group spike`): the Alembic round trip needs the
+# schema tooling. psycopg comes with the runtime dependency and the `binary` group.
 spike = [
-    "psycopg[binary]>=3.3",
     "sqlalchemy>=2.0",
     "alembic>=1.16",
 ]
 
 [tool.uv]
-default-groups = ["dev"]
+default-groups = ["dev", "binary"]
 
 [build-system]
 requires = ["uv_build>=0.12,<0.13"]

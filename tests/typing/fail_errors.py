@@ -1,6 +1,14 @@
 """Misuse of exception constructors and fields is a type error under pyright and mypy (ADR-0006)."""
 
-from platina import DatabaseError, PlatinaError, RelationNotLoaded, SourceLocation, UniqueViolation
+from platina import (
+    CheckViolation,
+    DatabaseError,
+    ForeignKeyViolation,
+    PlatinaError,
+    RelationNotLoaded,
+    SourceLocation,
+    UniqueViolation,
+)
 
 
 class Order:
@@ -21,7 +29,11 @@ exc.usecase = "pay"  # expect-error[reportAttributeAccessIssue, misc]: fields ar
 exc.entity = Order  # expect-error[reportAttributeAccessIssue, misc]: fields are read-only
 location.line = 13  # expect-error[reportAttributeAccessIssue, misc]: SourceLocation is frozen
 DatabaseError("connection lost")  # expect-error[reportCallIssue, call-arg]: sqlstate is required
-UniqueViolation("duplicate key value")  # expect-error[reportCallIssue, call-arg]: sqlstate is required, inherited
+UniqueViolation("x", sqlstate="23505")  # expect-error[reportCallIssue, call-arg]: the subclass fixes its SQLSTATE
+CheckViolation("x", sqlstate="23514")  # expect-error[reportCallIssue, call-arg]: the subclass fixes its SQLSTATE
+ForeignKeyViolation("x", sqlstate="23505")  # expect-error[reportArgumentType, arg-type]: only 23503 or 23001
+ForeignKeyViolation("x")  # expect-error[reportCallIssue, call-arg]: sqlstate is required
+UniqueViolation(message="m")  # expect-error[reportCallIssue, call-arg]: the message is positional-only
 DatabaseError("duplicate key value", "23505")  # expect-error[reportCallIssue, call-arg]: sqlstate is keyword-only
 DatabaseError(message="m", sqlstate=None)  # expect-error[reportCallIssue, call-arg]: the message is positional-only here too
 db.sqlstate = "40001"  # expect-error[reportAttributeAccessIssue, misc]: sqlstate is read-only
