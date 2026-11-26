@@ -219,7 +219,7 @@ app = App(
     defaults=TxDefaults(
         isolation=SERIALIZABLE,
         retry=Retry(max_attempts=4, base_ms=10, cap_ms=200),
-        statement_timeout="5s",
+        timeout="5s",                                 # budget for the whole run (ADR-0008)
     ),
 )
 
@@ -288,7 +288,7 @@ class OrderPaid:
 - **Snapshots are immutable.** `order.status = PAID` is an error; writes happen only through `.set(...)` (§4.4). Collection fields are a read-only `Sequence[Item]` on the instance.
 - **Creation is the keyword constructor**: `Order(number="A-1", total=..., user_id=...)`, the same as events and values. A missing required field is a type error in both checkers; generated keys, `version_column()`, server defaults, relations and the parent key of an owned child are not parameters (§8.2 "Creation syntax", ADR-0003).
 - **The parent sets the key of an owned child.** The child declares it with `parent_fk(lambda: Order)` (working name; the final name is fixed in #9), so `Item(sku=..., price=..., position=...)` takes no `order_id` and `Order.items.add(item)` fills it; passing it is a type error in both checkers, so a new child cannot be created with another parent's key. A child of a relation that is not `owned` declares its key with `fk` and passes it to the constructor like any other column (#49, [spike 0006](../spikes/0006-parent-fk-and-column-operands.md)). Open: reading the key of a child that has not been added yet (#76); owned children of a new root and `add` on a relation that is not `owned` (#60); how `owned=True` and `parent_fk` are kept consistent (one derived from the other, or a seal check), and moving an existing child to another parent, which still type-checks (`Item.order_id.to(...)` in a child update or a set change, `add` of a child loaded under another parent; spike 0006 O9) (#9).
-- **Equality** (provisional working rule, #54): two snapshots are equal when they hold the same values (columns and loaded relations, including what is loaded); the hash is the entity type plus the primary key. `==` and `hash()` on a ref raise `UnloadedReference` (ADR-0003 Decision 4; spike 9.4 confirms or changes it).
+- **Equality** (#54): two snapshots are equal when they are of the same entity type and all their column values are equal (embedded values included); relations and what is loaded are not compared. A column that has no value yet (a server default or an `identity` key of a new entity) is equal only when it has no value on both sides. The hash is the entity type plus the primary key. `==` and `hash()` on a ref raise `UnloadedReference` (ADR-0003 Decision 4). The parent key of an owned child that has not been added yet (`parent_fk`, before `add`) has no value either; how equality and the hash treat it is decided in #76.
 - **`owned=True`**: a child that belongs to the aggregate. When a child changes, the root's `version` is bumped as well (JPA `OPTIMISTIC_FORCE_INCREMENT`). So when an edit screen handles an order and its items together, a change to only the items is still caught by the optimistic lock across requests (§4.6). Ordinary FK children (e.g. comments on a post) are not `owned` and do not touch the root.
 - **Client-generated IDs are the default.** Thanks to Python 3.14's `uuid.uuid7()`, the ID of a new entity is known inside the pure function. `generated="identity"` is also supported, but in that case the ID is only available from the commit result (`result.created(Order)`). The core never calls `uuid7()` itself: `Order(...)` takes the ID from the source the engine installs for the invocation; direct calls in tests and `Order.stub()` use a deterministic fallback sequence, and `Order(...)` outside any use case or step is a `UsageError` (ADR-0002). Under SERIALIZABLE an ever-increasing key (uuid7, identity) makes commands that read recent rows of a table (including a child's foreign-key check of a new parent) and insert into it conflict; [ADR-0007](../adr/0007-ever-increasing-entity-keys.md) (Proposed) proposes a random default.
 - Places that refer to other classes are evaluated late with a `lambda`. String references are not used.
@@ -409,10 +409,11 @@ result.events           # committed domain events
 result.value            # value returned via Changes.returning(v)
 ```
 
-- **Type checking works with ParamSpec alone.** `bind(*args: P.args, **kwargs: P.kwargs)` of `Usecase[P]` has the same signature as `pay`. A ref is an entity at the type level, and parameters injected by the runner (`Now`, `Actor`, `RequestId`) have the default `INJECTED`, so they can be omitted. Because `INJECTED` is accepted as any parameter's default, the rules for misplaced `INJECTED` defaults and for injected parameters passed to `bind` are open (#48).
+- **Type checking works with ParamSpec alone.** `bind(*args: P.args, **kwargs: P.kwargs)` of `Usecase[P]` has the same signature as `pay`. A ref is an entity at the type level, and parameters injected by the runner (`Now`, `Actor`, `RequestId`) have the default `INJECTED`, so they are left out of `bind` (and may not be passed to it).
+- **One marker for every parameter the runner fills** (#48): an injected type (`Now`, `Actor`, `RequestId`) or a dependent load (`Load.when`, `Load.after`, §4.7). Seal checks the default against the declaration both ways: such a parameter without `= INJECTED`, and `= INJECTED` on any other parameter, are `SealError`s that show the fix. `bind` rejects a runner-filled parameter passed explicitly with a `UsageError`: the runner supplies it fresh on every attempt, and a bound value would silently be the same on every retry (tests fix the clock with the test kit, §11.11). A direct call (§4.12) passes every parameter; one that leaves a runner-filled parameter out fails at once with a `UsageError` naming it, instead of handing the `INJECTED` sentinel to the function body. Because these parameters have a default, Python requires them to come after the parameters the caller binds, or to be keyword-only. A default is the only way to make a parameter omittable in `bind` under both checkers: `ParamSpec` cannot drop a parameter (PEP 612).
 - Run options (`idempotency_key`, `after`, `timeout`) are keywords of `app.run`, so they do not mix with the signature of `bind`.
 - Injected values are supplied fresh for each attempt. On retry, `Now` is refreshed too.
-- In a run where the caller provided an idempotency key, the value of `Changes.returning(v)` is stored, so it must be serializable. Runs with an automatic ID do not store the value, so they have no such requirement.
+- In a run where the caller provided an idempotency key, the value of `Changes.returning(v)` is stored, so it must be serializable, and the bound arguments are fingerprinted (§4.6), so each must have a canonical serialization: `app.run` with a caller key and an argument that has none raises `UsageError`. Runs with an automatic ID do not store the value or a fingerprint, so they have no such requirement.
 
 ### 4.6 Transaction management
 
@@ -424,7 +425,7 @@ result.value            # value returned via Changes.returning(v)
 @usecase(
     isolation=SERIALIZABLE,          # default. Escape hatch is REPEATABLE_READ (see below)
     retry=Retry(max_attempts=4, on_unique=False),
-    timeout="2s",                    # SET LOCAL statement_timeout
+    timeout="2s",                    # one budget for the whole run: every attempt, round trip and backoff (ADR-0008)
 )
 def pay(order: PayableOrder, wallet: ChargeableWallet, now: Now = INJECTED) -> Changes: ...
 ```
@@ -435,19 +436,21 @@ def pay(order: PayableOrder, wallet: ChargeableWallet, now: Now = INJECTED) -> C
 
 ```
 attempt 1..N:
-  [round trip 1] BEGIN ISOLATION LEVEL SERIALIZABLE; SET LOCAL statement_timeout = '2s'
+  [round trip 1] BEGIN ISOLATION LEVEL SERIALIZABLE; set_config('statement_timeout', <remaining budget>, true)
            INSERT INTO run_claim(id) VALUES ($run_id)      ← claim the run ID. INSERT without a lookup
            load plan stage 1
   (if there is a Load.after: [round trip 1+k] load stage k — number of stages fixed at seal)
   execute usecase (pure function)        ← domain exception → ROLLBACK, propagated as is
-  [round trip 2] row changes (in FK/unique dependency order) → inline projections → outbox
-           → INSERT INTO run_result(...)                   ← only for caller keys
+  [round trip 2] set_config('statement_timeout', <remaining>, true) → row changes (in FK/unique dependency order) → inline projections → outbox
+           → INSERT INTO run_result(...)                   ← only for caller keys (result + fingerprint)
            → SELECT pg_current_xact_id() → COMMIT → SELECT pg_current_wal_insert_lsn()
            ← 40001/40P01 → ROLLBACK, back off, then next attempt
 ```
 
 - Writes, COMMIT and the LSN query are sent in one batch. In a pipeline, if an earlier statement fails, later statements are not executed, so this is safe. The cost is a wider window in which the commit outcome is unknown; the run ID covers it (below).
 - The shield that blocks cancellation covers the whole of round trip 2.
+- **`timeout=` is one budget for the run** ([ADR-0008](../adr/0008-run-timeout-budget.md); #61), from the start of `app.run` across every attempt and backoff. The runner holds the deadline and reports facts; the engine decides. The engine puts `set_config('statement_timeout', $1, true)` at the head of each round trip before `COMMIT` and the runner binds the remaining time (PostgreSQL applies it to each statement, also inside a pipeline; the local value replaces a smaller session, role or database default `statement_timeout` for those statements); the runner reports a passed deadline at a yield point, including instead of a backoff that would end past it, and the engine turns that, or a budget 57014 before `COMMIT`, into `RunTimeout`, which is not retried. The budget covers the statements before `COMMIT`; `COMMIT` itself is not timed out by PostgreSQL and the commit batch is shielded, so a run can exceed its budget by the duration of its `COMMIT`. Whether the batch committed is decided by which statement failed, not by the SQLSTATE: an error before or on `COMMIT` is a rollback; once `COMMIT` has returned, the run is committed, whatever the LSN query after it reports; no reply at all is unknown, and that is resolved first by a claim of the same run ID (`ResolveClaim`, not counted as an attempt and not bounded by the deadline): a 23505 means it committed (the replay path); a successful claim means it did not, and the engine rolls back and starts a normal attempt from `BEGIN` and the claim. A deadline or the retry limit ends the run only after that.
+- "The first statement" (the run ID claim, everywhere in this document) means the first statement on a table, after `BEGIN` and the budget's `set_config`.
 
 #### Run ID: idempotency and commit-outcome resolution unified
 
@@ -455,17 +458,19 @@ Every `app.run` has a run ID (the caller's `idempotency_key`, or an automatic uu
 
 | Situation | Handling |
 |---|---|
-| Called again with the same key (repeated request, double click) | `run_claim` INSERT gets 23505 → rollback → read `run_result` in a separate READ COMMITTED transaction and return the stored result |
+| Called again with the same key and the same arguments (repeated request, double click) | `run_claim` INSERT gets 23505 → rollback → read `run_result` in a separate READ COMMITTED transaction, compare the fingerprint, and return the stored result |
+| Called again with the same key and **different arguments** (a client reusing a key by mistake) | The same path, but the fingerprint differs → `IdempotencyKeyReuse`, not retried |
 | The same key is running right now | `run_claim` INSERT waits on the unique key → once the other side is decided, one of the two cases above |
 | Connection lost during COMMIT, failover | **Rerun with the same run ID**. If it already committed, 23505 (stored result for a caller key; for an automatic ID the runner returns the result from memory); if it was rolled back or lost, it simply runs |
 
 - There are two reasons for doing **the INSERT first, without a lookup**. ① The duplicate check for a caller key must come before the business logic. If the second request of a double click ran the use case first, it would see an order that is already PAID and raise `AlreadyPaid`. ② "Look up, and INSERT if absent" creates false conflicts under SERIALIZABLE (see the internal table rule below).
 - The result is not written by UPDATEing `run_claim` but by **INSERTing into a separate append-only table `run_result`**. An UPDATE reads the index to find the row and recreates the same false conflict.
+- **Fingerprint** (#58): for a caller key, `run_result` also stores a fingerprint of the call - the use case's registry name plus a canonical serialization of the bound arguments (refs by entity type and key, including `expected_version`; a Finder ref by its Finder and argument, since it has no key before loading; plain values). Runner-filled parameters are not bound, so they are not part of it; neither is the use case's code version. It is written with the result and compared only on the 23505 replay path, which already reads `run_result` outside the SERIALIZABLE transaction, so the internal table rule holds and `run_claim` does not change. A key reused with other arguments is an error rather than the stored result: returning another request's result would let the client believe its own request happened (Stripe, AWS `IdempotentParameterMismatch` and the IETF idempotency-key draft do the same). There is no option to turn it off.
 - The LSN of a token obtained through replay is queried fresh. The stored value was taken before commit, so it is too low.
 - The `then` and `@process` dispatchers use **the job ID as the run ID**. So the job completion record and fencing are also handled by `run_claim` alone (§4.10).
 - Both tables are cleaned up after a retention period (longer than the maximum period in which a rerun can happen).
 
-> **Internal append-only table rule**: `run_claim`, `run_result`, the outbox log and the job tables are **not read inside SERIALIZABLE transactions.** SERIALIZABLE takes read locks per B-tree leaf page, and with ever-increasing keys like uuid7 every INSERT lands on the rightmost page. Transactions that read that page form cycles in which each invalidates the others' reads, and unrelated commands get retried on serialization failures. Inside a SERIALIZABLE transaction the only operation on these tables is INSERT; reads happen in a separate READ COMMITTED transaction. (Consumer checkpoints and job leases are updated, but only in their own non-SERIALIZABLE transactions, §8.4.)
+> **Internal append-only table rule**: `run_claim`, `run_result`, the outbox log and the job tables are **not read inside SERIALIZABLE transactions.** (The internal schema's version table is touched only by the command that applies the schema, never by a run; ADR-0009.) SERIALIZABLE takes read locks per B-tree leaf page, and with ever-increasing keys like uuid7 every INSERT lands on the rightmost page. Transactions that read that page form cycles in which each invalidates the others' reads, and unrelated commands get retried on serialization failures. Inside a SERIALIZABLE transaction the only operation on these tables is INSERT; reads happen in a separate READ COMMITTED transaction. (Consumer checkpoints and job leases are updated, but only in their own non-SERIALIZABLE transactions, §8.4.)
 
 #### Composition: steps only via `chain` (corresponds to JPA `REQUIRED`)
 
@@ -533,18 +538,21 @@ async with app.read(consistency="snapshot") as r:                    # REPEATABL
 |---|---|
 | Domain exception (raised by the usecase) | Rollback, propagated as is, no retry (handling in the job runner: §4.10) |
 | 40001 serialization failure / 40P01 deadlock | Rollback, then retry from the beginning. `RetryExhausted` when the limit is exceeded |
+| The run's `timeout=` budget runs out: the deadline passes, a backoff would cross it, or a statement before `COMMIT` gets 57014 | Rollback, `RunTimeout`, no retry (ADR-0008) |
 | 23505 (run ID table) | Idempotent path: return the stored result |
 | 23505 (other) | Retried only when `retry.on_unique=True`, otherwise `UniqueViolation` |
 | Row of the root ref or of a required dependent load is missing | `NotFound` |
 | `expected_version` mismatch | `VersionMismatch`, no retry (the user must be told about the conflict) |
+| Caller key reused with different arguments (fingerprint mismatch on the replay path) | `IdempotencyKeyReuse`, no retry (#58) |
+| Caller key with an argument that has no canonical serialization | `UsageError` from `app.run`, before anything runs (#58) |
 | Connection lost during COMMIT | Rerun with the same run ID (see above) |
-| Reading a field of a ref / `.set` on a ref / `==` or `hash()` on a ref (`==` / `hash()`: provisional, #54) | `UnloadedReference` |
-| Reading a field through a moved original (alias), including `==` and `hash()` (`==` / `hash()`: provisional, #54) | `MovedSnapshotAccess` |
-| `hash()` of a new entity with an `identity` key before commit (provisional, #54) | `UsageError` (ADR-0003) |
+| Reading a field of a ref / `.set` on a ref / `==` or `hash()` on a ref | `UnloadedReference` |
+| Reading a field through a moved original (alias), including `==` and `hash()` | `MovedSnapshotAccess` |
+| `hash()` of a new entity with an `identity` key before commit | `UsageError` (ADR-0003) |
 | `.set` on a view outside the chain block | `ChainClosed` |
 | Writing the same field twice within a single step | `ConflictingWrites` |
 | Overlap between a set change and a row change in the same use case | `IntraUsecaseConflict` |
-| Cancellation (timeout, client disconnect) | Rollback if loading or computing. The commit batch is shielded and runs to completion |
+| Cancellation (client disconnect, an outer cancel scope) | Rollback if loading or computing. The commit batch is shielded and runs to completion |
 
 #### Spring/JPA mapping
 
@@ -592,7 +600,7 @@ def point_wallet(order: Order) -> Wallet | None:
 type PointWalletAfter = Annotated[Wallet | None, Load.after(point_wallet)]   # adds one load stage
 
 @usecase
-def refund(order: Annotated[Order, Load(Order.items)], wallet: PointWallet) -> Changes:
+def refund(order: Annotated[Order, Load(Order.items)], wallet: PointWallet = INJECTED) -> Changes:
     changes = order.set(Order.status.to(OrderStatus.REFUNDED))
     if wallet is not None:
         changes += wallet.set(Wallet.balance.path(Money.amount).add(order.total.amount))
@@ -696,7 +704,7 @@ job table ─[worker: acquire lease in a short READ COMMITTED transaction, SKIP 
 - **Completion record and fencing with `run_claim` alone.** The dispatcher uses the job ID as the run ID, so the `run_claim` INSERT, the first statement of the use case transaction, is itself the completion record. If a lease expires and two workers finish the same job, the later one gets 23505 and does nothing (if the earlier one is still in progress, it waits on the unique key until that is decided). Even when the handler returns `None`, the dispatcher commits a transaction containing only `run_claim` to record completion. It does not read a lease token, so the internal table rule holds.
 - **Ordering within an aggregate**: for each aggregate key, only the earliest job can be in progress (e.g. a `PaymentCancelled` for an order does not overtake its `PaymentRequested`).
 - **Distinguishing failure kinds**:
-  - Transient errors (connection, timeout, 40001 limit exceeded): retry with backoff.
+  - Transient errors (connection, `RunTimeout`, 40001 limit exceeded): retry with backoff.
   - Domain exceptions: immediate dead-letter by default. They are retried later only when the exception type declares `retry_later=RetryLater(max_attempts, within)`. This setting only has meaning in the job runner; in an `app.run` called from HTTP, the exception propagates immediately. Beyond the limit: dead-letter.
   - When the head job goes to dead-letter, **later jobs with that key are blocked too.** The damage is isolated to one aggregate. A "blocked keys" metric and operational tooling to resend or skip while leaving an audit record are provided together.
 - `then` use cases run under SERIALIZABLE with use case semantics unchanged.
@@ -784,6 +792,10 @@ SealError: a set change modifies a field protected by an invariant.
   Location: shop/billing/repos.py:41  (OrderRepo.expire_older_than)
   Field: Order.status  ← @invariant paid_requires_total (entities.py:29)
   Fix: move the invariant to Check(...) or state .set(..., unsafe_bypass="reason") explicitly
+
+SealError: refund's parameter wallet is filled by a dependent load (Load.when) but has no default.
+  Location: shop/billing/usecases.py:58  (refund)
+  Fix: write wallet: PointWallet = INJECTED (the runner fills it; bind and app.run never take it)
 
 SealError: the Load.when expression is ambiguous. refund_merge has two parameters of type Order (src, dst).
   Fix: use Load.after(function) to state which parameter is meant
@@ -953,7 +965,7 @@ On highly contended tables, serialization failures and retries increase. Two kin
   2. Typed creation functions in a generated **real Python module**.
   3. Runtime checks only (last resort).
 - Generating `.pyi` stubs was rejected. A stub cannot overlay just the constructor; it replaces the types of the whole module, so until you add a field and regenerate, the editor shows the old shape.
-- Entities are hashable at the type level (`frozen_default=True`; without it pyright and mypy disagree on `{order}`). The runtime rule is a provisional working rule until spike 9.4 (#5) confirms or changes it (#54): equality compares the snapshot's values (columns and loaded relations, including what is loaded), the hash is the entity type plus the primary key; refs raise `UnloadedReference`, a new entity with an `identity` key has no hash before commit (`UsageError`), a chain view compares its latest state, and a moved alias raises `MovedSnapshotAccess` (ADR-0003 Decision 4). Known concerns: a stub and a snapshot with loaded relations can be unequal although they hold the same values, and a new `identity` entity cannot be a set member or dict key before commit.
+- Entities are hashable at the type level (`frozen_default=True`; without it pyright and mypy disagree on `{order}`). The runtime rule (decided in #54 from spike 9.4's data, ADR-0003 Decision 4): equality compares the entity type and the column values only (embedded values included; relations and the load state are not compared, so a stub and a loaded snapshot holding the same values are equal, as are two snapshots of one row loaded through two paths); a column without a value yet (a server default or an `identity` key of a new entity) is equal only when it has no value on both sides; the hash is the entity type plus the primary key (the parent key of an owned child before `add` has no value yet: #76); refs raise `UnloadedReference`, a new entity with an `identity` key has no hash before commit (`UsageError`), a chain view compares its latest state, and a moved alias raises `MovedSnapshotAccess`. `version` is a column and a change to an `owned` child bumps the root's version, so two snapshots of a row before and after a commit differ. Identity equality (type and key, Django and Rails) was rejected: `assert before == after` would pass after a change. `==` does not compare children; comparing a whole aggregate is a test-kit helper (#27). Remaining cost: a new `identity` entity cannot be a set member or dict key before commit, and two new entities with equal values compare equal, so the engine and the planner identify new rows by object identity, never by `==`.
 - **The key of an owned child is set by the parent** (#49): the child declares it with its own field specifier `parent_fk(lambda: Order)` (working name, fixed in #9), it is not a constructor parameter, and `Order.items.add(Item(...))` fills it. A child of a relation that is not `owned` keeps `fk(lambda: Order)`, an ordinary required parameter. A flag on `fk` (`fk(..., parent=True)`) was rejected: it would make one specifier mean two things, so the name differs ("configuration never changes meaning"). Rationale: in spike 0002 every owned child passed its parent's key by hand, and a child added to one parent with another parent's key was accepted by both checkers; without the parameter a new child cannot be created with another parent's key ("remove rather than detect"). Confirmed under both checkers by [spike 0006](../spikes/0006-parent-fk-and-column-operands.md).
 - Open: `Order.stub(...)` keywords are not type-checked (#50); reading the parent key of an owned child before it is added (#76); owned children of a new root and `add` on a relation that is not `owned` (#60); how `owned=True` and `parent_fk` are kept consistent, the final name of `parent_fk`, and moving an existing child to another parent, which still type-checks (spike 0006 O9) (#9).
 
@@ -974,6 +986,7 @@ On highly contended tables, serialization failures and retries increase. Two kin
 
 **Call syntax: `bind` + placeholder refs**
 - Decision: a use case call builds a description with `uc.bind(...)` and executes it with `app.run(description, options)`. A ref (`Order.ref(id)`, `orders.by_number(n)`) is a placeholder that is an entity at the type level, and parameters injected by the runner have the default `INJECTED`.
+- One marker (#48): every parameter the runner fills - an injected type or a dependent load - defaults to `INJECTED`, and no other parameter does (a `SealError` either way). `bind` given such a parameter raises `UsageError` (it is filled fresh on every attempt); a direct call must pass every parameter (`UsageError` naming the one left out). These parameters come last or are keyword-only, since they have a default. A second marker for dependent loads (`LOADED`) was rejected: for the caller both mean "do not pass this", and seal tells them apart from the annotation. The marker cannot live in the annotation alone (FastAPI's `Annotated[..., Depends(...)]` form): without a default the parameter stays required in `bind`, because `ParamSpec` cannot drop parameters (PEP 612; spike 0002 X5).
 - Rationale: the previous proposal (`app.run(pay, order=Order.ref(id))`) had to change the parameter type from `Order` to `Ref[Order]` and drop `Now`, but ParamSpec cannot express such transformations, nor can run option keywords sit next to `**kwargs: P.kwargs` (PEP 612). If a ref is an entity at the type level, the signature of `bind` equals that of the use case and it is checked with ParamSpec alone. It is the same idea as JPA `EntityManager.getReference()`.
 - A Finder is callable (`orders.by_number("A-1")`), so its argument is checked against the column type.
 - `.set` on a ref is also blocked with `UnloadedReference`. It is a write that reads no fields, so if left alone it would be a write that skips the load and the `@invariant` checks. A write without loading is stated explicitly as a set change `Order.where(Order.id == x).set(...)`.
@@ -1014,6 +1027,7 @@ On highly contended tables, serialization failures and retries increase. Two kin
 **Retry policy**
 - Decision: 40001 and 40P01 are always retried. 23505 only for use cases that explicitly set `on_unique=True` (23505 on the run ID tables is handled separately as the idempotent path). At most 4 attempts, exponential backoff + full jitter (base 10ms, cap 200ms), each retry starting again from the load.
 - Rationale: the PostgreSQL documentation advises that serialization failures can always be retried, but other codes such as unique violations may be permanent errors and need more care.
+- 57014 (`statement_timeout`) is not retried: `timeout=` is the caller's limit for the whole run, so a retry after it expired would spend more than the caller allowed. The deadline and a 57014 before `COMMIT` both raise `RunTimeout` ([ADR-0008](../adr/0008-run-timeout-budget.md); #61). No `lock_timeout` option and no retry of 55P03 for now (revisit with #64); a user who sets `lock_timeout` gets `DatabaseError(55P03)`.
 - This retry loop and the job runner's domain exception retry (`retry_later`, §8.4) are separate.
 
 **Commit order within a single use case**
@@ -1043,10 +1057,11 @@ On highly contended tables, serialization failures and retries increase. Two kin
   2. **Current proposal**: idempotency and commit resolution are handled by a single run ID. It reuses the already designed "concurrent requests with the same key" path, so there is no new mechanism, and xid resolution and failover concerns disappear.
 - Why INSERT without a lookup: ① if the second request of a double click ran the business logic first, it would see an order that is already PAID and raise `AlreadyPaid`. The duplicate check must come before the business logic. ② "Look up, and INSERT if absent" runs into the internal table rule below.
 - Why the result is INSERTed into a separate table instead of UPDATEing `run_claim`: an UPDATE reads the index to find the row and recreates the same false conflict (observed in [spike 0003](../spikes/0003-ssi-internal-tables.md), though far less often than look-up-then-INSERT).
-- Cost: one INSERT row per command (two with a caller key) and periodic cleanup. The `returning` value of a caller-key run must be serializable. The LSN of a token obtained through replay is queried fresh.
+- Fingerprint (#58): for a caller key, `run_result` also stores a fingerprint of the call (the use case's registry name and a canonical serialization of the bound arguments; not the code version) and the 23505 replay path compares it: the same key with other arguments raises `IdempotencyKeyReuse` instead of returning another request's result. It is never read inside the claiming transaction - spike 0003 measured that reading `run_claim` there fails 72-78 % of attempts and turns the waiting duplicate's 23505 into a 40001. A duplicate that arrives while the first run is in progress waits on the claim as before and is compared after it.
+- Cost: one INSERT row per command (two with a caller key) and periodic cleanup. The `returning` value and the bound arguments of a caller-key run must be serializable (an argument that is not is a `UsageError` from `app.run`). The LSN of a token obtained through replay is queried fresh.
 
 **Internal append-only table rule**
-- Decision: internal tables such as `run_claim`, `run_result`, the outbox log, the job tables and consumer checkpoints are **not read inside SERIALIZABLE transactions.** The only thing a SERIALIZABLE transaction does with these tables is INSERT; reads happen in a separate READ COMMITTED transaction. Updates happen only outside SERIALIZABLE: consumer checkpoints (REPEATABLE READ) and job leases (short READ COMMITTED transactions). `run_claim`, `run_result` and the outbox log are never updated.
+- Decision: internal tables such as `run_claim`, `run_result`, the outbox log, the job tables and consumer checkpoints are **not read inside SERIALIZABLE transactions.** The only thing a SERIALIZABLE transaction does with these tables is INSERT; reads happen in a separate READ COMMITTED transaction. Updates happen only outside SERIALIZABLE: consumer checkpoints (REPEATABLE READ) and job leases (short READ COMMITTED transactions). `run_claim`, `run_result` and the outbox log are never updated. The internal schema's version table is updated only by the command that applies the schema, never by a run ([ADR-0009](../adr/0009-internal-tables-owned-by-the-core.md)).
 - Rationale: PostgreSQL's SERIALIZABLE takes read locks per B-tree leaf page. With ever-increasing keys like uuid7 or sequences, every INSERT lands on the rightmost leaf page. Transactions that read that page form cycles in which each invalidates the others' reads, and SSI breaks them with serialization failures. As a result, unrelated commands fail and are retried (72-78 % of attempts when the claim table is read, spike 0003). A read that the planner turns into a sequential scan (a small or empty, analyzed table) takes a relation-level lock instead, which conflicts with every write to the table ([spike 0003](../spikes/0003-ssi-internal-tables.md)).
 - Application: the run result record (INSERT instead of UPDATE), job completion record and fencing (`run_claim` INSERT with the job ID as the run ID), and consumer log reads (separate transaction) all follow from this rule.
 - Confirmed ([spike 0003](../spikes/0003-ssi-internal-tables.md), independently reproduced): the unique check of an INSERT takes no such read lock - also for a key that was inserted and rolled back before, or that a concurrent claimant holds - and INSERT-only claims caused no serialization failure under load, while reading the table inside the transaction failed 72-78 % of attempts. The fencing outcome (wait, then 23505 or proceed) also depends on the table not being read: when two claimants both read the ID first, the waiting one gets 40001 instead of 23505.
@@ -1113,7 +1128,7 @@ On highly contended tables, serialization failures and retries increase. Two kin
 - `then` use cases run under SERIALIZABLE with use case semantics unchanged.
 
 **Batch checkpoint storage**
-- Decision: a `platina_batch_checkpoint` table in the same DB. The cursor is updated in the same transaction as each chunk commit, so on restart processing resumes exactly from the next chunk.
+- Decision: a batch-checkpoint table in the same DB, in the internal schema ([ADR-0009](../adr/0009-internal-tables-owned-by-the-core.md)). The cursor is updated in the same transaction as each chunk commit, so on restart processing resumes exactly from the next chunk.
 
 ### 8.5 Tooling and ecosystem
 
@@ -1124,7 +1139,8 @@ On highly contended tables, serialization failures and retries increase. Two kin
 **Schema tooling: SQLAlchemy Core + Alembic hybrid (optional extra)**
 - Decision: the query compiler and the execution engine stay independent, and **DDL generation, catalog reflection and migrations are handed to SQLAlchemy Core and Alembic.** The entity registry is converted to SQLAlchemy `MetaData` to use Alembic autogenerate. This is needed only for `platina migrate`, `pull` and drift checks, so it lives in the optional extra `platina[migrate]`, and the runtime core does not depend on SQLAlchemy.
 - History: at first we decided to implement our own migration tool, reasoning that "Alembic is tied to SQLAlchemy metadata and does not fit a standalone ORM". But the rationale for not using Core (§8.1) was wrong, and it became clear that the work Core actually saves is not query compilation but DDL, reflection and migrations, so the decision was reversed. When MySQL is added, we also get this work for free.
-- Risk: fidelity of the conversion. The weak spots of Alembic autogenerate overlap with features of this design. ① `renamed_from` hints (autogenerate does not detect renames → plan to turn drop+add into a rename with the `process_revision_directives` hook), ② `Check` declared with lambdas, ③ `version` triggers (Alembic does not handle triggers → evaluate third-party PG object support), ④ expression and partial indexes, ⑤ framework internal tables (especially partitions). Whether these five round-trip is a spike item (§9). Result ([spike 0004](../spikes/0004-alembic-round-trip.md), §9.3): columns, tables, foreign keys, composite unique keys and expression indexes round-trip. ① works for columns only with a rewrite that also builds the downgrade (Alembic's reverse of a rename loses it) and orders renames first; a table rename leaves names derived from the table behind, and any rename leaves PostgreSQL 18's NOT NULL constraint names behind. ② and ④: a CHECK or partial-index change is detected only when its name changes with the expression (for a CHECK also only with Alembic's opt-in `checkconstraint_byname` plugin); expression indexes give no false diffs. ③ works with Alembic's own extension points (custom operations and a comparator plugin), without a third-party package; drift is detected by trigger name and function body only. ⑤ does not round-trip: partitions created outside migrations (partitioning was assumed for the experiment, not decided) are proposed for drop and the downgrade cannot re-create them; the partition scheme and `xid8` columns are not compared. The same reflection gaps (`xid8`, CHECK bodies, partial-index predicates, NOT NULL names) also limit `platina pull` and the drift comparison, not only `migrate`. Of the choices this leaves, the naming rule is open for #25, and renames of indexed columns with the other fidelity gaps for #70 (Phase 2, §9.6); how the internal tables are created, migrated and partitioned is open for #63.
+- Risk: fidelity of the conversion. The weak spots of Alembic autogenerate overlap with features of this design. ① `renamed_from` hints (autogenerate does not detect renames → plan to turn drop+add into a rename with the `process_revision_directives` hook), ② `Check` declared with lambdas, ③ `version` triggers (Alembic does not handle triggers → evaluate third-party PG object support), ④ expression and partial indexes, ⑤ framework internal tables (especially partitions). Whether these five round-trip is a spike item (§9). Result ([spike 0004](../spikes/0004-alembic-round-trip.md), §9.3): columns, tables, foreign keys, composite unique keys and expression indexes round-trip. ① works for columns only with a rewrite that also builds the downgrade (Alembic's reverse of a rename loses it) and orders renames first; a table rename leaves names derived from the table behind, and any rename leaves PostgreSQL 18's NOT NULL constraint names behind. ② and ④: a CHECK or partial-index change is detected only when its name changes with the expression (for a CHECK also only with Alembic's opt-in `checkconstraint_byname` plugin); expression indexes give no false diffs. ③ works with Alembic's own extension points (custom operations and a comparator plugin), without a third-party package; drift is detected by trigger name and function body only. ⑤ does not round-trip: partitions created outside migrations (partitioning was assumed for the experiment, not decided) are proposed for drop and the downgrade cannot re-create them; the partition scheme and `xid8` columns are not compared. The same reflection gaps (`xid8`, CHECK bodies, partial-index predicates, NOT NULL names) also limit `platina pull` and the drift comparison, not only `migrate`. Of the choices this leaves, the naming rule is open for #25, and renames of indexed columns with the other fidelity gaps for #70 (Phase 2, §9.6).
+- **Internal tables are the exception** ([ADR-0009](../adr/0009-internal-tables-owned-by-the-core.md); direction decided in #63, which stays open for the details): the core ships their DDL as versioned SQL in a dedicated schema, which Alembic autogenerate does not compare with its defaults (it compares only the connection's default schema) - unless that schema *is* the connection's default schema, through `search_path` or a role of the same name (`"$user"`), and then it is compared and proposed for drop; Platina's Alembic integration therefore refuses to autogenerate in that case, with an error that says how to fix it, and `platina check` reports it too. Nothing runs DDL at startup: a `platina` command applies it, and `platina[migrate]` users call it as an Alembic operation from their own history. There is no separate startup check: a `42P01` / `42703` / `42501` from any internal-table statement (the claim INSERT is the first) becomes a `DatabaseError` whose hint names the command or the grant, and `platina check` compares the versions. Partitioning and the key shapes wait for #72; no internal-table DDL ships before it, and until then integration tests (#22) run against test-only DDL in `tests/support`. The downgrade is forward-only.
 - Rationale (for reference): Atlas has an Apache 2.0 core but is open core, and in October 2025 with v0.38 it moved migration linting to a paid tier. sqldef manages the schema with a single SQL file, but it is a Go binary, which breaks the experience of finishing with a single `pip install`.
 
 **Pydantic integration**
@@ -1176,7 +1192,7 @@ The whole syntax of §4 depends on this. Without an implementation, run the pass
 - [x] `Col[T]`: class access `Column[T]`, instance access `T` - holds; class access is now `Column[Owner, T]` (ADR-0004)
 - [x] Constructor: does `__set__(self, instance: Never, value: T)` give constructor parameter types while blocking assignment? If not, typed creation functions in a generated module - holds at step 1, on an `Entity` base class; creation is `Order(...)` (ADR-0003)
 - [x] `with chain(a, b) as (c, a, b)`: does TypeVarTuple preserve the type of each name? - holds
-- [x] `bind`: name and type checking with ParamSpec, omission of `INJECTED` defaults - holds (the seal rule for `INJECTED` defaults is open, #48)
+- [x] `bind`: name and type checking with ParamSpec, omission of `INJECTED` defaults - holds (the seal rule for `INJECTED` defaults is decided in #48, §4.5)
 - [x] Embedded paths (`Order.total.amount`) and value object operations (`Wallet.balance.add(Decimal)`) - not as written; `Order.total.path(Money.amount)` with owner-typed columns holds, increments go through the path (ADR-0004)
 - [x] Is `+` between `StepResult`s an error; Finder argument types - holds
 
@@ -1230,7 +1246,7 @@ Started as a proposal reflecting the comment that the scope is too broad; decide
   - `expected_version`, `VersionMismatch` and the root `version` bump on `owned` changes are part of #11, #13, #15 and #17. Until the outbox lands (#23), a use case that emits events is rejected, never silently dropped; whether at seal or at run time is decided in #21.
 - **Phase 1b - Events, queries and tooling**: inline projections and the outbox log (#23), Query path (TypedSQL, #24), schema tooling (optional extra, #25, CLI #26), the test kit (#27), the §9.5 measurements (#28) and documentation examples as tests (#29). Exit: adoption step 3 (§6).
   - Also in 1b: the set-load implementation (following #59), the cleanup cost of the outbox log (#73) before #23, and the classification of `53200` under SSI load (#74; it gates nothing - until then it is not retried and surfaces as `DatabaseError`).
-  - Schema tooling in Phase 1 ([spike 0004](../spikes/0004-alembic-round-trip.md)): Alembic generates what round-trips (create, add or drop a column, a type change, `version` triggers); the constraint and index naming rule is decided in 1b, before the first name is created; a shadow-schema catalog diff reports what Alembic cannot see. `platina check` runs it in CI in projects that use `platina migrate`, and it can also check the declared tables of a database Platina does not migrate. A rename, or a changed CHECK or partial index, is a hand-written migration that the drift report catches. The internal tables follow #63.
+  - Schema tooling in Phase 1 ([spike 0004](../spikes/0004-alembic-round-trip.md)): Alembic generates what round-trips (create, add or drop a column, a type change, `version` triggers); the constraint and index naming rule is decided in 1b, before the first name is created; a shadow-schema catalog diff reports what Alembic cannot see. `platina check` runs it in CI in projects that use `platina migrate`, and it can also check the declared tables of a database Platina does not migrate. A rename, or a changed CHECK or partial index, is a hand-written migration that the drift report catches. The internal tables follow #63 ([ADR-0009](../adr/0009-internal-tables-owned-by-the-core.md): versioned SQL in a dedicated schema, shipped only after #72).
   - `platina gen` accepts an existing database as its schema source (#24).
 - **Phase 2**: async projections, `then` and `@process` with the job pipeline, batch use cases and set changes (#33; the set-level delete and `insert_all` follow #57 and #60), migration fidelity (renames, derived names, CHECK and partial-index changes, #70) and `platina pull` (#71). Phase 1 has no boundary with the outside world: the `@process` handlers that four of spike 0002's use cases need arrive here.
 - **Later**: MySQL and MariaDB dialects, saga helpers, official free-threaded support
@@ -1323,68 +1339,104 @@ layers = [
 The engine is a generator that **yields a Command** whenever it needs IO and proceeds when it receives the result (Reply). A runner is just a loop that turns commands into real IO.
 
 ```python
-# core/engine/commands.py
+# core/engine/commands.py   (`bounded`: whether the run's deadline applies before the command; ADR-0008)
 @dataclass(frozen=True, slots=True)
-class Begin:    isolation: Isolation; timeout: str | None
-class Pipeline: statements: tuple[CompiledSQL, ...]      # statements sent in one round trip
+class Begin:    isolation: Isolation                     # with a budget, followed by set_config('statement_timeout', $1::text, true); the runner binds the remaining ms
+class Pipeline: statements: tuple[CompiledSQL, ...]; bounded = True     # statements sent in one round trip
 class Copy:     table: str; columns: tuple[str, ...]; rows: Iterable[tuple]
-class CommitBatch: statements: tuple[CompiledSQL, ...]  # writes, projections, outbox, result record, COMMIT, LSN query (one round trip)
-class StoredResult: run_id: RunId                        # read run_result in a separate READ COMMITTED transaction
-class FreshLsn: ...                                      # query pg_current_wal_insert_lsn()
-class Rollback: ...
-class Sleep:    seconds: float                           # retry backoff
+class CommitBatch: statements: tuple[CompiledSQL, ...]; bounded = True  # writes, projections, outbox, result record, COMMIT, LSN query (one round trip)
+class StoredResult: run_id: RunId; bounded = False       # read run_result (result + fingerprint) in a separate READ COMMITTED transaction
+class FreshLsn: bounded = False                          # query pg_current_wal_insert_lsn()
+class Rollback: bounded = False
+class ResolveClaim: run_id: RunId; bounded = False       # after CommitUnknown: BEGIN + claim only; not an attempt (ADR-0008 Decision 6)
+class Sleep:    seconds: float; bounded = True           # retry backoff; bounded by its end, now + seconds
 
 # core/engine/run.py  (no IO)
 def run_usecase(uc: Usecase, args: Bound, policy: RetryPolicy, d: Dialect
                ) -> Generator[Command, Reply, RunResult]:
     pending: RunResult | None = None                        # result computed before commit (kept across attempts)
+    fp = fingerprint(uc, args) if run_id.kind == "caller" else None   # once, before anything runs (UsageError if not serializable, #58)
     for attempt in policy.attempts():
+        stage_kind = "load"                                 # RunTimeout's stage: "load", "commit" (or "backoff", below)
         try:
             snapshots = {}
             for i, stage in enumerate(uc.plan.stages):        # number of stages fixed at seal
-                head = (begin(uc.isolation, uc.timeout), claim(run_id)) if i == 0 else ()
-                rows = yield Pipeline(head + stage.compile(d, args, snapshots))   # round trip 1: BEGIN + run ID claim + load
+                head = (begin(uc.isolation), budget(), claim(run_id)) if i == 0 else (budget(),)
+                rows = yield Pipeline(head + stage.compile(d, args, snapshots))   # round trip 1: BEGIN + budget + run ID claim + load
                 snapshots |= stage.materialize(rows)          # Load.after functions also run here (pure)
-            changes = uc.invoke(snapshots)                    # user use case: a plain pure function
+            changes = uc.invoke(snapshots)                    # user use case (pure); a deadline passed here is reported at the commit batch
             pending = RunResult.from_changes(changes)
-            reply = yield CommitBatch(commit_plan(changes, d, run_id))   # round trip 2: writes … COMMIT, LSN
-            return pending.committed(reply)
-        except AlreadyClaimed:                              # run_claim 23505: the same run ID already committed
-            yield Rollback()
-            match run_id.kind:
-                case "caller":                              # caller key: stored result
-                    return (yield StoredResult(run_id))     # read run_result in a separate READ COMMITTED transaction
-                case "auto":                                # automatic ID: this runner's previous attempt committed
-                    return pending.committed_with((yield FreshLsn()))   # result in memory + fresh LSN
-                case "job":                                 # job ID: another worker already completed it
-                    return RunResult.already_done(run_id)
-        except RetryableError as e:                         # DB error injected by the runner via gen.throw()
-            yield Rollback()
-            yield Sleep(policy.backoff(attempt, e))
-        except CommitUnknown:                               # connection lost during the commit batch
-            continue                                        # rerun with the same run_id → AlreadyClaimed if it committed
-    raise RetryExhausted(...)
+            stage_kind = "commit"
+            reply = yield CommitBatch(commit_plan(changes, d, run_id, fp))   # round trip 2: budget, writes … COMMIT, LSN
+            return pending.committed(reply)                   # COMMIT's tag is COMMIT; an error after it still means committed
+        except StatementFailed as f:                        # a fact from the runner: which statement failed, its SQLSTATE
+            fault = classify(f, stage_kind)                   # (typed by drivers), whether the deadline had passed - the engine
+        except DeadlineReached as e:                        # decides: claimed / retry / deadline / unknown / committed / fatal
+            fault = Deadline(e)
+        # Every yield below is outside the except clauses, so a DeadlineReached the runner reports at
+        # one of them (only Sleep is bounded) reaches this code instead of escaping the generator.
+        match fault:
+            case Committed():                               # an error on a statement after COMMIT (ADR-0008 Decision 5)
+                return pending.committed_with((yield FreshLsn()))
+            case AlreadyClaimed():                          # run_claim 23505: the same run ID already committed
+                yield Rollback()
+                return (yield from replay(run_id, fp, pending))
+            case Deadline():                                # the runner's deadline, or a budget 57014 before COMMIT
+                yield Rollback()
+                raise RunTimeout(stage=stage_kind, ...) from fault.cause   # never retried
+            case Retryable():                               # 40001 / 40P01
+                yield Rollback()
+                try:
+                    yield Sleep(policy.backoff(attempt, fault))
+                except DeadlineReached:                     # the backoff would end past the deadline
+                    raise RunTimeout(stage="backoff", ...) from fault.error   # the last 40001 is the cause
+            case CommitUnknown():                           # connection lost during the commit batch
+                if not (yield ResolveClaim(run_id)):        # 23505: the earlier attempt committed
+                    yield Rollback()
+                    return (yield from replay(run_id, fp, pending))
+                yield Rollback()                            # claimed: it did not commit (the claim waited for it to end);
+                                                            # release and start a normal attempt, from BEGIN and the claim
+            case Fatal():                                   # not retryable: 23503, 23505 on a user table (without on_unique), 22xxx, ...
+                yield Rollback()
+                raise fault.error                           # the DatabaseError the driver typed, SQLSTATE kept
+    raise RetryExhausted(...)                               # every attempt's outcome is known by now
+
+def replay(run_id, fp, pending):                            # the replay path; never stopped by the deadline
+    match run_id.kind:
+        case "caller":                                      # caller key: stored result
+            stored = yield StoredResult(run_id)             # the runner returns the row; the engine compares
+            if stored.fingerprint != fp:
+                raise IdempotencyKeyReuse(...)
+            return stored.result
+        case "auto":                                        # automatic ID: this runner's previous attempt committed
+            return pending.committed_with((yield FreshLsn()))   # result in memory + fresh LSN
+        case "job":                                         # job ID: another worker already completed it
+            return RunResult.already_done(run_id)
 ```
 
 ```python
-# runners/async_.py  (shell: the loop that turns commands into IO)
-async def drive_async(gen, conn):
+# runners/async_.py  (shell: the loop that turns commands into IO; it reports facts, it decides nothing)
+async def drive_async(gen, conn, deadline):
     reply = None
     while True:
         try:
             cmd = gen.send(reply) if not isinstance(reply, BaseException) else gen.throw(reply)
         except StopIteration as stop:
             return stop.value
+        if cmd.bounded and deadline.reached(by=cmd_end(cmd)):  # the Command says whether; Sleep ends at now + seconds
+            reply = DeadlineReached()
+            continue
         try:
             if isinstance(cmd, (CommitBatch, Rollback)):
                 with anyio.CancelScope(shield=True):          # commit batch and rollback cannot be cut off by cancellation
-                    reply = await execute(conn, cmd)
+                    reply = await execute(conn, cmd, deadline.remaining_ms())   # binds the set_config slot
             elif isinstance(cmd, Sleep):
                 reply = await anyio.sleep(cmd.seconds)
             else:
-                reply = await execute(conn, cmd)
+                reply = await execute(conn, cmd, deadline.remaining_ms())
         except psycopg.Error as e:
-            reply = map_sqlstate(e)                            # 40001 → RetryableError, etc.
+            reply = StatementFailed(index=failed_statement(cmd, e), error=map_sqlstate(e),   # facts only; the
+                                    deadline_passed=deadline.passed())                       # engine classifies them
 ```
 
 - **sync/async semantics are 100% the same.** Both drive the same engine generator. The only differences are the loop's `await` and the shield.
@@ -1435,7 +1487,7 @@ ChangeSet
 - An entity snapshot is a **slots class** generated per entity at seal time (internal values are a tuple). Entities inherit `Entity` (ADR-0003), and `__init_subclass__` cannot add `__slots__`, so the slots class is made by the `Entity` metaclass or as a separate snapshot class. Field access goes through a descriptor, which returns `Column[Owner, T]` when accessed on the class and `T` when accessed on an instance.
 - A **ref** is an "unloaded" instance of the same class. It holds only identifying information (PK or Finder key), and reading a field raises `UnloadedReference`. The runner collects refs when building the load plan.
 - **chain views**: the values returned by `chain(order, wallet)` are view objects pointing to the latest state of the chain (the original entity at the type level). When passed to `c.run` they become the immutable snapshot of that moment; after leaving the block they are frozen at the final state, and `.set` raises `ChainClosed`.
-- **Move marks**: `chain(order, ...)` leaves "this snapshot object has been moved" in the current step's `contextvars` record. Rebinding the same names structurally removes most references to originals, and this mark blocks aliases created before the chain. When the descriptor reads a field, and when `__eq__` / `__hash__` run (provisional, #54), they check this mark and raise `MovedSnapshotAccess`. The mark is per step scope, so it does not affect other coroutines or threads using the same snapshot.
+- **Move marks**: `chain(order, ...)` leaves "this snapshot object has been moved" in the current step's `contextvars` record. Rebinding the same names structurally removes most references to originals, and this mark blocks aliases created before the chain. When the descriptor reads a field, and when `__eq__` / `__hash__` run, they check this mark and raise `MovedSnapshotAccess`. The mark is per step scope, so it does not affect other coroutines or threads using the same snapshot.
 - **Read tracking** has been removed from correctness responsibilities. It is turned on only in development and test modes, for the "declared but unused relation" warning and for showing the cause in `RelationNotLoaded`.
 - Snapshots stay immutable to the end, so sharing them across threads is safe. Every write is expressed as a field operation value, so no proxies are needed.
 
@@ -1472,13 +1524,16 @@ PlatinaError
 │   └── ModuleBoundaryError   # a module uses an entity another module owns
 ├── UsageError                # programming error, not retried
 │   ├── RelationNotLoaded
-│   ├── UnloadedReference     # reading a field of a ref, .set, == or hash() (provisional) on a ref
+│   ├── UnloadedReference     # reading a field of a ref, .set, == or hash() on a ref
 │   ├── ChainClosed           # .set on a view outside the chain block
-│   ├── MovedSnapshotAccess   # reading (also == / hash(), provisional) an original moved by chain
+│   ├── MovedSnapshotAccess   # reading (also == / hash()) an original moved by chain
 │   ├── ConflictingWrites     # writing the same field twice within a single step
 │   ├── IntraUsecaseConflict
 │   └── CommitCycle
 ├── NotFound                  # row of the root ref or of a required dependent load is missing
+├── IdempotencyKeyReuse       # caller key reused with different arguments (#58; not retried, a client's mistake)
+├── RunTimeout                # the run's timeout= budget ran out: deadline or 57014 before COMMIT (ADR-0008; not retried;
+│                             #   fields budget, stage "load" / "backoff" / "commit", sqlstate)
 ├── ConcurrencyError
 │   ├── RetryExhausted        # 40001/40P01 retry limit exceeded
 │   └── VersionMismatch       # expected_version mismatch (optimistic lock across requests)
@@ -1486,6 +1541,8 @@ PlatinaError
     └── UniqueViolation, CheckViolation, ...
 (user domain exceptions are not wrapped; they propagate as is)
 ```
+
+`IdempotencyKeyReuse` (#58) and `RunTimeout` (#61) are decided; they are added to `platina.core.errors` with #22 and #17.
 
 Besides the message, every exception has structured fields (`usecase`, `entity`, `field`, `location`, `hint`, and `details` for extra lines). No string parsing is needed for CLI or IDE integration or for test assertions. Their types, the constructor and the rendering are fixed by [ADR-0006](../adr/0006-exception-fields-and-rendering.md):
 
@@ -1575,7 +1632,7 @@ The tests follow the repository's test style: Given/When/Then markers and no con
 Because the engine is sans-IO, **tests that inject an error at every yield point** can be run deterministically.
 
 ```python
-FAULTS = [SerializationFailure(), Deadlock(), ConnectionLost(), Cancelled()]
+FAULTS = [SerializationFailure(), Deadlock(), ConnectionLost(), Cancelled(), DeadlineReached()]
 RETRYABLE = [SerializationFailure(), Deadlock()]
 POINTS = yield_points(pay_usecase)                   # helper: every yield index of the happy path
 
@@ -1603,14 +1660,14 @@ def test_retryable_fault_restarts_from_begin(point, fault):
 ```python
 @pytest.mark.parametrize("committed", [True, False], ids=["committed", "rolled-back"])
 def test_commit_unknown_is_resolved_by_rerun_with_same_run_id(committed):
-    """If the connection drops during the commit batch, re-run with the same run ID to decide whether it committed."""
+    """If the connection drops during the commit batch, a claim with the same run ID decides whether it committed."""
     # when
     trace = replay(run_usecase(pay_usecase, ARGS, POLICY, PG),
                    happy_path_script(pay_usecase), inject=("CommitBatch", ConnectionLost()),
                    server_state={"committed": committed})
     # then
     assert trace.second_attempt_run_id == trace.first_attempt_run_id
-    assert trace.applied_once()                      # if committed, AlreadyClaimed; otherwise a normal run
+    assert trace.applied_once()                      # committed: 23505, the replay path; otherwise rollback, then a normal attempt
 ```
 
 - In the same way, we check that when cancellation is injected, it is not delivered in the middle of `CommitBatch`/`Rollback` commands (shield).

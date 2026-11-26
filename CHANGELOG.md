@@ -104,13 +104,59 @@ All notable changes are documented here. Format: [Keep a Changelog](https://keep
     on an enum column, comparisons on an embedded value column - a row comparison or only through
     `path(...)` -, a column in a set, a numeric cast); two-owner predicates in queries (#52).
     The `type-tests` skill names the spike's stub as the reference for these two shapes.
+- Phase 1a decisions recorded (maintainer, 2026-11-26), from the recommendations on the decision
+  issues gated by design 9.6:
+  - #54: entity equality compares the entity type and the column values only (relations and the
+    load state are not); a column without a value yet is equal only when unset on both sides; the
+    hash stays type plus primary key. ADR-0003 Decision 4 and design 4.2, 4.6, 8.2, 10.8, 10.12
+    are no longer provisional.
+  - #48: one marker, `INJECTED`, for every parameter the runner fills (injected types and dependent
+    loads); seal checks it both ways, `bind` rejects such a parameter with `UsageError`, a direct
+    call must pass every parameter; these parameters come last or are keyword-only (design 4.5,
+    4.7, 4.13, 8.2).
+  - #58: a caller key reused with different arguments raises `IdempotencyKeyReuse` (directly under
+    `PlatinaError`, added with #22); the fingerprint (registry name + canonical serialization of
+    the bound arguments) is stored in `run_result` and compared only on the `23505` replay path
+    (design 4.5, 4.6, 8.3, 10.5, 10.12).
+  - #61: ADR-0008 (accepted) - `timeout=` is one budget for the run, held by the runner; `57014`
+    before `COMMIT` and the deadline raise `RunTimeout` (directly under `PlatinaError`, added with
+    #17), never retried; no `lock_timeout` option; `TxDefaults(statement_timeout=)` becomes
+    `TxDefaults(timeout=)`; the runner reports the deadline, the engine emits the
+    `statement_timeout` statement and reads the commit outcome by statement position; an unknown
+    outcome is resolved before `RunTimeout` / `RetryExhausted` (design 4.1, 4.6, 4.10, 8.3, 10.5,
+    10.12, 11.4; the `engine-and-concurrency` and `design-invariants` rules). Facts from
+    pg-researcher: `statement_timeout` limits each statement also inside a pipeline, `COMMIT` is
+    not timed out, and a `57014` after `COMMIT` means committed.
+  - #63 (direction only, the issue stays open): ADR-0009 (accepted) - the core owns versioned SQL
+    for the internal tables in a dedicated schema (Alembic's defaults compare only the default
+    schema - checked; a schema that is the default schema, e.g. through `"$user"`, is compared),
+    no DDL at startup, a `42P01` / `42703` / `42501` on an internal table names the command or
+    grant;
+    partitioning and keys wait for #72 (design 8.5, 9.6).
+  - #57, #59, #60: decided as hypotheses for the Phase 1a type spike (issue comments); the design
+    text changes after the spike.
+  - After an independent review (rebased onto spike 0006): ADR-0008's facts reproduced and
+    corrected (`transaction_timeout` also ends the session during `COMMIT`'s deferred triggers;
+    `set_config` takes the snapshot, needs a text parameter and replaces a smaller default; the
+    `ROLLBACK` tag); design 10.5's sketch classifies failures in the engine, marks `bounded` on
+    the command, continues without a second claim after `ResolveClaim` and keeps every `yield`
+    out of the `except` clauses; the equality rule points at #76 for a parent key before `add`;
+    seven questions recorded as open for the maintainer in ADR-0008 / ADR-0009.
+  - The maintainer answered the seven questions and accepted ADR-0008 and ADR-0009 (2026-11-26):
+    after a successful `ResolveClaim` the engine rolls back and starts a normal attempt (no
+    `claimed` state; design 10.5 also raises non-retryable failures instead of retrying them);
+    `RunTimeout` directly under `PlatinaError` with stages `load` / `backoff` / `commit`; the
+    budget replaces a smaller default `statement_timeout`; Platina's Alembic integration refuses
+    to autogenerate when the internal schema is the default schema; the internal-schema downgrade
+    is forward-only (expand/contract stays open in #63); #22 runs on test-only DDL and does not
+    wait for #72.
 
 ### Changed
 - Entity syntax (ADR-0003, accepted): entities inherit `Entity` with table options as class
   keywords instead of an `@entity` decorator, are created with the keyword constructor
   `Order(...)` instead of `Entity.new(...)`, are frozen at the type level (hashable in both
-  checkers). The runtime rule - value equality with a type-plus-primary-key hash - is a
-  provisional working rule until spike 9.4 (#5) settles it (#54).
+  checkers). The runtime rule - value equality over columns with a type-plus-primary-key hash -
+  was provisional until #54 decided it (see Added).
 - Field surface (ADR-0004, accepted): class access is `Column[Owner, T]` with fixed variance;
   value-object fields are declared `Col[...]`; embedded paths are `Order.total.path(Money.amount)`
   and value-object increments go through them; owner checks apply by type where the receiver
