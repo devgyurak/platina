@@ -324,7 +324,7 @@ recording `ok` or the error.
   load), `read` (`SELECT bal FROM hot WHERE id = 1`) or `for_update` (the same `FOR UPDATE`);
   round trip 2 = `UPDATE hot SET bal = bal + 1 WHERE id = 1`, outbox, `SELECT
   pg_current_xact_id()`, `COMMIT`, LSN. Workers 8 / 32 / 64 (the other C variants use 32).
-  Reported, not judged (ADR-0005 leaves the decision to the maintainer after 9.2): 40001 per
+  Reported, not judged (ADR-0005 leaves the decision to the maintainer, in #64): 40001 per
   attempt (and at which statement), attempts per commit, `RetryExhausted` (commands that failed
   their 4th attempt) as a share of commands, and `57014` (statement timeout) per attempt. Check:
   the row's final value equals the number of committed commands, warm-up included
@@ -767,7 +767,8 @@ Items 1, 2, 3 (fencing), 4a and 4b rest on load-independent observations (A, B),
 round 1; A7 (foreign keys, post hoc) was reproduced in round 3 (agree for the configuration A7
 fixed, partly overall: the plan condition added to A7). The rate verdicts (item 3's projection rates, item 5, and the rate halves of the
 off-checklist observations) come from the C and D reruns on a quiet host, reproduced in round 2.
-Both rounds agreed with every verdict.
+Rounds 1 and 2 agreed with every verdict; round 3 agreed for A7's configuration and added the
+plan condition.
 
 | Item | Verdict | Deciding observations |
 |---|---|---|
@@ -871,8 +872,8 @@ in design 7.3, 8.3 and 9.2, EN + KO; item 4 is a `Proposed` ADR, reviewed by the
    ever-increasing primary keys - with the item 5 numbers (uniform: SERIALIZABLE within about
    10 % of REPEATABLE READ's throughput - ratio of medians 0.954-1.028 here, 0.910-0.995 in the
    reproduction, paired medians within 5 % in both - and at most 1.007 attempts per commit; Zipf:
-   retries dominated by same-row conflicts that REPEATABLE READ has too, SERIALIZABLE 0-17 %
-   slower).
+   retries dominated by same-row conflicts that REPEATABLE READ has too, SERIALIZABLE between about 7 % faster and 17 %
+   slower across both runs).
 7. ADR-0005 / hot rows: the C4 numbers go to #64 as its baseline and to 7.3 if
    the maintainer wants the cost stated there; no design change follows from this spike.
 
