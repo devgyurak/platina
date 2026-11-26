@@ -152,7 +152,7 @@ class RelationNotLoaded(UsageError):
 
 
 class UnloadedReference(UsageError):
-    """A field read, ``.set``, ``==`` or ``hash()`` (provisional) on a ref."""
+    """A field read, ``.set``, ``==`` or ``hash()`` on a ref."""
 
 
 class ChainClosed(UsageError):
@@ -160,7 +160,7 @@ class ChainClosed(UsageError):
 
 
 class MovedSnapshotAccess(UsageError):
-    """A read (also ``==`` / ``hash()``, provisional) of an original moved by ``chain``."""
+    """A read (also ``==`` / ``hash()``) of an original moved by ``chain``."""
 
 
 class ConflictingWrites(UsageError):

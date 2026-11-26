@@ -52,7 +52,7 @@ these off, pick by this order and say so in the commit body or ADR.
 - Commands: SERIALIZABLE + automatic retry on 40001/40P01, always restarting from the load.
   23505 is retried only with `on_unique=True`; the run-ID table's 23505 is the idempotency path.
 - Every `app.run` has a run ID, claimed by `INSERT` into `run_claim` **without a prior read**,
-  as the first statement.
+  as the first table statement (after `BEGIN` and the budget's `set_config`).
 - **Internal tables** (`run_claim`, `run_result`, the outbox log, job tables, consumer
   checkpoints) are **never read or updated inside a SERIALIZABLE transaction** - a use case's
   transaction only INSERTs into them. Outside SERIALIZABLE the design does update some of them:

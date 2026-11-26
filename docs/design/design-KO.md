@@ -1,4 +1,4 @@
-<!-- i18n: source=docs/design/design.md source-sha256=c468f7b3713c translation-sha256=16bdc275a35d -->
+<!-- i18n: source=docs/design/design.md source-sha256=46340781a846 translation-sha256=de49d6f369f2 -->
 # Platina 설계 문서
 
 > **Platina**: 백금(platinum)의 옛 스페인어 이름. 백금이 산에도 녹지 않고 반응하지 않듯, 도메인 코드는 DB와 반응하지 않는다.
@@ -219,7 +219,7 @@ app = App(
     defaults=TxDefaults(
         isolation=SERIALIZABLE,
         retry=Retry(max_attempts=4, base_ms=10, cap_ms=200),
-        statement_timeout="5s",
+        timeout="5s",                                 # 실행 전체에 대한 예산 (ADR-0008)
     ),
 )
 
@@ -288,7 +288,7 @@ class OrderPaid:
 - **스냅샷은 불변이다.** `order.status = PAID`는 에러이고, 쓰기는 오직 `.set(...)`으로 한다(§4.4). 컬렉션 필드는 인스턴스에서 읽기 전용 `Sequence[Item]`이다.
 - **생성은 키워드 생성자다**: `Order(number="A-1", total=..., user_id=...)`. 이벤트, 값과 같다. 필수 필드 누락은 두 체커 모두에서 타입 에러이고, 생성되는 키, `version_column()`, 서버 기본값, 관계, owned 자식의 부모 키는 파라미터가 아니다(§8.2 "생성 문법", ADR-0003).
 - **owned 자식의 키는 부모가 채운다.** 자식은 이 키를 `parent_fk(lambda: Order)`(작업용 이름. 최종 이름은 #9에서 정한다)로 선언하므로, `Item(sku=..., price=..., position=...)`은 `order_id`를 받지 않고 `Order.items.add(item)`이 그 키를 채운다. 키를 넘기면 두 체커 모두에서 타입 에러이므로, 새 자식을 다른 부모의 키로 만들 수 없다. `owned`가 아닌 관계의 자식은 키를 `fk`로 선언하고 다른 컬럼처럼 생성자에 넘긴다(#49, [스파이크 0006](../spikes/0006-parent-fk-and-column-operands.md)). 미결: 아직 추가되지 않은 자식의 키 읽기(#76), 새 루트의 owned 자식과 `owned`가 아닌 관계의 `add`(#60), `owned=True`와 `parent_fk`를 일관되게 유지하는 방법(한쪽을 다른 쪽에서 도출하거나 seal로 검사), 그리고 여전히 타입 검사를 통과하는, 기존 자식을 다른 부모로 옮기는 일(자식 갱신이나 집합 변경 안의 `Item.order_id.to(...)`, 다른 부모 아래에서 로드한 자식의 `add`. 스파이크 0006 O9)(#9).
-- **동등성**(잠정 작업 규칙, #54): 두 스냅샷은 같은 값(컬럼과 로드된 관계, 무엇이 로드됐는지까지 포함)을 가지면 같고, 해시는 엔티티 타입과 기본 키다. ref에 대한 `==`와 `hash()`는 `UnloadedReference`를 낸다(ADR-0003 Decision 4. 스파이크 9.4가 확정하거나 고친다).
+- **동등성**(#54): 두 스냅샷은 엔티티 타입이 같고 모든 컬럼 값(임베디드 값 포함)이 같으면 같다. 관계와 무엇이 로드됐는지는 비교하지 않는다. 아직 값이 없는 컬럼(서버 기본값이나 새 엔티티의 `identity` 키)은 양쪽 모두 값이 없을 때만 같다. 해시는 엔티티 타입과 기본 키다. ref에 대한 `==`와 `hash()`는 `UnloadedReference`를 낸다(ADR-0003 Decision 4). 아직 추가되지 않은 owned 자식의 부모 키(`add` 전의 `parent_fk`)에도 값이 없다. 동등성과 해시가 이를 어떻게 다룰지는 #76에서 정한다.
 - **`owned=True`**: 집계에 속한 자식이다. 자식이 바뀌면 루트의 `version`도 함께 오른다(JPA `OPTIMISTIC_FORCE_INCREMENT`). 그래서 편집 화면이 주문과 항목을 같이 다룰 때 항목만 바뀐 경우도 요청 사이 낙관적 락(§4.6)에 걸린다. 일반 FK 자식(예: 게시글의 댓글)은 `owned`가 아니라 루트를 건드리지 않는다.
 - **클라이언트 생성 ID가 기본값이다.** Python 3.14의 `uuid.uuid7()` 덕분에 순수 함수 안에서 새 엔티티의 ID를 안다. `generated="identity"`도 지원하지만, 그 경우 ID는 커밋 결과(`result.created(Order)`)로만 얻는다. 코어는 `uuid7()`을 직접 부르지 않는다. `Order(...)`는 엔진이 호출마다 설치한 소스에서 ID를 받고, 테스트의 직접 호출과 `Order.stub()`은 결정적인 대체 시퀀스를 쓰며, 유스케이스나 step 밖에서 부른 `Order(...)`는 `UsageError`다(ADR-0002). SERIALIZABLE에서 계속 커지는 키(uuid7, identity)는 테이블의 최근 행을 읽고(새 부모를 가리키는 자식의 외래 키 검사 포함) 같은 테이블에 INSERT하는 커맨드끼리 충돌하게 만든다. [ADR-0007](../adr/0007-ever-increasing-entity-keys.md)(Proposed)은 무작위 기본값을 제안한다.
 - 다른 클래스를 참조하는 곳은 `lambda`로 늦게 평가한다. 문자열 참조는 쓰지 않는다.
@@ -409,10 +409,11 @@ result.events           # 커밋된 도메인 이벤트
 result.value            # Changes.returning(v)로 돌려준 값
 ```
 
-- **타입 검사가 ParamSpec만으로 된다.** `Usecase[P]`의 `bind(*args: P.args, **kwargs: P.kwargs)`는 `pay`와 시그니처가 같다. ref가 타입상 엔티티이고, 실행기가 넣어 주는 파라미터(`Now`, `Actor`, `RequestId`)는 기본값 `INJECTED`를 가지므로 생략할 수 있다. `INJECTED`는 어떤 파라미터의 기본값으로도 받아들여지므로, 잘못 놓인 `INJECTED` 기본값과 `bind`에 넘긴 주입 파라미터에 대한 규칙은 미결이다(#48).
+- **타입 검사가 ParamSpec만으로 된다.** `Usecase[P]`의 `bind(*args: P.args, **kwargs: P.kwargs)`는 `pay`와 시그니처가 같다. ref가 타입상 엔티티이고, 실행기가 넣어 주는 파라미터(`Now`, `Actor`, `RequestId`)는 기본값 `INJECTED`를 가지므로 `bind`에서 빠진다(그리고 `bind`에 넘길 수 없다).
+- **실행기가 채우는 파라미터는 모두 표시 하나로**(#48): 주입 타입(`Now`, `Actor`, `RequestId`)이나 의존 로드(`Load.when`, `Load.after`, §4.7). seal은 기본값과 선언을 양방향으로 검사한다. 그런 파라미터에 `= INJECTED`가 없는 것도, 다른 파라미터에 `= INJECTED`가 붙은 것도 고칠 방법을 보여 주는 `SealError`다. 실행기가 채우는 파라미터를 `bind`에 명시적으로 넘기면 `UsageError`로 거부한다. 실행기는 시도마다 그 값을 새로 넣는데, 바인딩된 값은 재시도마다 조용히 같은 값이 되기 때문이다(테스트는 테스트 키트로 시계를 고정한다, §11.11). 직접 호출(§4.12)은 모든 파라미터를 넘긴다. 실행기가 채우는 파라미터를 빠뜨리면 함수 본문에 `INJECTED` 센티널을 넘기는 대신 그 파라미터 이름을 담은 `UsageError`로 즉시 실패한다. 이 파라미터들은 기본값이 있으므로, Python 규칙상 호출자가 바인딩하는 파라미터 뒤에 오거나 키워드 전용이어야 한다. 두 검사기 모두에서 `bind`의 파라미터를 생략 가능하게 만드는 방법은 기본값뿐이다. `ParamSpec`은 파라미터를 뺄 수 없다(PEP 612).
 - 실행 옵션(`idempotency_key`, `after`, `timeout`)은 `app.run`의 키워드라 `bind`의 시그니처와 섞이지 않는다.
 - 주입값은 시도(attempt)마다 새로 넣는다. 재시도하면 `Now`도 갱신된다.
-- 호출자가 멱등 키를 준 실행에서는 `Changes.returning(v)`의 값이 저장되므로 직렬화 가능해야 한다. 자동 ID 실행은 값을 저장하지 않으므로 이 조건이 없다.
+- 호출자가 멱등 키를 준 실행에서는 `Changes.returning(v)`의 값이 저장되므로 직렬화 가능해야 하고, 바인딩된 인자의 핑거프린트를 남기므로(§4.6) 각 인자에 정규 직렬화가 있어야 한다. 호출자 키와 함께 정규 직렬화가 없는 인자를 받으면 `app.run`이 `UsageError`를 낸다. 자동 ID 실행은 값도 핑거프린트도 저장하지 않으므로 이 조건이 없다.
 
 ### 4.6 트랜잭션 관리
 
@@ -424,7 +425,7 @@ result.value            # Changes.returning(v)로 돌려준 값
 @usecase(
     isolation=SERIALIZABLE,          # 기본값. 탈출구는 REPEATABLE_READ (아래 참조)
     retry=Retry(max_attempts=4, on_unique=False),
-    timeout="2s",                    # SET LOCAL statement_timeout
+    timeout="2s",                    # 실행 전체에 대한 예산 하나: 모든 시도·왕복·백오프 (ADR-0008)
 )
 def pay(order: PayableOrder, wallet: ChargeableWallet, now: Now = INJECTED) -> Changes: ...
 ```
@@ -435,19 +436,21 @@ def pay(order: PayableOrder, wallet: ChargeableWallet, now: Now = INJECTED) -> C
 
 ```
 attempt 1..N:
-  [왕복 1] BEGIN ISOLATION LEVEL SERIALIZABLE; SET LOCAL statement_timeout = '2s'
+  [왕복 1] BEGIN ISOLATION LEVEL SERIALIZABLE; set_config('statement_timeout', <남은 예산>, true)
            INSERT INTO run_claim(id) VALUES ($run_id)      ← 실행 ID 선점. 조회 없이 INSERT
            로드 계획 1단계
   (Load.after가 있으면 [왕복 1+k] 로드 단계 k — 단계 수는 seal에서 확정)
   usecase 실행 (순수 함수)        ← 도메인 예외 → ROLLBACK, 그대로 전파
-  [왕복 2] 행 변경(FK·유니크 의존성 순) → inline 프로젝션 → outbox
-           → INSERT INTO run_result(...)                   ← 호출자 키일 때만
+  [왕복 2] set_config('statement_timeout', <남은 시간>, true) → 행 변경(FK·유니크 의존성 순) → inline 프로젝션 → outbox
+           → INSERT INTO run_result(...)                   ← 호출자 키일 때만 (결과 + 핑거프린트)
            → SELECT pg_current_xact_id() → COMMIT → SELECT pg_current_wal_insert_lsn()
            ← 40001/40P01 → ROLLBACK, 백오프 후 다음 attempt
 ```
 
 - 쓰기·COMMIT·LSN 조회를 한 배치로 보낸다. 파이프라인에서 앞 문장이 실패하면 뒤 문장은 실행되지 않으므로 안전하다. 대가로 커밋 결과를 모르는 구간이 넓어지는데, 이는 실행 ID가 덮는다(아래).
 - 취소를 막는 shield는 왕복 2 전체에 걸린다.
+- **`timeout=`은 실행 하나에 대한 예산이다**([ADR-0008](../adr/0008-run-timeout-budget.md), Proposed; #61). `app.run`이 시작된 때부터 모든 시도와 백오프에 걸친다. 실행기는 마감 시각을 쥐고 사실을 보고하고, 판단은 엔진이 한다. 엔진은 `COMMIT` 전 각 왕복의 맨 앞에 `set_config('statement_timeout', $1, true)`를 두고, 실행기가 남은 시간을 바인딩한다(PostgreSQL은 이를 문장마다 적용하며, 파이프라인 안에서도 마찬가지다). 실행기는 마감이 지났음을 yield 지점에서 보고하는데, 끝나는 시각이 마감을 넘을 백오프를 하는 대신 보고하는 경우도 포함한다. 엔진은 이 보고나 `COMMIT` 전에 예산 때문에 난 57014를 `RunTimeout`으로 바꾸고, 이는 재시도하지 않는다. 예산은 `COMMIT` 전의 문장들을 덮는다. `COMMIT` 자체는 PostgreSQL이 타임아웃시키지 않고 커밋 배치는 shield되므로, 실행은 `COMMIT`에 걸린 시간만큼 예산을 넘을 수 있다. 배치가 커밋됐는지는 SQLSTATE가 아니라 어느 문장이 실패했는지로 판정한다. `COMMIT` 이전이나 `COMMIT`에서 난 오류는 롤백이다. `COMMIT`이 응답을 돌려준 뒤라면, 그 뒤의 LSN 조회가 무엇을 보고하든 실행은 커밋된 것이다. 응답이 전혀 없으면 알 수 없음이고, 이는 마감이나 재시도 한도가 실행을 끝내기 전에 재실행의 claim으로 판정한다.
+- "첫 문장"(실행 ID claim, 이 문서 전체에서)은 `BEGIN`과 예산의 `set_config` 다음에 테이블에 대해 실행하는 첫 문장을 뜻한다.
 
 #### 실행 ID: 멱등성과 커밋 결과 판정을 하나로
 
@@ -455,17 +458,19 @@ attempt 1..N:
 
 | 상황 | 처리 |
 |---|---|
-| 같은 키로 다시 호출 (재요청, 더블 클릭) | `run_claim` INSERT가 23505 → 롤백 → 별도 READ COMMITTED 트랜잭션에서 `run_result`를 읽어 저장된 결과 반환 |
+| 같은 키와 같은 인자로 다시 호출 (재요청, 더블 클릭) | `run_claim` INSERT가 23505 → 롤백 → 별도 READ COMMITTED 트랜잭션에서 `run_result`를 읽어 핑거프린트를 비교하고 저장된 결과 반환 |
+| 같은 키와 **다른 인자**로 다시 호출 (클라이언트가 실수로 키를 재사용) | 같은 경로지만 핑거프린트가 다름 → `IdempotencyKeyReuse`, 재시도 없음 |
 | 같은 키가 지금 실행 중 | `run_claim` INSERT가 유니크 키에서 대기 → 상대가 결정되면 위 두 경우 중 하나 |
 | COMMIT 도중 연결 끊김, 페일오버 | **같은 실행 ID로 다시 실행**. 이미 커밋됐으면 23505(호출자 키면 저장된 결과, 자동 ID면 실행기가 메모리의 결과를 반환), 롤백·유실됐으면 그냥 실행됨 |
 
 - **INSERT를 먼저, 조회 없이** 하는 이유가 둘 있다. ① 호출자 키의 중복 확인은 업무 로직보다 앞에 있어야 한다. 더블 클릭의 두 번째 요청이 유스케이스를 먼저 실행하면, 이미 PAID인 주문을 보고 `AlreadyPaid`를 내버린다. ② "조회해서 없으면 INSERT"는 SERIALIZABLE에서 거짓 충돌을 만든다(아래 내부 테이블 규칙).
 - 결과는 `run_claim`을 UPDATE하지 않고 **별도 추가 전용 테이블 `run_result`에 INSERT**한다. UPDATE는 행을 찾느라 인덱스를 읽어 같은 거짓 충돌을 다시 만든다.
+- **핑거프린트**(#58): 호출자 키인 경우 `run_result`는 호출의 핑거프린트도 저장한다. 유스케이스의 레지스트리 이름과 바인딩된 인자의 정규 직렬화다(ref는 엔티티 타입과 키, `expected_version` 포함. Finder ref는 로드 전에는 키가 없으므로 Finder와 그 인자. 일반 값은 그대로). 실행기가 채우는 파라미터는 바인딩되지 않으므로 포함되지 않고, 유스케이스의 코드 버전도 포함되지 않는다. 핑거프린트는 결과와 함께 기록되고, 23505 재생 경로에서만 비교한다. 이 경로는 이미 SERIALIZABLE 트랜잭션 밖에서 `run_result`를 읽으므로 내부 테이블 규칙을 지키고, `run_claim`은 바뀌지 않는다. 다른 인자로 재사용된 키는 저장된 결과가 아니라 오류다. 다른 요청의 결과를 돌려주면 클라이언트는 자기 요청이 실행됐다고 믿게 된다(Stripe, AWS `IdempotentParameterMismatch`, IETF 멱등 키 초안도 같다). 이를 끄는 옵션은 없다.
 - 재생으로 얻은 토큰의 LSN은 새로 조회한다. 저장된 값은 커밋 전에 잡힌 것이라 낮다.
 - `then`과 `@process` 디스패처는 **작업 ID를 실행 ID로** 쓴다. 그래서 작업 완료 기록과 펜싱도 `run_claim` 하나로 끝난다(§4.10).
 - 두 테이블은 보존 기간(재실행이 일어날 수 있는 최대 기간보다 길게)이 지나면 정리한다.
 
-> **내부 추가 전용 테이블 규칙**: `run_claim`, `run_result`, outbox 로그, 작업 테이블은 **SERIALIZABLE 트랜잭션 안에서 읽지 않는다.** SERIALIZABLE은 B-tree 리프 페이지 단위로 읽기 잠금을 걸고, uuid7처럼 커지는 키는 모든 INSERT가 맨 오른쪽 페이지에 몰린다. 그 페이지를 읽는 트랜잭션들끼리 서로의 읽기를 무효로 만드는 순환이 생겨, 서로 무관한 커맨드들이 직렬화 실패로 재시도된다. SERIALIZABLE 트랜잭션 안에서 이 테이블들에 하는 일은 INSERT뿐이고, 읽기는 별도 READ COMMITTED 트랜잭션에서 한다. (소비자 체크포인트와 작업 리스는 갱신하지만, SERIALIZABLE이 아닌 별도 트랜잭션에서만 한다, §8.4.)
+> **내부 추가 전용 테이블 규칙**: `run_claim`, `run_result`, outbox 로그, 작업 테이블은 **SERIALIZABLE 트랜잭션 안에서 읽지 않는다.** (내부 스키마의 버전 테이블은 스키마를 적용하는 명령만 건드리고, 실행은 건드리지 않는다. ADR-0009.) SERIALIZABLE은 B-tree 리프 페이지 단위로 읽기 잠금을 걸고, uuid7처럼 커지는 키는 모든 INSERT가 맨 오른쪽 페이지에 몰린다. 그 페이지를 읽는 트랜잭션들끼리 서로의 읽기를 무효로 만드는 순환이 생겨, 서로 무관한 커맨드들이 직렬화 실패로 재시도된다. SERIALIZABLE 트랜잭션 안에서 이 테이블들에 하는 일은 INSERT뿐이고, 읽기는 별도 READ COMMITTED 트랜잭션에서 한다. (소비자 체크포인트와 작업 리스는 갱신하지만, SERIALIZABLE이 아닌 별도 트랜잭션에서만 한다, §8.4.)
 
 #### 합성: 단계는 `chain`으로만 (JPA `REQUIRED`에 해당)
 
@@ -533,18 +538,21 @@ async with app.read(consistency="snapshot") as r:                    # REPEATABL
 |---|---|
 | 도메인 예외 (usecase가 raise) | 롤백, 그대로 전파, 재시도 없음 (작업 러너에서의 처리는 §4.10) |
 | 40001 직렬화 실패 / 40P01 데드락 | 롤백 후 처음부터 재시도. 한도 초과 시 `RetryExhausted` |
+| 실행의 `timeout=` 예산 소진: 마감이 지남, 백오프가 마감을 넘음, `COMMIT` 전 문장이 57014 | 롤백, `RunTimeout`, 재시도 없음 (ADR-0008) |
 | 23505 (실행 ID 테이블) | 멱등 경로: 저장된 결과 반환 |
 | 23505 (그 외) | `retry.on_unique=True`일 때만 재시도, 아니면 `UniqueViolation` |
 | 루트 ref나 필수 의존 로드의 행이 없음 | `NotFound` |
 | `expected_version` 불일치 | `VersionMismatch`, 재시도 없음 (사용자에게 충돌을 알려야 함) |
+| 호출자 키를 다른 인자로 재사용 (재생 경로에서 핑거프린트 불일치) | `IdempotencyKeyReuse`, 재시도 없음 (#58) |
+| 호출자 키와 함께 정규 직렬화가 없는 인자 | 아무것도 실행하기 전에 `app.run`이 `UsageError` (#58) |
 | COMMIT 중 연결 끊김 | 같은 실행 ID로 재실행 (위 참조) |
-| ref의 필드 읽기 / ref에 `.set` / ref에 `==`나 `hash()` (`==`·`hash()`는 잠정, #54) | `UnloadedReference` |
-| 이동된 원본(별칭)으로 필드 읽기 (`==`, `hash()` 포함. `==`·`hash()`는 잠정, #54) | `MovedSnapshotAccess` |
-| 커밋 전 `identity` 키 새 엔티티의 `hash()` (잠정, #54) | `UsageError` (ADR-0003) |
+| ref의 필드 읽기 / ref에 `.set` / ref에 `==`나 `hash()` | `UnloadedReference` |
+| 이동된 원본(별칭)으로 필드 읽기 (`==`, `hash()` 포함) | `MovedSnapshotAccess` |
+| 커밋 전 `identity` 키 새 엔티티의 `hash()` | `UsageError` (ADR-0003) |
 | chain 블록 밖에서 뷰에 `.set` | `ChainClosed` |
 | 한 단계 안에서 같은 필드를 두 번 씀 | `ConflictingWrites` |
 | 같은 유스케이스 안의 집합 변경·행 변경 겹침 | `IntraUsecaseConflict` |
-| 취소 (타임아웃, 클라이언트 끊김) | 로드·계산 중이면 롤백. 커밋 배치는 shield돼서 끝까지 진행 |
+| 취소 (클라이언트 끊김, 바깥 cancel scope) | 로드·계산 중이면 롤백. 커밋 배치는 shield돼서 끝까지 진행 |
 
 #### Spring/JPA 대응표
 
@@ -592,7 +600,7 @@ def point_wallet(order: Order) -> Wallet | None:
 type PointWalletAfter = Annotated[Wallet | None, Load.after(point_wallet)]   # 로드 단계 1개 추가
 
 @usecase
-def refund(order: Annotated[Order, Load(Order.items)], wallet: PointWallet) -> Changes:
+def refund(order: Annotated[Order, Load(Order.items)], wallet: PointWallet = INJECTED) -> Changes:
     changes = order.set(Order.status.to(OrderStatus.REFUNDED))
     if wallet is not None:
         changes += wallet.set(Wallet.balance.path(Money.amount).add(order.total.amount))
@@ -696,7 +704,7 @@ outbox 로그 ─[로그 리더: xid 워터마크, READ COMMITTED]→ 핸들러�
 - **완료 기록과 펜싱은 `run_claim` 하나로.** 디스패처는 작업 ID를 실행 ID로 쓰므로, 유스케이스 트랜잭션의 첫 문장인 `run_claim` INSERT가 곧 완료 기록이다. 리스가 만료돼 두 워커가 같은 작업을 끝내면, 늦은 쪽은 23505를 받고 아무것도 하지 않는다(먼저 온 쪽이 아직 진행 중이면 유니크 키에서 기다렸다가 결정된다). 핸들러가 `None`을 돌려줘도 디스패처는 `run_claim`만 담은 트랜잭션을 커밋해 완료를 남긴다. 리스 토큰을 읽지 않으므로 내부 테이블 규칙을 지킨다.
 - **같은 집계 안의 순서**: 집계 키마다 가장 앞선 작업 하나만 처리 중일 수 있다(예: 같은 주문의 `PaymentCancelled`가 `PaymentRequested`를 앞지르지 않음).
 - **실패 종류 구분**:
-  - 일시적 오류(연결, 타임아웃, 40001 한도 초과): 백오프 재시도.
+  - 일시적 오류(연결, `RunTimeout`, 40001 한도 초과): 백오프 재시도.
   - 도메인 예외: 기본은 즉시 dead-letter. 예외 타입이 `retry_later=RetryLater(max_attempts, within)`를 선언했을 때만 나중에 재시도한다. 이 설정은 작업 러너에서만 의미가 있고, HTTP에서 부른 `app.run`에서는 즉시 전파된다. 상한을 넘으면 dead-letter.
   - 맨 앞 작업이 dead-letter로 가면 **그 키의 뒤 작업도 막는다.** 피해가 집계 하나로 격리된다. "막힌 키 수" 메트릭과, 감사 기록을 남기며 다시 보내거나 건너뛰는 운영 도구를 함께 제공한다.
 - `then` 유스케이스는 유스케이스 의미론 그대로 SERIALIZABLE로 실행된다.
@@ -784,6 +792,10 @@ SealError: 집합 변경이 불변식으로 보호된 필드를 수정합니다.
   위치: shop/billing/repos.py:41  (OrderRepo.expire_older_than)
   필드: Order.status  ← @invariant paid_requires_total (entities.py:29)
   해결: 불변식을 Check(...)로 옮기거나 .set(..., unsafe_bypass="사유") 명시
+
+SealError: refund의 파라미터 wallet은 의존 로드(Load.when)로 채워지지만 기본값이 없습니다.
+  위치: shop/billing/usecases.py:58  (refund)
+  해결: wallet: PointWallet = INJECTED 로 작성 (실행기가 채우며, bind와 app.run은 이 값을 받지 않음)
 
 SealError: Load.when 식이 모호합니다. refund_merge에는 Order 타입 파라미터가 둘(src, dst) 있습니다.
   해결: Load.after(함수)로 어느 파라미터인지 명시
@@ -953,7 +965,7 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
   2. 생성된 **진짜 Python 모듈**의 타입 붙은 생성 함수.
   3. 런타임 검사만 (마지막 수단).
 - `.pyi` 스텁 생성은 기각했다. 스텁은 생성자만 덧씌우지 못하고 모듈의 타입을 통째로 대신해서, 필드를 추가하고 다시 생성하기 전까지 에디터가 예전 모습을 보여 준다.
-- 엔티티는 타입 수준에서 해시 가능하다(`frozen_default=True`. 이것이 없으면 `{order}`에 대해 pyright와 mypy의 판단이 갈린다). 런타임 규칙은 스파이크 9.4(#5)가 확정하거나 고칠 때까지 잠정 작업 규칙이다(#54): 동등성은 스냅샷의 값(컬럼과 로드된 관계, 무엇이 로드됐는지까지 포함)을 비교하고, 해시는 엔티티 타입과 기본 키다. ref는 `UnloadedReference`를 내고, `identity` 키를 가진 새 엔티티는 커밋 전에 해시가 없으며(`UsageError`), chain 뷰는 최신 상태를 비교하고, 이동된 별칭은 `MovedSnapshotAccess`를 낸다(ADR-0003 Decision 4). 알려진 우려: stub과 관계를 로드한 스냅샷은 같은 값이어도 같지 않을 수 있고, `identity` 키 새 엔티티는 커밋 전에 set 원소나 dict 키가 될 수 없다.
+- 엔티티는 타입 수준에서 해시 가능하다(`frozen_default=True`. 이것이 없으면 `{order}`에 대해 pyright와 mypy의 판단이 갈린다). 런타임 규칙(스파이크 9.4의 데이터를 바탕으로 #54에서 결정, ADR-0003 Decision 4): 동등성은 엔티티 타입과 컬럼 값만 비교한다(임베디드 값 포함. 관계와 로드 상태는 비교하지 않으므로, 같은 값을 가진 stub과 로드된 스냅샷은 같고, 한 행을 두 경로로 로드한 두 스냅샷도 같다). 아직 값이 없는 컬럼(서버 기본값이나 새 엔티티의 `identity` 키)은 양쪽 모두 값이 없을 때만 같다. 해시는 엔티티 타입과 기본 키다(`add` 전의 owned 자식의 부모 키에는 아직 값이 없다: #76). ref는 `UnloadedReference`를 내고, `identity` 키를 가진 새 엔티티는 커밋 전에 해시가 없으며(`UsageError`), chain 뷰는 최신 상태를 비교하고, 이동된 별칭은 `MovedSnapshotAccess`를 낸다. `version`은 컬럼이고 `owned` 자식이 바뀌면 루트의 버전이 올라가므로, 한 행의 커밋 전과 후의 두 스냅샷은 다르다. 정체성 동등성(타입과 키, Django와 Rails)은 기각했다. 변경 뒤에도 `assert before == after`가 통과해 버린다. `==`는 자식을 비교하지 않는다. 집계 전체의 비교는 테스트 키트 헬퍼다(#27). 남는 대가: `identity` 키 새 엔티티는 커밋 전에 set 원소나 dict 키가 될 수 없고, 값이 같은 두 새 엔티티는 같다고 비교되므로, 엔진과 플래너는 새 행을 `==`가 아니라 객체 정체성으로 구별한다.
 - **owned 자식의 키는 부모가 채운다**(#49): 자식은 이 키를 자신의 필드 지정자 `parent_fk(lambda: Order)`(작업용 이름. #9에서 확정)로 선언하고, 이 키는 생성자 파라미터가 아니며, `Order.items.add(Item(...))`이 채운다. `owned`가 아닌 관계의 자식은 평범한 필수 파라미터인 `fk(lambda: Order)`를 그대로 쓴다. `fk`에 플래그를 다는 방식(`fk(..., parent=True)`)은 기각했다: 지정자 하나가 두 가지를 뜻하게 되므로 이름을 달리한다("설정으로 의미를 바꾸지 않는다"). 근거: 스파이크 0002에서 모든 owned 자식이 부모 키를 손으로 넘겼고, 한 부모에 다른 부모의 키를 가진 자식을 추가해도 두 체커가 모두 받아들였다. 파라미터가 없으면 새 자식을 다른 부모의 키로 만들 수 없다("감지보다 제거"). [스파이크 0006](../spikes/0006-parent-fk-and-column-operands.md)이 두 체커에서 확인했다.
 - 미결: `Order.stub(...)`의 키워드는 타입 검사되지 않는다(#50). 추가되기 전 owned 자식의 부모 키 읽기(#76), 새 루트의 owned 자식과 `owned`가 아닌 관계의 `add`(#60), `owned=True`와 `parent_fk`를 일관되게 유지하는 방법, `parent_fk`의 최종 이름, 여전히 타입 검사를 통과하는, 기존 자식을 다른 부모로 옮기는 일(스파이크 0006 O9)(#9).
 
@@ -974,6 +986,7 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
 
 **호출 문법: `bind` + 자리표시자 ref**
 - 결정: 유스케이스 호출은 `uc.bind(...)`로 서술을 만들고 `app.run(서술, 옵션)`으로 실행한다. ref(`Order.ref(id)`, `orders.by_number(n)`)는 타입상 엔티티인 자리표시자이고, 실행기가 주입하는 파라미터는 기본값 `INJECTED`를 가진다.
+- 표시 하나(#48): 실행기가 채우는 모든 파라미터(주입 타입이나 의존 로드)는 기본값이 `INJECTED`이고, 다른 파라미터는 그렇지 않다(어느 쪽이든 `SealError`). 그런 파라미터를 받은 `bind`는 `UsageError`를 낸다(시도마다 새로 채워지기 때문이다). 직접 호출은 모든 파라미터를 넘겨야 한다(빠뜨린 파라미터 이름을 담은 `UsageError`). 이 파라미터들은 기본값이 있으므로 맨 뒤에 오거나 키워드 전용이다. 의존 로드용 두 번째 표시(`LOADED`)는 기각했다. 호출자에게는 둘 다 "넘기지 말 것"이라는 뜻이고, seal은 어노테이션으로 둘을 구별한다. 표시를 어노테이션에만 둘 수도 없다(FastAPI의 `Annotated[..., Depends(...)]` 형태). 기본값이 없으면 `bind`에서 그 파라미터가 필수로 남는데, `ParamSpec`은 파라미터를 뺄 수 없기 때문이다(PEP 612. 스파이크 0002 X5).
 - 근거: 이전 안(`app.run(pay, order=Order.ref(id))`)은 파라미터 타입을 `Order`에서 `Ref[Order]`로 바꾸고 `Now`를 빼야 했는데, ParamSpec은 이런 변환을 못 하고 `**kwargs: P.kwargs` 옆에 실행 옵션 키워드를 둘 수도 없다(PEP 612). ref를 타입상 엔티티로 두면 `bind`의 시그니처가 유스케이스와 같아져 ParamSpec만으로 검사된다. JPA `EntityManager.getReference()`와 같은 발상이다.
 - Finder는 호출형(`orders.by_number("A-1")`)이라 인자가 컬럼 타입으로 검사된다.
 - ref에 대한 `.set`도 `UnloadedReference`로 막는다. 필드를 읽지 않는 쓰기라 그냥 두면 로드와 `@invariant` 검사를 건너뛰는 쓰기가 된다. 로드 없는 쓰기는 `Order.where(Order.id == x).set(...)` 집합 변경으로 명시한다.
@@ -1014,6 +1027,7 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
 **재시도 정책**
 - 결정: 40001과 40P01은 무조건 재시도. 23505는 `on_unique=True`를 명시한 유스케이스만(실행 ID 테이블의 23505는 멱등 경로로 따로 처리). 최대 4회 시도, 지수 백오프 + full jitter(기준 10ms, 상한 200ms), 재시도마다 로드부터 다시.
 - 근거: PostgreSQL 문서는 직렬화 실패는 무조건 재시도해도 좋지만, unique 위반 같은 다른 코드는 영구적 오류일 수 있어 더 주의해야 한다고 권한다.
+- 57014(`statement_timeout`)는 재시도하지 않는다. `timeout=`은 실행 전체에 대한 호출자의 한도이므로, 그것이 다 된 뒤에 재시도하면 호출자가 허용한 것보다 더 쓰게 된다. 마감과 `COMMIT` 전의 57014는 모두 `RunTimeout`을 낸다([ADR-0008](../adr/0008-run-timeout-budget.md), Proposed; #61). 당분간 `lock_timeout` 옵션도, 55P03의 재시도도 없다(#64에서 다시 본다). `lock_timeout`을 직접 설정한 사용자는 `DatabaseError(55P03)`를 받는다.
 - 이 재시도 루프와 작업 러너의 도메인 예외 재시도(`retry_later`, §8.4)는 별개다.
 
 **같은 유스케이스 안의 커밋 순서**
@@ -1043,10 +1057,11 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
   2. **현재안**: 실행 ID 하나로 멱등성과 커밋 판정을 처리한다. 이미 설계한 "같은 키 동시 요청" 경로를 그대로 쓰므로 새 장치가 없고, xid 판정과 페일오버 걱정이 사라진다.
 - 조회 없이 INSERT하는 이유: ① 더블 클릭의 두 번째 요청이 업무 로직을 먼저 실행하면 이미 PAID인 주문을 보고 `AlreadyPaid`를 내버린다. 중복 확인은 업무 로직보다 앞에 있어야 한다. ② "조회해서 없으면 INSERT"는 아래 내부 테이블 규칙에 걸린다.
 - 결과를 `run_claim`에 UPDATE하지 않고 별도 테이블에 INSERT하는 이유: UPDATE는 행을 찾으려고 인덱스를 읽어 같은 거짓 충돌을 다시 만든다([스파이크 0003](../spikes/0003-ssi-internal-tables.md)에서 관찰됨. 다만 조회 후 INSERT보다 훨씬 드물다).
-- 비용: 커맨드마다 INSERT 한 줄(호출자 키면 두 줄)과 기간별 정리. 호출자 키 실행의 `returning` 값은 직렬화 가능해야 한다. 재생으로 얻은 토큰의 LSN은 새로 조회한다.
+- 핑거프린트(#58): 호출자 키인 경우 `run_result`는 호출의 핑거프린트(유스케이스의 레지스트리 이름과 바인딩된 인자의 정규 직렬화. 코드 버전은 포함하지 않음)도 저장하고, 23505 재생 경로가 이를 비교한다. 같은 키에 다른 인자면 다른 요청의 결과를 돌려주는 대신 `IdempotencyKeyReuse`를 낸다. claim하는 트랜잭션 안에서는 절대 읽지 않는다. 스파이크 0003은 그 안에서 `run_claim`을 읽으면 시도의 72-78 %가 실패하고, 기다리던 중복 요청의 23505가 40001로 바뀐다는 것을 쟀다. 첫 실행이 진행 중일 때 도착한 중복 요청은 전처럼 claim에서 기다렸다가 그 뒤에 비교된다.
+- 비용: 커맨드마다 INSERT 한 줄(호출자 키면 두 줄)과 기간별 정리. 호출자 키 실행의 `returning` 값과 바인딩된 인자는 직렬화 가능해야 한다(그렇지 않은 인자는 `app.run`의 `UsageError`). 재생으로 얻은 토큰의 LSN은 새로 조회한다.
 
 **내부 추가 전용 테이블 규칙**
-- 결정: `run_claim`, `run_result`, outbox 로그, 작업 테이블, 소비자 체크포인트 같은 내부 테이블은 **SERIALIZABLE 트랜잭션 안에서 읽지 않는다.** SERIALIZABLE 트랜잭션이 이 테이블에 하는 일은 INSERT뿐이고, 읽기는 별도 READ COMMITTED 트랜잭션에서 한다. 갱신은 SERIALIZABLE 밖에서만 한다: 소비자 체크포인트(REPEATABLE READ)와 작업 리스(짧은 READ COMMITTED 트랜잭션). `run_claim`, `run_result`, outbox 로그는 어디서도 갱신하지 않는다.
+- 결정: `run_claim`, `run_result`, outbox 로그, 작업 테이블, 소비자 체크포인트 같은 내부 테이블은 **SERIALIZABLE 트랜잭션 안에서 읽지 않는다.** SERIALIZABLE 트랜잭션이 이 테이블에 하는 일은 INSERT뿐이고, 읽기는 별도 READ COMMITTED 트랜잭션에서 한다. 갱신은 SERIALIZABLE 밖에서만 한다: 소비자 체크포인트(REPEATABLE READ)와 작업 리스(짧은 READ COMMITTED 트랜잭션). `run_claim`, `run_result`, outbox 로그는 어디서도 갱신하지 않는다. 내부 스키마의 버전 테이블은 스키마를 적용하는 명령만 갱신하고, 실행은 갱신하지 않는다([ADR-0009](../adr/0009-internal-tables-owned-by-the-core.md)).
 - 근거: PostgreSQL의 SERIALIZABLE은 B-tree 리프 페이지 단위로 읽기 잠금을 건다. uuid7·시퀀스처럼 커지는 키는 모든 INSERT가 맨 오른쪽 리프 페이지에 몰린다. 그 페이지를 읽는 트랜잭션들은 서로의 읽기를 무효로 만드는 순환을 이루고, SSI가 이를 직렬화 실패로 끊는다. 결과적으로 서로 무관한 커맨드가 실패하고 재시도된다(claim 테이블을 읽으면 시도의 72-78 %, 스파이크 0003). 플래너가 순차 스캔으로 처리하는 읽기(작거나 빈, ANALYZE된 테이블)는 대신 릴레이션 단위 잠금을 걸고, 이 잠금은 그 테이블의 모든 쓰기와 충돌한다([스파이크 0003](../spikes/0003-ssi-internal-tables.md)).
 - 적용: 실행 결과 기록(UPDATE 대신 INSERT), 작업 완료 기록·펜싱(작업 ID를 실행 ID로 쓴 `run_claim` INSERT), 소비자 로그 읽기(별도 트랜잭션)가 모두 이 규칙에서 나왔다.
 - 확인됨([스파이크 0003](../spikes/0003-ssi-internal-tables.md), 독립 재현): INSERT의 유니크 검사는 이런 읽기 잠금을 만들지 않는다. 앞서 넣었다가 롤백한 키나 동시에 다른 claim이 쥐고 있는 키에서도 마찬가지이고, INSERT만 하는 claim은 부하에서 직렬화 실패를 내지 않았다. 반면 트랜잭션 안에서 테이블을 읽으면 시도의 72-78 %가 실패했다. 펜싱 결과(대기 후 23505 또는 진행)도 테이블을 읽지 않는 데 달려 있다. 두 claim이 모두 ID를 먼저 읽으면 기다린 쪽이 23505 대신 40001을 받는다.
@@ -1113,7 +1128,7 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
 - `then` 유스케이스는 유스케이스 의미론 그대로 SERIALIZABLE로 실행된다.
 
 **배치 체크포인트 저장소**
-- 결정: 같은 DB의 `platina_batch_checkpoint` 테이블. 각 청크 커밋과 같은 트랜잭션에서 커서를 갱신해, 재시작 시 정확히 다음 청크부터 이어간다.
+- 결정: 같은 DB의, 내부 스키마([ADR-0009](../adr/0009-internal-tables-owned-by-the-core.md))에 있는 배치 체크포인트 테이블. 각 청크 커밋과 같은 트랜잭션에서 커서를 갱신해, 재시작 시 정확히 다음 청크부터 이어간다.
 
 ### 8.5 도구·생태계
 
@@ -1124,7 +1139,8 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
 **스키마 도구: SQLAlchemy Core + Alembic 혼합 (선택 extra)**
 - 결정: 쿼리 컴파일러와 실행 엔진은 독립으로 유지하고, **DDL 생성·카탈로그 리플렉션·마이그레이션은 SQLAlchemy Core와 Alembic에 맡긴다.** 엔티티 레지스트리를 SQLAlchemy `MetaData`로 변환해 Alembic autogenerate를 쓴다. 이 기능은 `platina migrate`·`pull`·drift 검사 때만 필요하므로 `platina[migrate]` 선택 extra로 두어, 런타임 코어는 SQLAlchemy에 의존하지 않는다.
 - 변천: 처음에는 "Alembic은 SQLAlchemy 메타데이터에 묶여 독립 ORM에 맞지 않는다"며 마이그레이션 도구를 자체 구현하기로 했다. 그런데 Core를 쓰지 않는 근거(§8.1)가 틀렸고, Core가 실제로 아껴 주는 작업이 쿼리 컴파일이 아니라 DDL·리플렉션·마이그레이션이라는 점이 드러나 결정을 뒤집었다. MySQL을 붙일 때도 이쪽 작업을 공짜로 얻는다.
-- 위험: 변환의 충실도. Alembic autogenerate가 약한 지점이 이 설계의 기능과 겹친다. ① `renamed_from` 힌트(autogenerate는 rename을 감지하지 못함 → `process_revision_directives` 훅으로 drop+add를 rename으로 바꾸는 방안), ② 람다로 선언한 `Check`, ③ `version` 트리거(Alembic은 트리거를 다루지 않음 → 서드파티 PG 객체 지원 검토), ④ 표현식·부분 인덱스, ⑤ 프레임워크 내부 테이블(특히 파티션). 이 다섯 가지가 왕복되는지가 스파이크 항목이다(§9). 결과([스파이크 0004](../spikes/0004-alembic-round-trip.md), §9.3): 컬럼, 테이블, 외래 키, 복합 유니크 키, 표현식 인덱스는 왕복된다. ①은 다운그레이드까지 만들고(Alembic이 만드는 rename의 역연산은 rename을 잃는다) rename을 맨 앞에 두는 재작성이 있을 때 컬럼에서만 동작하며, 테이블 rename은 테이블 이름에서 파생된 이름을 남기고, 어떤 rename이든 PostgreSQL 18의 NOT NULL 제약 이름을 남긴다. ②와 ④: CHECK나 부분 인덱스의 변경은 이름이 식과 함께 바뀔 때만 감지된다(CHECK는 Alembic의 opt-in 플러그인 `checkconstraint_byname`도 있어야 한다). 표현식 인덱스는 거짓 차이를 내지 않는다. ③은 서드파티 패키지 없이 Alembic 자체의 확장 지점(사용자 정의 연산과 비교자 플러그인)으로 동작하며, drift는 트리거 이름과 함수 본문으로만 감지한다. ⑤는 왕복되지 않는다: 마이그레이션 밖에서 만든 파티션(파티셔닝은 실험을 위해 가정한 것이고 결정된 것이 아니다)은 drop 대상으로 제안되고 다운그레이드는 이를 다시 만들지 못하며, 파티션 방식과 `xid8` 컬럼은 비교되지 않는다. 같은 리플렉션 공백(`xid8`, CHECK 본문, 부분 인덱스 조건식, NOT NULL 이름)은 `migrate`뿐 아니라 `platina pull`과 drift 비교도 제한한다. 이로써 남는 선택 중 이름 규칙은 #25에서, 인덱스가 걸린 컬럼의 rename과 나머지 충실도 문제는 #70(2차, §9.6)에서, 내부 테이블을 만들고 마이그레이션하고 파티션할지는 #63에서 정한다.
+- 위험: 변환의 충실도. Alembic autogenerate가 약한 지점이 이 설계의 기능과 겹친다. ① `renamed_from` 힌트(autogenerate는 rename을 감지하지 못함 → `process_revision_directives` 훅으로 drop+add를 rename으로 바꾸는 방안), ② 람다로 선언한 `Check`, ③ `version` 트리거(Alembic은 트리거를 다루지 않음 → 서드파티 PG 객체 지원 검토), ④ 표현식·부분 인덱스, ⑤ 프레임워크 내부 테이블(특히 파티션). 이 다섯 가지가 왕복되는지가 스파이크 항목이다(§9). 결과([스파이크 0004](../spikes/0004-alembic-round-trip.md), §9.3): 컬럼, 테이블, 외래 키, 복합 유니크 키, 표현식 인덱스는 왕복된다. ①은 다운그레이드까지 만들고(Alembic이 만드는 rename의 역연산은 rename을 잃는다) rename을 맨 앞에 두는 재작성이 있을 때 컬럼에서만 동작하며, 테이블 rename은 테이블 이름에서 파생된 이름을 남기고, 어떤 rename이든 PostgreSQL 18의 NOT NULL 제약 이름을 남긴다. ②와 ④: CHECK나 부분 인덱스의 변경은 이름이 식과 함께 바뀔 때만 감지된다(CHECK는 Alembic의 opt-in 플러그인 `checkconstraint_byname`도 있어야 한다). 표현식 인덱스는 거짓 차이를 내지 않는다. ③은 서드파티 패키지 없이 Alembic 자체의 확장 지점(사용자 정의 연산과 비교자 플러그인)으로 동작하며, drift는 트리거 이름과 함수 본문으로만 감지한다. ⑤는 왕복되지 않는다: 마이그레이션 밖에서 만든 파티션(파티셔닝은 실험을 위해 가정한 것이고 결정된 것이 아니다)은 drop 대상으로 제안되고 다운그레이드는 이를 다시 만들지 못하며, 파티션 방식과 `xid8` 컬럼은 비교되지 않는다. 같은 리플렉션 공백(`xid8`, CHECK 본문, 부분 인덱스 조건식, NOT NULL 이름)은 `migrate`뿐 아니라 `platina pull`과 drift 비교도 제한한다. 이로써 남는 선택 중 이름 규칙은 #25에서, 인덱스가 걸린 컬럼의 rename과 나머지 충실도 문제는 #70(2차, §9.6)에서 정한다.
+- **내부 테이블은 예외다**([ADR-0009](../adr/0009-internal-tables-owned-by-the-core.md), Proposed; 방향은 #63에서 결정): 코어가 그 DDL을 전용 스키마의 버전 붙은 SQL로 제공하며, Alembic autogenerate는 기본 설정으로 이 스키마를 비교하지 않는다(연결의 기본 스키마만 비교한다). 기동 시 DDL을 실행하는 것은 없다. `platina` 명령이 이를 적용하고, `platina[migrate]` 사용자는 자기 마이그레이션 이력에서 Alembic 연산으로 호출한다. 별도의 기동 시 검사는 없다. 내부 테이블에 대한 어떤 문장(첫 문장은 claim INSERT)에서든 `42P01` / `42703` / `42501`이 나면, 실행할 명령이나 필요한 권한을 힌트로 담은 `DatabaseError`가 된다. `platina check`는 버전을 비교한다. 파티셔닝과 키 형태는 #72를 기다리며, 그 전에는 내부 테이블 DDL을 내놓지 않는다.
 - 근거(참고): Atlas는 코어가 Apache 2.0이지만 오픈코어이고 2025년 10월 v0.38에서 마이그레이션 린트를 유료 등급으로 옮겼다. sqldef는 SQL 파일 하나로 스키마를 관리하지만 Go 바이너리라 `pip install` 한 번으로 끝나는 경험을 깨뜨린다.
 
 **Pydantic 연동**
@@ -1176,7 +1192,7 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
 - [x] `Col[T]`: 클래스 접근 `Column[T]`, 인스턴스 접근 `T` - 성립. 클래스 접근은 이제 `Column[Owner, T]`(ADR-0004)
 - [x] 생성자: `__set__(self, instance: Never, value: T)`로 생성자 파라미터 타입은 얻고 대입은 막히는가. 안 되면 생성된 모듈의 타입 붙은 생성 함수로 - `Entity` 기반 클래스 위에서 1단계로 성립. 생성은 `Order(...)`(ADR-0003)
 - [x] `with chain(a, b) as (c, a, b)`: TypeVarTuple로 각 이름의 타입이 유지되는가 - 성립
-- [x] `bind`: ParamSpec으로 이름·타입 검사, `INJECTED` 기본값 생략 - 성립(`INJECTED` 기본값에 대한 seal 규칙은 미결, #48)
+- [x] `bind`: ParamSpec으로 이름·타입 검사, `INJECTED` 기본값 생략 - 성립(`INJECTED` 기본값에 대한 seal 규칙은 #48에서 결정, §4.5)
 - [x] 임베디드 경로(`Order.total.amount`)와 값 객체 연산(`Wallet.balance.add(Decimal)`) - 쓰인 그대로는 불가. 소유자 타입 컬럼과 `Order.total.path(Money.amount)`는 성립하고, 증감은 경로를 거친다(ADR-0004)
 - [x] `StepResult`끼리 `+`가 에러인가, Finder 인자 타입 - 성립
 
@@ -1230,7 +1246,7 @@ async def run(bound: Bound[P], *, idempotency_key: str | None = None) -> RunResu
   - `expected_version`, `VersionMismatch`, `owned` 변경 시 루트 `version` 증가는 #11, #13, #15, #17에 속한다. outbox가 들어오기 전(#23)까지 이벤트를 내는 유스케이스는 조용히 버리지 않고 거부한다. 시점(seal 또는 실행)은 #21에서 정한다.
 - **Phase 1b - Events, queries and tooling**: inline 프로젝션과 outbox 로그(#23), Query 경로(TypedSQL, #24), 스키마 도구(선택 extra, #25, CLI #26), 테스트 키트(#27), §9.5 측정(#28), 테스트로서의 문서 예제(#29). 종료 조건: 도입 3단계(§6).
   - 1b에 함께 들어가는 것: 집합 로드 구현(#59를 따름), #23 전에 outbox 로그의 정리 비용(#73), SSI 부하에서 `53200`의 분류(#74. 아무것도 막지 않으며, 그때까지는 재시도하지 않고 `DatabaseError`로 드러난다).
-  - 1차의 스키마 도구([스파이크 0004](../spikes/0004-alembic-round-trip.md)): 왕복되는 것은 Alembic이 생성한다(생성, 컬럼 추가·삭제, 타입 변경, `version` 트리거). 제약·인덱스 이름 규칙은 1b에서, 첫 이름이 만들어지기 전에 정한다. Alembic이 보지 못하는 것은 shadow 스키마 카탈로그 diff가 보고한다. `platina migrate`를 쓰는 프로젝트에서는 `platina check`가 CI에서 이를 실행하며, Platina가 마이그레이션하지 않는 DB의 선언된 테이블도 검사할 수 있다. rename, 바뀐 CHECK나 부분 인덱스는 손으로 쓰는 마이그레이션이고 drift 보고가 이를 잡는다. 내부 테이블은 #63을 따른다.
+  - 1차의 스키마 도구([스파이크 0004](../spikes/0004-alembic-round-trip.md)): 왕복되는 것은 Alembic이 생성한다(생성, 컬럼 추가·삭제, 타입 변경, `version` 트리거). 제약·인덱스 이름 규칙은 1b에서, 첫 이름이 만들어지기 전에 정한다. Alembic이 보지 못하는 것은 shadow 스키마 카탈로그 diff가 보고한다. `platina migrate`를 쓰는 프로젝트에서는 `platina check`가 CI에서 이를 실행하며, Platina가 마이그레이션하지 않는 DB의 선언된 테이블도 검사할 수 있다. rename, 바뀐 CHECK나 부분 인덱스는 손으로 쓰는 마이그레이션이고 drift 보고가 이를 잡는다. 내부 테이블은 #63을 따른다([ADR-0009](../adr/0009-internal-tables-owned-by-the-core.md), Proposed: 전용 스키마의 버전 붙은 SQL, #72 이후에만 제공).
   - `platina gen`은 기존 DB를 스키마 소스로 받는다(#24).
 - **2차**: async 프로젝션, `then`·`@process`와 작업 파이프라인, 배치 유스케이스와 집합 변경(#33. 집합 단위 삭제와 `insert_all`은 #57과 #60의 결정에 따른다), 마이그레이션 충실도(rename, 파생 이름, CHECK·부분 인덱스 변경, #70), `platina pull`(#71). 1차에는 외부 세계와의 경계가 없다. 스파이크 0002의 유스케이스 넷에 필요한 `@process` 핸들러는 여기서 들어온다.
 - **이후**: MySQL·MariaDB 방언, saga 헬퍼, free-threaded 공식 지원
@@ -1325,66 +1341,80 @@ layers = [
 ```python
 # core/engine/commands.py
 @dataclass(frozen=True, slots=True)
-class Begin:    isolation: Isolation; timeout: str | None
+class Begin:    isolation: Isolation                     # 예산이 있으면 뒤에 set_config('statement_timeout', $1, true)가 붙고, 실행기가 남은 ms를 바인딩 (ADR-0008)
 class Pipeline: statements: tuple[CompiledSQL, ...]      # 한 왕복으로 보낼 문장들
 class Copy:     table: str; columns: tuple[str, ...]; rows: Iterable[tuple]
-class CommitBatch: statements: tuple[CompiledSQL, ...]  # 쓰기·프로젝션·outbox·결과 기록·COMMIT·LSN 조회 (한 왕복)
-class StoredResult: run_id: RunId                        # 별도 READ COMMITTED 트랜잭션에서 run_result 조회
+class CommitBatch: statements: tuple[CompiledSQL, ...]  # 쓰기·프로젝션·outbox·결과 기록·COMMIT·LSN 조회 (한 왕복). 응답은 문장별
+class StoredResult: run_id: RunId; fingerprint: bytes   # 별도 READ COMMITTED 트랜잭션에서 run_result 조회
 class FreshLsn: ...                                      # pg_current_wal_insert_lsn() 조회
 class Rollback: ...
+class ResolveClaim: run_id: RunId                        # CommitUnknown 뒤: BEGIN + claim만. 마감으로 멈추지 않음 (ADR-0008)
 class Sleep:    seconds: float                           # 재시도 백오프
 
 # core/engine/run.py  (IO 없음)
 def run_usecase(uc: Usecase, args: Bound, policy: RetryPolicy, d: Dialect
                ) -> Generator[Command, Reply, RunResult]:
     pending: RunResult | None = None                        # 커밋 전에 계산해 둔 결과 (시도를 넘어 유지)
+    fp = fingerprint(uc, args) if run_id.kind == "caller" else None   # 아무것도 실행하기 전에 한 번 (직렬화할 수 없으면 UsageError, #58)
     for attempt in policy.attempts():
         try:
             snapshots = {}
             for i, stage in enumerate(uc.plan.stages):        # 단계 수는 seal에서 확정
-                head = (begin(uc.isolation, uc.timeout), claim(run_id)) if i == 0 else ()
+                head = (begin(uc.isolation), claim(run_id)) if i == 0 else ()
                 rows = yield Pipeline(head + stage.compile(d, args, snapshots))   # 왕복 1: BEGIN + 실행 ID 선점 + 로드
                 snapshots |= stage.materialize(rows)          # Load.after 함수도 여기서 실행(순수)
             changes = uc.invoke(snapshots)                    # 사용자 유스케이스: 평범한 순수 함수
             pending = RunResult.from_changes(changes)
-            reply = yield CommitBatch(commit_plan(changes, d, run_id))   # 왕복 2: 쓰기 … COMMIT, LSN
-            return pending.committed(reply)
+            reply = yield CommitBatch(commit_plan(changes, d, run_id, fp))   # 왕복 2: 쓰기 … COMMIT, LSN
+            return pending.committed(reply)                   # 엔진은 결과를 위치로 읽는다: COMMIT의 결과 뒤에 난 오류는 커밋됨 (ADR-0008)
         except AlreadyClaimed:                              # run_claim 23505: 같은 실행 ID가 이미 커밋됨
             yield Rollback()
-            match run_id.kind:
-                case "caller":                              # 호출자 키: 저장된 결과
-                    return (yield StoredResult(run_id))     # 별도 READ COMMITTED로 run_result 조회
-                case "auto":                                # 자동 ID: 이 실행기의 직전 시도가 커밋된 것
-                    return pending.committed_with((yield FreshLsn()))   # 메모리의 결과 + 새 LSN
-                case "job":                                 # 작업 ID: 다른 워커가 이미 완료
-                    return RunResult.already_done(run_id)
+            return (yield from replay(run_id, fp, pending))  # 아래 참조
+        except DeadlineReached as e:                        # 실행기가 보고. COMMIT 전에 예산 때문에 난 57014도 여기로 매핑 (ADR-0008)
+            yield Rollback()
+            raise RunTimeout(...) from e                    # 재시도하지 않음
         except RetryableError as e:                         # 실행기가 gen.throw()로 넣어 준 DB 오류
             yield Rollback()
             yield Sleep(policy.backoff(attempt, e))
         except CommitUnknown:                               # 커밋 배치 도중 연결 끊김
-            continue                                        # 같은 run_id로 재실행 → 커밋됐으면 AlreadyClaimed
+            if not (yield ResolveClaim(run_id)):            # BEGIN + claim만. 마감으로 멈추지 않음 (ADR-0008)
+                yield Rollback()                            # 23505: 앞선 시도가 커밋됨
+                return (yield from replay(run_id, fp, pending))
+            continue                                        # claim 성공: 커밋되지 않았음. 실행은 다시 예산 안에서 계속
     raise RetryExhausted(...)
+
+def replay(run_id, fp, pending):                            # 재생 경로. 마감으로 멈추지 않음
+    match run_id.kind:
+        case "caller":                                      # 호출자 키: 저장된 결과
+            return (yield StoredResult(run_id, fp))         # run_result 조회 (READ COMMITTED). 다르면 IdempotencyKeyReuse
+        case "auto":                                        # 자동 ID: 이 실행기의 직전 시도가 커밋된 것
+            return pending.committed_with((yield FreshLsn()))   # 메모리의 결과 + 새 LSN
+        case "job":                                         # 작업 ID: 다른 워커가 이미 완료
+            return RunResult.already_done(run_id)
 ```
 
 ```python
 # runners/async_.py  (껍데기: 명령을 IO로 바꾸는 루프)
-async def drive_async(gen, conn):
+async def drive_async(gen, conn, deadline):
     reply = None
     while True:
         try:
             cmd = gen.send(reply) if not isinstance(reply, BaseException) else gen.throw(reply)
         except StopIteration as stop:
             return stop.value
+        if deadline.stops(cmd):                                # Pipeline / CommitBatch 전, 또는 마감을 넘는 Sleep (ADR-0008)
+            reply = DeadlineReached()                          # 사실일 뿐. 의미는 엔진이 정한다
+            continue
         try:
             if isinstance(cmd, (CommitBatch, Rollback)):
                 with anyio.CancelScope(shield=True):          # 커밋 배치·롤백은 취소로 끊기지 않음
-                    reply = await execute(conn, cmd)
+                    reply = await execute(conn, cmd, deadline.remaining_ms())   # set_config 자리에 바인딩
             elif isinstance(cmd, Sleep):
                 reply = await anyio.sleep(cmd.seconds)
             else:
-                reply = await execute(conn, cmd)
+                reply = await execute(conn, cmd, deadline.remaining_ms())
         except psycopg.Error as e:
-            reply = map_sqlstate(e)                            # 40001 → RetryableError 등
+            reply = statement_failure(e, deadline.passed())    # 어느 문장이 실패했는지, 그 SQLSTATE(드라이버가 타입으로), 마감이 지났는지
 ```
 
 - **sync/async 의미가 100% 같다.** 둘 다 같은 엔진 제너레이터를 돌린다. 다른 건 루프의 `await`와 shield뿐이다.
@@ -1435,7 +1465,7 @@ ChangeSet
 - 엔티티 스냅샷은 seal 시점에 엔티티마다 생성하는 **slots 클래스**(내부 값은 튜플)다. 엔티티는 `Entity`를 상속하는데(ADR-0003) `__init_subclass__`는 `__slots__`를 추가할 수 없으므로, slots 클래스는 `Entity` 메타클래스가 만들거나 별도 스냅샷 클래스로 만든다. 필드 접근은 디스크립터를 거치고, 클래스에서 접근하면 `Column[Owner, T]`, 인스턴스에서 접근하면 `T`를 돌려준다.
 - **ref**는 같은 클래스의 "로드되지 않은" 인스턴스다. 식별 정보(PK나 Finder 키)만 갖고, 필드를 읽으면 `UnloadedReference`를 낸다. 실행기가 로드 계획을 만들 때 ref를 수집한다.
 - **chain 뷰**: `chain(order, wallet)`이 돌려주는 값은 chain의 최신 상태를 가리키는 뷰 객체다(타입상 원래 엔티티). `c.run`에 넘길 때 그 시점의 불변 스냅샷으로 바뀌고, 블록을 벗어나면 최종 상태로 고정되며 `.set`은 `ChainClosed`를 낸다.
-- **이동 표시**: `chain(order, ...)`은 현재 단계의 `contextvars` 기록에 "이 스냅샷 객체는 이동됨"을 남긴다. 같은 이름 재바인딩으로 대부분의 원본 참조는 구조적으로 사라지고, 이 표시는 chain 전에 만든 별칭을 막는다. 디스크립터가 필드를 읽을 때와 `__eq__`·`__hash__`가 실행될 때(잠정, #54) 이 표시를 확인해 `MovedSnapshotAccess`를 낸다. 표시는 단계 스코프별이라, 같은 스냅샷을 다른 코루틴·스레드가 쓰는 데는 영향이 없다.
+- **이동 표시**: `chain(order, ...)`은 현재 단계의 `contextvars` 기록에 "이 스냅샷 객체는 이동됨"을 남긴다. 같은 이름 재바인딩으로 대부분의 원본 참조는 구조적으로 사라지고, 이 표시는 chain 전에 만든 별칭을 막는다. 디스크립터가 필드를 읽을 때와 `__eq__`·`__hash__`가 실행될 때 이 표시를 확인해 `MovedSnapshotAccess`를 낸다. 표시는 단계 스코프별이라, 같은 스냅샷을 다른 코루틴·스레드가 쓰는 데는 영향이 없다.
 - **읽기 추적**은 정확성 책임에서 빠졌다. "선언했지만 안 쓴 관계" 경고와 `RelationNotLoaded`의 원인 표시용으로 개발·테스트 모드에서만 켠다.
 - 스냅샷은 끝까지 불변이라 스레드 간 공유가 안전하다. 쓰기는 모두 필드 연산 값으로 표현되므로 프록시가 필요 없다.
 
@@ -1472,13 +1502,15 @@ PlatinaError
 │   └── ModuleBoundaryError   # 다른 모듈이 소유한 엔티티를 사용함
 ├── UsageError                # 프로그래밍 오류, 재시도 안 함
 │   ├── RelationNotLoaded
-│   ├── UnloadedReference     # ref의 필드를 읽거나 ref에 .set, ==, hash()(잠정)
+│   ├── UnloadedReference     # ref의 필드를 읽거나 ref에 .set, ==, hash()
 │   ├── ChainClosed           # chain 블록 밖에서 뷰에 .set
-│   ├── MovedSnapshotAccess   # chain으로 이동된 원본을 읽음 (==, hash() 포함, 잠정)
+│   ├── MovedSnapshotAccess   # chain으로 이동된 원본을 읽음 (==, hash() 포함)
 │   ├── ConflictingWrites     # 한 단계 안에서 같은 필드를 두 번 씀
 │   ├── IntraUsecaseConflict
 │   └── CommitCycle
 ├── NotFound                  # 루트 ref나 필수 의존 로드의 행이 없음
+├── IdempotencyKeyReuse       # 호출자 키를 다른 인자로 재사용 (#58. 재시도 없음, 클라이언트의 실수)
+├── RunTimeout                # 실행의 timeout= 예산 소진: 마감 또는 COMMIT 전 57014 (ADR-0008. 재시도 없음)
 ├── ConcurrencyError
 │   ├── RetryExhausted        # 40001/40P01 재시도 한도 초과
 │   └── VersionMismatch       # expected_version 불일치 (요청 사이 낙관적 락)
@@ -1486,6 +1518,8 @@ PlatinaError
     └── UniqueViolation, CheckViolation, ...
 (사용자 도메인 예외는 감싸지 않고 그대로 전파)
 ```
+
+`IdempotencyKeyReuse`(#58)와 `RunTimeout`(#61)은 결정됐고, 각각 #22와 #17에서 `platina.core.errors`에 추가한다.
 
 모든 예외는 메시지 외에 구조화된 필드(`usecase`, `entity`, `field`, `location`, `hint`, 그리고 추가 줄을 담는 `details`)를 가진다. CLI·IDE 연동이나 테스트 단언에서 문자열 파싱이 필요 없다. 필드의 타입, 생성자, 렌더링은 [ADR-0006](../adr/0006-exception-fields-and-rendering.md)이 정한다.
 
@@ -1575,7 +1609,7 @@ def test_planner_never_violates_constraints(schema_and_changes):
 엔진이 sans-IO라서, **모든 yield 지점에 오류를 넣어 보는 테스트**를 결정적으로 돌릴 수 있다.
 
 ```python
-FAULTS = [SerializationFailure(), Deadlock(), ConnectionLost(), Cancelled()]
+FAULTS = [SerializationFailure(), Deadlock(), ConnectionLost(), Cancelled(), DeadlineReached()]
 RETRYABLE = [SerializationFailure(), Deadlock()]
 POINTS = yield_points(pay_usecase)                   # 헬퍼: 정상 흐름의 모든 yield 위치
 

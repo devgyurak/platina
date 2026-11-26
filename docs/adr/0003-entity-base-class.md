@@ -51,19 +51,29 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
    parameter (#49, spike 0006).
 3. **Equality and hashing - type level (decided).** `frozen_default=True`, so both checkers treat
    entities as hashable (spike 0001 P-B: without it pyright and mypy disagree on `{order}`).
-4. **Equality and hashing - runtime (provisional working rule).** Set without an implementation or
-   use cases; spike 9.4 (#5) confirms or changes it, tracked in #54. Until then:
-   - Two snapshots are equal when they hold the same values - columns and loaded relations,
-     including what is loaded and what is not. The hash is the entity type plus the primary key
-     (equal snapshots have the same key, so the contract holds).
+4. **Equality and hashing - runtime (decided in #54, from spike 9.4's data).**
+   - Two snapshots are equal when they are of the same entity type and all their column values
+     are equal (embedded values included). Relations and the load state are not compared. A
+     column that has no value yet (a server default or an `identity` key of a new entity) is
+     equal only when it has no value on both sides. The hash is the entity type plus the primary
+     key (equal snapshots have the same key, so the contract holds). The parent key of an owned
+     child that has not been added yet (`parent_fk`, #49) has no value either; how equality and
+     the hash treat it is decided in #76.
    - Boundaries: `==` and `hash()` on a ref raise `UnloadedReference` (a ref holds no values). The
      hash of a new entity with an `identity` primary key, whose ID exists only after commit,
      raises `UsageError`. A chain view compares its latest state with `==`; its hash is the
-     primary key, so it does not change while the chain runs. `==` and `hash()` through a moved
+     entity type plus the primary key, so it does not change while the chain runs. `==` and `hash()` through a moved
      alias raise `MovedSnapshotAccess`, like every other read through it.
-   - Known concerns: because the load state is compared, `Order.stub(...)` and a snapshot with
-     loaded relations can be unequal although they hold the same values; and a new entity with an
-     `identity` primary key cannot be a set member or dict key before commit.
+   - Why columns only: spike 0002 found no use case that needed entity `==` or an entity as a
+     set member or dict key (every "same row" check compared IDs); comparing the load state made
+     a stub and a loaded snapshot, and one row loaded through two paths (use case 5), unequal
+     although they hold the same values. `version` is a column, so two snapshots of one row
+     before and after a commit still differ. Identity equality (type and key, as in Django and
+     Rails) would make `assert before == after` pass after a change. `==` does not compare
+     children; a deep comparison of an aggregate belongs to the test kit (#27).
+   - Remaining cost: a new entity with an `identity` primary key cannot be a set member or dict
+     key before commit, and two such entities with equal values compare equal - the engine and
+     the planner therefore identify new rows by object identity, never by `==`.
 5. `@value`, `@event` and `@dto` stay decorators (constructors, ordering and class access work
    through `dataclass_transform` on a decorator).
 
@@ -112,3 +122,7 @@ The bar for this document: the maintainer reads it and is convinced. Keep it sho
 - 2026-11-26 - amended in place (#49, spike 0006): the parent key of an owned child (`parent_fk`)
   joins the fields that are not constructor parameters in Decision 2, and the Consequence that
   called the rule open states it. The direction is unchanged.
+- 2026-11-26 - Decision 4 decided by the maintainer in #54 from spike 0002's data: value equality
+  over columns only (relations and the load state are no longer compared), a column without a
+  value yet is equal only when unset on both sides; no longer provisional. The parent key of an
+  owned child before `add` (#49) is pointed to #76, not decided here.
