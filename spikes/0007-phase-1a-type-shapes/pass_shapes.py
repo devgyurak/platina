@@ -101,7 +101,7 @@ def p60_candidate_b(src: Account, amount: Money) -> Changes:
 
 
 # --------------------------------------------------------------------------- #60 point 4 relation types
-assert_type(Order.items, OwnedRelation[Order, Item])  # S4: owned=True
+assert_type(Order.items, OwnedRelation[Order, Item])  # S4: declared with owns_many
 assert_type(Order.payments, Relation[Order, Payment])  # S4: not owned
 assert_type(Order.items.add(Item.stub()), AddOp[Order])  # S4: `add` is the AddOp insert takes
 assert_type(Order.items.remove(Item.stub()), RelOp[Order])  # S4
