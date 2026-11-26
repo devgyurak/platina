@@ -1,4 +1,4 @@
-<!-- i18n: source=docs/workflow.md source-sha256=6d8e745c8e7f translation-sha256=eb4af8c83deb -->
+<!-- i18n: source=docs/workflow.md source-sha256=19b92379b1d7 translation-sha256=0aec116189be -->
 # 에이전트 개발 워크플로
 
 원문(영어): [workflow.md](workflow.md)
@@ -76,8 +76,9 @@ pyright·mypy에서의 타입 표면, SSI 거짓 충돌, Alembic 왕복, 유스�
 브랜치: 작업은 `develop`에서 딴 `<prefix>/<kebab-summary>` 브랜치에서 하고 `develop`으로 PR을
 보낸다. `main`은 릴리스 병합만 받는다. GitHub 룰셋이 이를 강제한다. `develop` 병합에는 코드
 오너(@devgyurak)의 승인이 필요하고 메인테이너는 PR에서 이를 우회할 수 있다. `main`에는 누구도
-푸시할 수 없고, `develop`에서 온 PR만 CI `check` 잡이 통과했을 때 받는다(`branch-policy.yml`). 릴리스는 `main`의 `vX.Y.Z` 태그다.
-CI(`ci.yml`)는 모든 PR과 `develop`·`main` 푸시에서 돈다. 커밋·PR 제목은 접두어 하나를 쓴다:
+푸시할 수 없고, `develop`에서 온 PR만 CI `check` 잡과 free-threaded 잡이 통과했을 때 받는다(`branch-policy.yml`). 릴리스는 `main`의 `vX.Y.Z` 태그다.
+CI(`ci.yml`)는 모든 PR과 `develop`·`main` 푸시에서 돈다: 3.14·3.15의 `make check`,
+free-threaded 3.14t의 단위 테스트(`make test-unit-ft`), 통합 테스트. 커밋·PR 제목은 접두어 하나를 쓴다:
 `ADD:` `FIX:` `REF:` `DEL:` `DOCS:` `UPT:` (`commit` 스킬).
 
 ## 3. 서브에이전트
@@ -110,6 +111,7 @@ CI(`ci.yml`)는 모든 PR과 `develop`·`main` 푸시에서 돈다. 커밋·PR �
 | `main` / `develop` 푸시 금지 | `tools/hooks/pre_push.py` (git pre-push, `make hooks-install`) | 훅을 설치한 클론의 모든 푸시 |
 | 에이전트 설정 어긋남 | `tools/agentsync.py --check` | `make agents-check`, pre-commit, CI |
 | DB 의미 | 실제 PostgreSQL 위의 pytest | `make test-int`, CI |
+| free-threaded CPython에서의 스레드 안전성: 3.14t에서 단위 테스트를 테스트마다 8개 스레드로 실행(pytest-run-parallel), 실행 전후에 GIL이 켜져 있거나, `thread_unsafe(reason=...)` 없이 한 스레드로 돈 테스트가 있거나, 경고가 기록됐거나, ADR-0002의 카운터 테스트가 통과하지 않았거나, 안전하지 않은 `n += 1` 대조 카운터에서 경합이 보이지 않으면 실패 | `tools/freethreaded.py` | `make test-unit-ft`, CI |
 | 브랜치 흐름 | GitHub 룰셋 + `branch-policy.yml` + `CODEOWNERS` | `develop`·`main`으로의 모든 푸시·PR |
 
 가드에는 인라인 예외 처리가 없다. 가드가 아니라 코드를 고치고, 가드 변경은 메인테이너가 정한다.
@@ -118,7 +120,8 @@ CI(`ci.yml`)는 모든 PR과 `develop`·`main` 푸시에서 돈다. 커밋·PR �
 
 모든 테스트에는 `# given` / `# when` / `# then` 표시가 있고, `for`, `while`, `if`, `try`,
 `match`, 컴프리헨션, 조건식이 없다. 변형은 `pytest.mark.parametrize`나 Hypothesis로 만들고,
-보조 로직은 `tests/support/`에 둔다. 코어는 DB 없이 테스트하고(법칙, 모든 yield 지점에 오류를
+보조 로직은 `tests/support/`에 둔다(도구도 쓰는 보조 로직은 `tools/`에 두며, `tools/`는 `tests/`를
+import하지 않는다). 코어는 DB 없이 테스트하고(법칙, 모든 yield 지점에 오류를
 넣는 엔진 재생, 컴파일러 스냅샷), DB 의미는 실제 PostgreSQL로만 테스트하며 인메모리 가짜 DB는
 쓰지 않는다. 공개 타입 표면은 pyright와 mypy 둘 다로 검사한다.
 
@@ -136,6 +139,7 @@ make check                        # 세션 시작 (DB 불필요)
 make db-up && make test-int       # PostgreSQL이 관련될 때
 make db-up-durable                # 비율·처리량·지연을 재는 스파이크
 make test-types                   # 공개 시그니처를 건드린 뒤
+make test-unit-ft                 # free-threaded 3.14t에서 단위 테스트 (별도 .venv-ft)
 make agents-sync                  # .agents/를 고친 뒤
 uv run python -m tools.guards --changed
 ```
@@ -143,7 +147,7 @@ uv run python -m tools.guards --changed
 ## 8. GitHub 설정 (메인테이너, 한 번)
 
 **현재 상태(2026-11-25):** 완료. `develop`이 기본 브랜치이고, 룰셋 두 개가 활성 상태이며,
-마일스톤·라벨·로드맵 이슈(#1-#67, #47·#53·#56·#62·#66·#67은 풀 리퀘스트)가 있다. 로컬 pre-push 훅(`make hooks-install`)은 두 번째
+마일스톤·라벨·로드맵 이슈(#1-#68, #47·#53·#56·#62·#66·#67·#68은 풀 리퀘스트)가 있다. 로컬 pre-push 훅(`make hooks-install`)은 두 번째
 방어선으로 남는다. 에이전트는 메인테이너가 요청할 때만 GitHub 설정·마일스톤·라벨을 바꾼다.
 
 - [x] `main`에 첫 커밋, 그다음 거기서 `develop` 생성, `develop`을 기본 브랜치로.
@@ -151,16 +155,16 @@ uv run python -m tools.guards --changed
       무효, squash 또는 merge commit, 저장소 관리자는 PR에서 우회 가능, force push 금지, 삭제 금지.
 - [x] `main` 룰셋: PR 필수, merge commit만, 우회 없음, 필수 상태 검사
       "main accepts PRs from develop only"(`.github/workflows/branch-policy.yml`)와
-      "lint, types, guards, unit, type tests (py3.14)" / "(py3.15)"(`ci.yml`), force push 금지,
+      "lint, types, guards, unit, type tests (py3.14)" / "(py3.15)", "unit tests, free-threaded (py3.14t)"(`ci.yml`), force push 금지,
       삭제 금지. CI 잡 이름을 바꾸면 룰셋에서도 바꿔야 한다.
 - [x] 마일스톤: `Phase 0 - Experiments`, `Phase 1 - Core execution path`, `Phase 2 - Event pipeline`, `Later`.
 - [x] 라벨: `feature`, `spike`, `test`, `ci`, `documentation`, `needs-decision`, `blocked`,
       `area:core`, `area:sql`, `area:app`, `area:runners`, `area:drivers`, `area:outbox`,
       `area:migrate`, `area:codegen`, `area:testing`, `area:integrations`, `area:cli`,
       `area:tooling`.
-- [x] 로드맵 이슈 #1-#67: 설계 §9 실험, 그리고 설계 §3-11의 모든 패키지·기능을 의존 관계와 함께
+- [x] 로드맵 이슈 #1-#68: 설계 §9 실험, 그리고 설계 §3-11의 모든 패키지·기능을 의존 관계와 함께
       (#1은 이 설정 작업, #48-#52와 #54, #55는 스파이크 0001에서, #57-#61은 스파이크 0002에서, #63은 스파이크 0004에서, #64-#65는 스파이크 0003에서 나옴,
-      #47·#53·#56·#62·#66·#67은 풀 리퀘스트).
+      #47·#53·#56·#62·#66·#67·#68은 풀 리퀘스트).
 - [x] 첫 구현 전에 ADR-0001(조립 패키지와 seal)과 ADR-0002(새 ID를 주입된 소스에서 받기) 결정 - 둘 다 수락.
 
 항목을 마치면 같은 변경에서 이 절(과 영어 원문)을 고친다.

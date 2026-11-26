@@ -81,9 +81,10 @@ Branches: work happens on `<prefix>/<kebab-summary>` branches cut from `develop`
 into `develop`; `main` only receives release merges. GitHub rulesets enforce it: merging into
 `develop` needs the code owner's (@devgyurak) approval, which the maintainer may bypass from the
 PR; nobody can push to `main`, which only accepts PRs from `develop` (`branch-policy.yml`) with
-the CI `check` jobs green. Releases
+the CI `check` and free-threaded jobs green. Releases
 are `vX.Y.Z` tags on `main`. CI (`ci.yml`) runs on every pull request and on pushes to `develop`
-and `main`. Commit/PR titles use one prefix: `ADD:` `FIX:` `REF:` `DEL:` `DOCS:` `UPT:` (the
+and `main`: `make check` on 3.14 and 3.15, the unit tests on free-threaded 3.14t
+(`make test-unit-ft`), and the integration tests. Commit/PR titles use one prefix: `ADD:` `FIX:` `REF:` `DEL:` `DOCS:` `UPT:` (the
 `commit` skill).
 
 ## 3. Sub-agents
@@ -116,6 +117,7 @@ repository files.
 | No push to `main` / `develop` | `tools/hooks/pre_push.py` (git pre-push, `make hooks-install`) | every push from a clone with the hooks installed |
 | Agent config drift | `tools/agentsync.py --check` | `make agents-check`, pre-commit, CI |
 | Database semantics | pytest on real PostgreSQL | `make test-int`, CI |
+| Thread safety on free-threaded CPython: unit tests on 3.14t, each on 8 threads (pytest-run-parallel), failing when the GIL is on before or after the run, a test ran on one thread without `thread_unsafe(reason=...)`, a warning was recorded, ADR-0002's counter test did not pass, or an unsafe `n += 1` control counter showed no race | `tools/freethreaded.py` | `make test-unit-ft`, CI |
 | Branch flow | GitHub rulesets + `branch-policy.yml` + `CODEOWNERS` | every push / PR to `develop` and `main` |
 
 Guards have no inline suppressions. Fix code, not guards; changing a guard needs the maintainer.
@@ -124,7 +126,8 @@ Guards have no inline suppressions. Fix code, not guards; changing a guard needs
 
 Every test has `# given` / `# when` / `# then` markers and contains no `for`, `while`, `if`,
 `try`, `match`, comprehensions or conditional expressions. Variation comes from
-`pytest.mark.parametrize` or Hypothesis, and helper logic lives in `tests/support/`. The core is
+`pytest.mark.parametrize` or Hypothesis, and helper logic lives in `tests/support/` (or in `tools/`
+when a tool also uses it; `tools/` never imports `tests/`). The core is
 tested without a database (laws, engine replay with a fault at every yield point, compiler
 snapshots); database semantics only against real PostgreSQL, never an in-memory fake; the public
 type surface under both pyright and mypy.
@@ -144,6 +147,7 @@ make check                        # start of a session (no database needed)
 make db-up && make test-int       # when PostgreSQL is involved
 make db-up-durable                # spikes that measure rates, throughput or latency
 make test-types                   # after touching public signatures
+make test-unit-ft                 # unit tests on free-threaded 3.14t (own .venv-ft)
 make agents-sync                  # after editing .agents/
 uv run python -m tools.guards --changed
 ```
@@ -151,7 +155,7 @@ uv run python -m tools.guards --changed
 ## 8. GitHub setup (maintainer, one-time)
 
 **Current state (2026-11-25):** done. `develop` is the default branch, both rulesets are active,
-and the milestones, labels and roadmap issues (#1-#67; #47, #53, #56, #62, #66 and #67 are pull requests) exist. The local pre-push hook
+and the milestones, labels and roadmap issues (#1-#68; #47, #53, #56, #62, #66, #67 and #68 are pull requests) exist. The local pre-push hook
 (`make hooks-install`) stays as a second line of defence. Agents change GitHub settings,
 milestones and labels only when the maintainer asks.
 
@@ -161,17 +165,17 @@ milestones and labels only when the maintainer asks.
       admins may bypass through the PR, no force push, no deletion.
 - [x] Ruleset `main`: pull request required, merge commit only, no bypass, required status checks
       "main accepts PRs from develop only" (`.github/workflows/branch-policy.yml`) and
-      "lint, types, guards, unit, type tests (py3.14)" / "(py3.15)" (`ci.yml`), no force push,
+      "lint, types, guards, unit, type tests (py3.14)" / "(py3.15)" and "unit tests, free-threaded (py3.14t)" (`ci.yml`), no force push,
       no deletion. A renamed CI job must be renamed in the ruleset too.
 - [x] Milestones: `Phase 0 - Experiments`, `Phase 1 - Core execution path`, `Phase 2 - Event pipeline`, `Later`.
 - [x] Labels: `feature`, `spike`, `test`, `ci`, `documentation`, `needs-decision`, `blocked`,
       `area:core`, `area:sql`, `area:app`, `area:runners`, `area:drivers`, `area:outbox`,
       `area:migrate`, `area:codegen`, `area:testing`, `area:integrations`, `area:cli`,
       `area:tooling`.
-- [x] Roadmap issues #1-#67: the design section 9 experiments, then every package and feature of
+- [x] Roadmap issues #1-#68: the design section 9 experiments, then every package and feature of
       design sections 3-11 with dependencies (#1 tracks this setup; #48-#52, #54 and #55 come from
       spike 0001, #57-#61 from spike 0002, #63 from spike 0004, #64-#65 from spike 0003; #47, #53,
-      #56, #62, #66 and #67 are pull requests).
+      #56, #62, #66, #67 and #68 are pull requests).
 - [x] Decide ADR-0001 (assembly package and seal) and ADR-0002 (new IDs from an injected
       source) before the first implementation - both accepted.
 

@@ -59,6 +59,24 @@ All notable changes are documented here. Format: [Keep a Changelog](https://keep
   ADR-0007 (Proposed) on ever-increasing entity keys, to be decided after the measurements of
   #65; ADR-0005's "until / after 9.2" wording now states what 9.2 measured and leaves `lock=`,
   the hot-row approach and the candidate comparison to #64.
+- Free-threaded CI job (#7): "unit tests, free-threaded (py3.14t)" runs all of `tests/unit` on
+  CPython 3.14t on every PR, each test on 8 threads with pytest-run-parallel (new dev dependency,
+  named by design section 11.10, pinned below 0.11 because the runner reads its marker).
+  `make test-unit-ft` runs it locally in its own `.venv-ft`, and `make check-all` includes it; the
+  `main` ruleset requires the job.
+  - `tools/freethreaded.py` fails the run when the GIL is on before or after it (also when an
+    import re-enables it), when a test runs on one thread without `thread_unsafe(reason=...)`, on
+    any recorded warning (the plugin's worker threads swallow warnings raised as errors, so the run
+    records them with `-W always`), when ADR-0002's counter test did not pass on every case, or
+    when an unsafe `n += 1` control counter drawn after the tests shows no duplicates (no race on
+    that machine, so the counter test would prove nothing).
+  - It refuses to start on a GIL build, with `PYTHON_GIL` / `-X gil` set, with
+    `--skip-thread-unsafe`, or with a `filterwarnings` other than `["error"]`.
+  - The counter helper moved from `tests/support/free_threading.py` to `tools/concurrent_draws.py`
+    so the runner can use it; helpers a tool also uses live in `tools/` (`testing` rule).
+  - Design 11.2 now says every PR instead of nightly; ADR-0002, the workflow document, the
+    `testing` rule, the `test-writer` agent and the `core-testing`, `write-tests`,
+    `review-change`, `architecture-guard` and `commit` skills follow.
 
 ### Changed
 - Entity syntax (ADR-0003, accepted): entities inherit `Entity` with table options as class

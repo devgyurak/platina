@@ -26,6 +26,26 @@ jobs:
       - run: uv sync --locked
       - run: make check
 
+  # Design section 11.10, ADR-0002: the unit tests on free-threaded CPython, each test on 8 threads
+  # at once (pytest-run-parallel). The `main` ruleset requires this job by its name.
+  free-threaded:
+    name: unit tests, free-threaded (py3.14t)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15 # a thread-safety deadlock hangs on a barrier, not fails
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      # Installs CPython 3.14t into .venv-ft. tools/freethreaded.py fails the step when the GIL is
+      # on before the run, is forced off or is re-enabled by an import during the run, when a test
+      # ran on one thread without thread_unsafe(reason=...), on any recorded warning, when
+      # ADR-0002's counter test did not pass on every case, or when an unsafe n += 1 control counter
+      # showed no race after the tests. Its log lines start with
+      # "free-threaded check".
+      - name: unit tests on 3.14t, GIL off before and after
+        run: make test-unit-ft
+
   integration:
     name: integration (PostgreSQL 18)
     runs-on: ubuntu-latest

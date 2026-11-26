@@ -18,7 +18,7 @@ Procedure:
    engine replay for transaction behaviour, `fail_*.py` lines for "this must be a type error",
    integration only for real database semantics.
 3. Put any logic you need (loops over yield points, builders, replay drivers) in
-   `tests/support/` - never in test modules.
+   `tests/support/` (or `tools/` when a tool also uses it) - never in test modules.
 4. Run `uv run python -m tools.guards <files>` until clean, then run the tests and confirm they
    fail **for the right reason** (missing feature, not an import or fixture error). For type
    tests run `uv run python -m tools.typetests <files>`.

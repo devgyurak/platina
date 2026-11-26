@@ -24,9 +24,10 @@ experiments, internal architecture, test strategy), `docs/architecture.md` (what
 | Git hooks | `make hooks-install` (pre-commit checks + pre-push refusal for `main` / `develop`) |
 | Fast gate | `make check` (ruff format check, ruff lint, pyright + mypy, import-linter, guards, agents-check, unit tests, type tests) |
 | Format | `make fmt` (ruff format + ruff check --fix) |
+| Free-threaded | `make test-unit-ft` (unit tests on CPython 3.14t in `.venv-ft`, each on 8 threads; fails if the GIL is on) |
 | Type tests | `make test-types` (`tests/typing/pass_*` / `fail_*` under pyright **and** mypy) |
 | Integration | `make test-int` (needs `make db-up`) |
-| Everything | `make check-all` |
+| Everything | `make check-all` (`check` + `test-unit-ft` + `test-int`) |
 | Agent config | `make agents-sync` after editing `.agents/` |
 
 Always use `uv run ...` for Python tools; never `pip install`. Never add dependencies without
@@ -68,7 +69,7 @@ listed by the `docs-sync` rule updated, the GitHub issue closed by the PR.
 ADRs are lightweight: one is needed only for an expensive-to-reverse decision the design document
 does not settle, and it is accepted when the maintainer reads it and is convinced (`write-adr`).
 
-Tracking: every roadmap item is a GitHub issue (#1-#67 so far; #47, #53, #56, #62, #66 and #67 are pull requests) in a milestone (`Phase 0 - Experiments`, `Phase 1 - Core execution path`, `Phase 2 - Event pipeline`, `Later`;
+Tracking: every roadmap item is a GitHub issue (#1-#68 so far; #47, #53, #56, #62, #66, #67 and #68 are pull requests) in a milestone (`Phase 0 - Experiments`, `Phase 1 - Core execution path`, `Phase 2 - Event pipeline`, `Later`;
 the Phase 1/2 split follows design section 9.6 until #6 decides it), with its design sections,
 scope checklist and dependencies, labelled by type (`feature`, `spike`, `test`, `ci`,
 `documentation`) and area (`area:*`). `needs-decision` marks issues waiting on the maintainer,

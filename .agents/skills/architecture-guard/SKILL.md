@@ -12,6 +12,7 @@ description: Run, interpret and extend the mechanical guards (import-linter laye
 | tools/guards testlint | same | T101 control flow, T201-T206 Given/When/Then, T301 any `*.sleep()` |
 | tools/guards langlint | same | L101/L102 English-only (test data files exempt), L201-L204 translations (stale in both directions) |
 | tools/typetests | `uv run python -m tools.typetests` | `tests/typing/pass_*` clean and `fail_*` `# expect-error[<pyright rule>, <mypy code>]` lines rejected with the named codes, under pyright **and** mypy |
+| tools/freethreaded | `make test-unit-ft` (CI: "unit tests, free-threaded (py3.14t)") | `tests/unit` on free-threaded 3.14t, each test on 8 threads: GIL off before and after the run, no test moved to one thread without `thread_unsafe(reason=...)`, no recorded warning, ADR-0002's counter test passed, an unsafe `n += 1` control counter raced (`tools/concurrent_draws.py`) |
 | tools/hooks/pre_push.py | git pre-push (`make hooks-install`) | no push to `main` / `develop` |
 | ruff | `uv run ruff check` | style, bugbear, async pitfalls (ASYNC), no `print` (T20) outside tools/spikes |
 | pyright + mypy | `make typecheck` | types (strict on `src`) |

@@ -52,7 +52,8 @@ Requires [uv](https://docs.astral.sh/uv/) and, for integration tests, Docker.
 uv sync              # dependencies
 make check           # fast gate: lint, pyright + mypy, guards, unit and type tests
 make db-up           # PostgreSQL 18 on localhost:26432
-make check-all       # everything, including integration tests
+make check-all       # everything: + free-threaded unit tests and integration tests
+make test-unit-ft    # unit tests on free-threaded CPython 3.14t
 make help            # all targets
 ```
 

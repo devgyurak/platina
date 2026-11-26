@@ -56,9 +56,15 @@ agents-check: ## Fail if generated agent files drifted from .agents/
 	uv run python -m tools.agentsync --check
 
 # ------------------------------------------------------------------ tests
-.PHONY: test-unit test-types test-int test
+.PHONY: test-unit test-unit-ft test-types test-int test
 test-unit: ## Unit tests (no DB)
 	uv run pytest tests/unit $(PYTEST_ARGS)
+
+# Free-threaded CPython in its own environment (.venv-ft), so .venv keeps its interpreter.
+FT_THREADS ?= 8
+test-unit-ft: ## Unit tests on free-threaded 3.14t, FT_THREADS (8) threads per test; fails if the GIL is on
+	UV_PROJECT_ENVIRONMENT=.venv-ft uv run --locked --python 3.14t \
+		python -m tools.freethreaded tests/unit --parallel-threads $(FT_THREADS) $(PYTEST_ARGS)
 
 test-types: ## Type tests: tests/typing/pass_* and fail_* under pyright AND mypy
 	uv run python -m tools.typetests
@@ -74,4 +80,4 @@ test: test-unit test-types test-int ## Unit + type + integration tests
 .PHONY: check check-all
 check: lint typecheck guard agents-check test-unit test-types ## Fast gate (no DB)
 
-check-all: check test-int ## Full gate (needs db-up)
+check-all: check test-unit-ft test-int ## Full gate: + free-threaded unit tests, integration (needs db-up)

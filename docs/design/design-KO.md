@@ -1,4 +1,4 @@
-<!-- i18n: source=docs/design/design.md source-sha256=1aba98cada4c translation-sha256=39973cc47e40 -->
+<!-- i18n: source=docs/design/design.md source-sha256=7c5901ce7a4b translation-sha256=e009f2cd65d3 -->
 # Platina 설계 문서
 
 > **Platina**: 백금(platinum)의 옛 스페인어 이름. 백금이 산에도 녹지 않고 반응하지 않듯, 도메인 코드는 DB와 반응하지 않는다.
@@ -1491,7 +1491,7 @@ PlatinaError
 | 동시성 | write skew, 재시도, 데드락, 스트레스 불변식 | ✓ | anyio 이벤트로 순서 제어 | nightly |
 | 차등 테스트 | 컴파일러의 의미 정확성 | ✓ | Hypothesis + 참조 평가기 | nightly (2단계) |
 | 호환성 스위트 | 방언별 능력 기반 공통 테스트 | ✓ | `platina.testing.suite` | 방언별 CI |
-| free-threaded | 코어의 스레드 안전성 | ✗ | 3.14t + pytest-run-parallel | nightly |
+| free-threaded | 코어의 스레드 안전성 | ✗ | 3.14t + pytest-run-parallel | 모든 PR |
 | 성능 | §9 벤치마크 시나리오, 회귀 감지 | ✓ | pytest-benchmark | nightly |
 | 변이 테스트 | 플래너·ChangeSet 테스트의 실효성 | ✗ | mutmut | 주 1회 |
 
@@ -1676,7 +1676,7 @@ SQLAlchemy의 방식처럼, 방언과 무관한 공통 테스트를 `platina.tes
 
 ### 11.10 free-threaded 검증
 
-코어 단위 테스트를 3.14t에서 pytest-run-parallel로 돌린다. 이 플러그인은 테스트 스위트 전체를 병렬로 돌리는 게 아니라 같은 테스트를 여러 스레드에서 동시에 실행해 스레드 안전성 문제를 찾는다. 불변 스냅샷과 `SealedRegistry` 설계가 실제로 락 없이 안전한지를 여기서 확인한다.
+단위 테스트(코어가 먼저)를 3.14t에서 pytest-run-parallel로 돌린다. 이 플러그인은 테스트 스위트 전체를 병렬로 돌리는 게 아니라 같은 테스트를 여러 스레드에서 동시에 실행해 스레드 안전성 문제를 찾는다. 불변 스냅샷과 `SealedRegistry` 설계가 실제로 락 없이 안전한지를 여기서 확인한다. 모든 PR에서 돌며, GIL이 켜져 있어도 실패한다: 확장 모듈이 GIL을 다시 켜는 의존성이 있으면 그 실행은 평범한 GIL 실행이 되기 때문이다.
 
 ### 11.11 사용자용 테스트 키트 (`platina.testing`)
 

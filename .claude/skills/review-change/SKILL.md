@@ -11,6 +11,7 @@ the working tree). Note which zones are touched (core, sql, drivers, runners, ou
 ## 2. Mechanical gate (must pass before spending reviewer time)
 ```bash
 make check        # ruff, pyright + mypy, lint-imports, guards, agents-check, unit + type tests
+make test-unit-ft # unit tests on free-threaded 3.14t (a required CI check)
 make test-int     # when anything that talks to PostgreSQL changed (needs make db-up)
 ```
 Fix failures first.

@@ -34,6 +34,10 @@ def test_planner_orders_parent_insert_before_child_inserts(items):
 | "this misuse is a type error" / "this infers as X" | `tests/typing/fail_*.py` / `pass_*.py` (`type-tests` skill) |
 | real database semantics (SSI, constraints, pipelines, COPY) | `tests/integration/` on PostgreSQL |
 
+Unit tests also run on free-threaded 3.14t, each on 8 threads at once (`make test-unit-ft`): no
+module-level mutable state, and a test that cannot run beside copies of itself gets
+`@pytest.mark.thread_unsafe(reason="...")` (the `testing` rule).
+
 ## Replacing control flow
 | Instead of | Use |
 |---|---|

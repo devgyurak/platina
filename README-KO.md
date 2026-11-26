@@ -1,4 +1,4 @@
-<!-- i18n: source=README.md source-sha256=99f9edaac47c translation-sha256=a9c0726a9979 -->
+<!-- i18n: source=README.md source-sha256=39d643d96b26 translation-sha256=6452fd81d2d3 -->
 # Platina
 
 원문(영어): [README.md](README.md)
@@ -50,7 +50,8 @@ Alembic 왕복([`docs/spikes/0004-alembic-round-trip.md`](docs/spikes/0004-alemb
 uv sync              # 의존성
 make check           # 빠른 게이트: lint, pyright + mypy, 가드, 단위·타입 테스트
 make db-up           # PostgreSQL 18, localhost:26432
-make check-all       # 통합 테스트까지 전부
+make check-all       # 전부: + free-threaded 단위 테스트, 통합 테스트
+make test-unit-ft    # free-threaded CPython 3.14t에서 단위 테스트
 make help            # 전체 타깃
 ```
 
